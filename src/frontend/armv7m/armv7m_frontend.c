@@ -455,6 +455,11 @@ static void armv7m_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
     out(ctx, hex8(b, c->mmfar));
     out(ctx, "  bfar ");
     out(ctx, hex8(b, c->bfar));
+    /* What a lazy save left: LSPACT and the RDY bits of its reservation. */
+    out(ctx, "\n  fpccr ");
+    out(ctx, hex8(b, c->fpccr));
+    out(ctx, "  fpcar ");
+    out(ctx, hex8(b, c->fpcar));
     out(ctx, "\n  last fault at ");
     out(ctx, hex8(b, c->fault_pc));
     out(ctx, " encoding ");

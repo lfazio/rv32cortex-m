@@ -1460,6 +1460,53 @@ static void test_lazy_board_answers(void)
     CHECK(armv7m_is_pending(c, 3u));
     CHECK(!armv7m_is_pending(c, 5u));
 
+    /*
+     * lazy-lockup: a HardFault handler uses the FPU (the thread's half
+     * saved, FPCA set), and an NMI reserves its own half at -1, where
+     * neither a HardFault nor a MemManage could be taken: HFRDY and
+     * MMRDY clear. The MPU, applying at -2 (HFNMIENA), refuses it. The
+     * F746 locks up with MLSPERR, IACCVIOL and FORCED, LSPACT cleared.
+     */
+    lz_setup(c, STK_BUF + 0x248u, false);
+    stk_mpu(c, 3u);
+    c->mpu_ctrl = 3u; /* ENABLE, HFNMIENA */
+    CHECK(armv7m_take(c, 3u, UA_CODE));
+    c->r[0] = 0x33333333u;
+    CHECK(armv7m_step_insn(c, LZ_VMOV_W0, LZ_VMOV_W1, LZ_PC));
+    CHECK_EQ(c->control & ARMV7M_CONTROL_FPCA, ARMV7M_CONTROL_FPCA);
+    CHECK(armv7m_take(c, 2u, UA_CODE));
+    CHECK_EQ(c->fpccr, 0xC0000001u); /* reserved at -1: no RDY bit */
+    c->mpu_rbar[7] = c->fpcar & ~31u;
+    c->mpu_rasr[7] = (1u << 28) | (4u << 1) | 1u; /* 32 bytes, no access */
+    c->r[0] = 0x22222222u;
+    CHECK(!armv7m_step_insn(c, LZ_VMOV_W0, LZ_VMOV_W1, LZ_PC));
+    CHECK(c->lockup);
+    CHECK_EQ(c->r[ARMV7M_PC], 0xEFFFFFFEu);
+    CHECK_EQ(c->cfsr, 0x21u); /* MLSPERR, IACCVIOL */
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK_EQ(c->fpccr, 0xC0000000u);
+
+    /*
+     * ...and beside it: the NMI preempts the thread, MemManage disabled,
+     * so HFRDY is set and MMRDY clear. The same refusal at -2 is no
+     * lockup: FORCED, a HardFault waiting behind the NMI, the vmov done.
+     */
+    lz_setup(c, STK_BUF + 0x248u, false);
+    stk_mpu(c, 3u);
+    c->mpu_ctrl = 3u;
+    c->shcsr &= ~(7u << 16); /* as sys.c has them: BFRDY clear too */
+    CHECK(armv7m_take(c, 2u, UA_CODE));
+    CHECK_EQ(c->fpccr, 0xC0000019u); /* THREAD, HFRDY */
+    c->mpu_rbar[7] = c->fpcar & ~31u;
+    c->mpu_rasr[7] = (1u << 28) | (4u << 1) | 1u;
+    c->r[0] = 0x22222222u;
+    CHECK(armv7m_step_insn(c, LZ_VMOV_W0, LZ_VMOV_W1, LZ_PC));
+    CHECK(!c->lockup);
+    CHECK_EQ(c->cfsr, 0x20u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK_EQ(c->fpccr, 0xC0000018u);
+    CHECK(armv7m_is_pending(c, 3u));
+
     /* fpccr-writable: every bit the register defines. */
     armv7m_reset_state(c);
     c->access_priv = true;

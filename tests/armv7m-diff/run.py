@@ -22,6 +22,13 @@ directory holds `emu.bin` and `board.out`, any later emulator -- or the
 same one under `--emu-args=--jit` -- is checked against the silicon
 without the silicon being attached.
 
+The system suite's last test locks the core up, after DIFF-END: run.py
+waits for LOCKUP-BEGIN and reads DHCSR, CFSR, HFSR and FPCCR through
+the probe, with no reset, into a `t lazy-lockup` line -- the emulator's
+from its state dump. `--define NAME` builds both sides with a macro:
+SYS_LOCKUP_PLAIN, _MPU, _NMI, _HOLE and _HFRDY choose other lockups
+(sys.c says which).
+
 Needs arm-none-eabi-gcc, probe-rs and pyserial on the host, and the
 board's ST-LINK virtual COM port (USART3, 460800 baud).
 """
@@ -44,6 +51,10 @@ FIELDS = (["r%d" % i for i in range(13)] + ["apsr", "mem"] +
           ["s%d" % i for i in range(32)] + ["fpscr", "cfsr", "fault-pc"])
 
 
+# --define: macros for both builds, the emulator's and the board's.
+DEFINES = []
+
+
 def sh(cmd, **kw):
     r = subprocess.run(cmd, **kw)
     if r.returncode != 0:
@@ -64,7 +75,7 @@ def build(out, target, suite="cases"):
         body = [os.path.join(HERE, "sys.c"), os.path.join(HERE, "sys.S")]
     else:
         body = [os.path.join(HERE, "harness.c"), os.path.join(out, "cases.S")]
-    flags = list(CFLAGS)
+    flags = list(CFLAGS) + ["-D" + d for d in DEFINES]
     if suite == "sys":
         # sys.c moves values through s0 itself; floats still travel in core
         # registers, so nothing else about the build changes.
@@ -79,7 +90,9 @@ def run_emu(out, emu, extra=()):
     # A flat binary carries no architecture, so a runner built with more
     # than one frontend would run it as its default -- RV32 -- and every
     # case would "differ". Name the frontend.
-    r = subprocess.run([emu, "--frontend", "armv7m", "--max-insn", "400000000"] + list(extra) +
+    # --dump: the state a lockup leaves is read from it (emu_lockup).
+    r = subprocess.run([emu, "--frontend", "armv7m", "--max-insn", "400000000",
+                        "--dump"] + list(extra) +
                        [os.path.join(out, "emu.bin")],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     text = r.stdout.decode("latin1")
@@ -88,7 +101,52 @@ def run_emu(out, emu, extra=()):
     return text
 
 
-def run_board(out, port, baud, probe, timeout):
+# DHCSR, CFSR, HFSR, FPCCR: what the lazy save's lockup leaves, read
+# with the core locked up -- attached without a reset, which would clear
+# them. S_LOCKUP is DHCSR bit 19.
+LOCKUP_REGS = (0xE000EDF0, 0xE000ED28, 0xE000ED2C, 0xE000EF34)
+
+
+def probe_read(probe, addr):
+    cmd = ["probe-rs", "read", "--chip", "STM32F746ZGTx"]
+    if probe:
+        cmd += ["--probe", probe]
+    out = subprocess.run(cmd + ["b32", "0x%x" % addr, "1"],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         universal_newlines=True).stdout
+    for line in out.splitlines():
+        f = line.replace(":", " ").split()
+        if len(f) >= 2 and f[0].lower().endswith("%x" % addr):
+            return int(f[1], 16)
+    return None
+
+
+def lockup_line(lockup, cfsr, hfsr, fpccr):
+    return "t lazy-lockup %d %08x %08x %08x\n" % (lockup, cfsr, hfsr, fpccr)
+
+
+def board_lockup(probe):
+    v = [probe_read(probe, a) for a in LOCKUP_REGS]
+    if None in v:
+        return "t lazy-lockup (the probe read nothing)\n"
+    return lockup_line((v[0] >> 19) & 1, v[1], v[2], v[3])
+
+
+def emu_lockup(text):
+    """The same line from the emulator's state dump, once it got there."""
+    import re
+
+    if "LOCKUP-BEGIN" not in text:
+        return ""
+    m = re.search(r"cfsr ([0-9a-f]{8})  hfsr ([0-9a-f]{8})", text)
+    f = re.search(r"fpccr ([0-9a-f]{8})", text)
+    if not m or not f:
+        return "t lazy-lockup (no state dump)\n"
+    return lockup_line(1 if "  LOCKUP" in text else 0, int(m.group(1), 16),
+                       int(m.group(2), 16), int(f.group(1), 16))
+
+
+def run_board(out, port, baud, probe, timeout, lockup=False):
     import serial  # pyserial; only the board run needs it
 
     elf = os.path.join(out, "board.elf")
@@ -115,8 +173,18 @@ def run_board(out, port, baud, probe, timeout):
         if b"DIFF-END" in buf:
             buf += ser.read(4096)
             break
+    if lockup and b"DIFF-END" in buf:
+        # The last test locks the core up after DIFF-END; give it the
+        # time to say it is about to, then ask the core.
+        t1 = time.time()
+        while b"LOCKUP-BEGIN" not in buf and time.time() - t1 < 3.0:
+            buf += ser.read(4096)
+        time.sleep(0.5)
+        buf += ser.read(4096)
     ser.close()
     text = buf.decode("latin1").replace("\r", "")
+    if lockup and "LOCKUP-BEGIN" in text:
+        text += board_lockup(probe)
     with open(os.path.join(out, "board.out"), "w") as f:
         f.write(text)
     return text
@@ -267,10 +335,14 @@ def main():
                          "and compare with the board.out stored beside it")
     ap.add_argument("--emu-args", default="",
                     help="extra arguments for the emulator, e.g. --jit")
+    ap.add_argument("--define", action="append", default=[],
+                    help="a macro for both builds, e.g. SYS_LOCKUP_PLAIN "
+                         "(sys.c's other lockup)")
     ap.add_argument("--self", dest="self_check", action="store_true",
                     help="no board: run the cases interpreted and through "
                          "the JIT, and require identical output")
     a = ap.parse_args()
+    DEFINES.extend(a.define)
     os.makedirs(a.out, exist_ok=True)
 
     cmp = (lambda e, b: compare_sys(e, b)) if a.suite == "sys" else \
@@ -285,12 +357,16 @@ def main():
             if not os.path.exists(os.path.join(a.out, need)):
                 sys.exit("--rerun: no %s in %s" % (need, a.out))
         emu_text = run_emu(a.out, a.emu, extra)
+        if a.suite == "sys":
+            emu_text += emu_lockup(emu_text)
         board_text = open(os.path.join(a.out, "board.out"),
                           encoding="latin1").read()
         sys.exit(0 if cmp(emu_text, board_text) else 1)
 
     if a.reuse:
         emu_text = open(os.path.join(a.out, "emu.out")).read()
+        if a.suite == "sys":
+            emu_text += emu_lockup(emu_text)
         board_text = open(os.path.join(a.out, "board.out"),
                           encoding="latin1").read()
         sys.exit(0 if cmp(emu_text, board_text) else 1)
@@ -319,6 +395,8 @@ def main():
     if a.self_check:
         sys.exit(0 if self_check(a.out, a.emu) else 1)
     emu_text = run_emu(a.out, a.emu, extra)
+    if a.suite == "sys":
+        emu_text += emu_lockup(emu_text)
     if a.no_board:
         if a.suite == "sys":
             print("\n".join(l for l in emu_text.splitlines()
@@ -330,7 +408,8 @@ def main():
             print("\n".join(emu_text.splitlines()[-6:]))
         return
     build(a.out, "board", a.suite)
-    board_text = run_board(a.out, a.port, a.baud, a.probe, a.timeout)
+    board_text = run_board(a.out, a.port, a.baud, a.probe, a.timeout,
+                           lockup=(a.suite == "sys"))
     sys.exit(0 if cmp(emu_text, board_text) else 1)
 
 

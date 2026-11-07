@@ -631,7 +631,8 @@ static bool push_word(armv7m_cpu_t *c, uint32_t addr, uint32_t v, bool priv)
  *     where ARMv8-M's pseudocode keeps it whenever the fault preempts.
  *
  * The MPU applies as at priority -1 if the space was reserved there
- * (HFRDY clear), and a HardFault nothing could take then is a lockup.
+ * (HFRDY clear), and a HardFault nothing could take then is a lockup
+ * (`lazy-lockup`, the board read through the probe once locked up).
  * Out of line: it runs only while a save is outstanding.
  */
 EMU_NOINLINE armv7m_exc_t armv7m_fp_lazy_save(armv7m_cpu_t *c)
@@ -671,6 +672,17 @@ refused:
         return OK;
     }
     if (now <= -1 && !hfrdy) {
+        /*
+         * Escalated -- FORCED, as any escalation -- and nothing can take
+         * the HardFault: lockup. With IACCVIOL beside MLSPERR, which the
+         * F746 sets here and in none of four other lockups it was asked
+         * about: a fault in the HardFault handler, the same with the MPU
+         * and HFNMIENA on, one in an NMI handler, and that with a
+         * no-access region as well (sys.c `lazy-lockup`, and run.py
+         * --define SYS_LOCKUP_*).
+         */
+        c->cfsr |= MMFSR_IACCVIOL;
+        c->hfsr |= HFSR_FORCED;
         return ARMV7M_X_LOCKUP;
     }
     c->hfsr |= HFSR_FORCED;

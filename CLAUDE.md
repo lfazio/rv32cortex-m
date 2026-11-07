@@ -611,6 +611,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   save stops at the first refused word, and a bus error is a store's
   (`lazy-*`, `armv7m_fp_lazy_save`). A return with something pending
   tail-chains, which only the FP reservation shows (`lazy-mm-pend`).
+  Refused at -2 with HFRDY clear, it locks up with FORCED and IACCVIOL,
+  which no other lockup sets (`lazy-lockup`, read through the probe
+  from the locked-up core).
 - **An M7 store's bus error is imprecise** (`sys.c` `bus-*`; a load's is
   precise, BFAR the first byte refused): the store retires and the
   BusFault pends. Made deterministic, it must be so on every path that

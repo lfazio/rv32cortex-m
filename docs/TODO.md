@@ -244,13 +244,6 @@ From the last measurements in [linux.md](linux.md).
 
 ## ArmvX-m
 
-- [ ] **The lazy save's lockup is not asked.** A refused save whose
-      space was reserved at priority -1 or below (HFRDY clear) locks
-      the core up when nothing can preempt, as ARMv8-M's pseudocode
-      says (`armv7m_fp_lazy_save`); every other branch was the F746's
-      answer (`lazy-*`). Asking it means locking the board up on
-      purpose and reading the core through the probe, so it goes last.
-
 - [ ] Implement neon extensions if available
 - [ ] **The ARMv7-M frontend is a model of the F746's ITCM and DTCM**,
       and the ARMv8-M frontend is a model of the N657's TCMs. The

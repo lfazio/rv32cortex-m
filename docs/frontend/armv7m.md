@@ -284,6 +284,31 @@ host cycles an instruction to 154.51, 154.46 and 154.35 at three
 layouts (pads 0, 64, 256), the retired count and CRC the same; under
 the JIT, 29.39-29.41 both sides.
 
+**And the save that locks the core up was asked by locking the board
+up.** A save refused at priority -2 whose space was reserved at -1
+(HFRDY clear) has nothing that can take its HardFault. `sys.c`'s last
+test, after `DIFF-END` because it does not return, makes one: a
+HardFault handler uses the FPU and pends an NMI, the NMI's entry
+reserves the half at -1, and the NMI handler puts a no-access MPU
+region over FPCAR, with HFNMIENA, and touches the FPU. `run.py` waits
+for `LOCKUP-BEGIN` and reads DHCSR, CFSR, HFSR and FPCCR through the
+probe without a reset -- a locked-up M7 answers it -- and the
+emulator's from its state dump, which prints FPCCR and FPCAR now. The
+M7 locks up with **FORCED and IACCVIOL beside MLSPERR**, LSPACT
+cleared; the emulator had neither bit. IACCVIOL is this lockup's
+alone: four others asked the same way (`run.py --define
+SYS_LOCKUP_PLAIN`, with `SYS_LOCKUP_MPU`, `SYS_LOCKUP_NMI`,
+`SYS_LOCKUP_HOLE`) -- a fault in the HardFault handler, that with the
+MPU and HFNMIENA on, one in an NMI handler, and that with a no-access
+region as well -- leave it clear, and the emulator matched each before
+the change. FORCED needed the setup's own status cleared first: the
+`udf` that starts the test escalates too. And the branch beside it
+(`SYS_LOCKUP_HFRDY`: the NMI preempts the thread, so HFRDY is set)
+pends the HardFault and goes on, on both. Six board answers, 115 of
+115 system tests in each, interpreted and under the JIT;
+`test_lazy_board_answers` holds the two that matter, and four more
+mutants in `tests/mutants/armv7m-lazy.py` (23, all found).
+
 None of it runs on CoreMark, and it still cost interpreted CoreMark
 1.5% on the F746 as first written -- 155.10 to 157.63 host cycles an
 instruction, 155.15 to 157.26 and 155.08 to 157.45 with the layout

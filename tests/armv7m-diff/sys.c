@@ -2016,6 +2016,137 @@ static void t_lazy(void)
     g_hook = 0;
 }
 
+/*
+ * The lazy save's lockup, after DIFF-END because it does not come back.
+ *
+ * A HardFault handler uses the FPU, and an NMI it pends preempts it:
+ * that entry reserves the FP half at priority -1, where neither a
+ * HardFault nor a MemManage could be taken, so HFRDY and MMRDY are
+ * clear. The NMI handler puts an MPU region with no access over FPCAR,
+ * with HFNMIENA so that the MPU applies at -2, and touches the FPU. The
+ * save is refused, MemManage cannot be taken and a HardFault cannot
+ * either: ARMv8-M's pseudocode says lockup (armv7m_fp_lazy_save).
+ * run.py reads the board's DHCSR, CFSR, HFSR and FPCCR through the
+ * probe, with no reset, and the emulator's from its state dump.
+ */
+#if defined(SYS_LOCKUP_PLAIN)
+/*
+ * The other lockups, for more answers about what one leaves: a fault in
+ * the HardFault handler, the MPU off (run.py --define SYS_LOCKUP_PLAIN);
+ * with the lazy case's MPU on as well (SYS_LOCKUP_MPU); or in an NMI
+ * handler the HardFault handler pends, at -2 as the lazy case is
+ * (SYS_LOCKUP_NMI).
+ */
+static void lockup_now(void)
+{
+#if defined(SYS_LOCKUP_MPU)
+    mpu_region(0u, 0u, 32u, 3u, 0u, 0u); /* everything allowed */
+#if defined(SYS_LOCKUP_HOLE)
+    /* ...but 32 bytes nothing touches, as the lazy case's hole is. */
+    mpu_region(1u, (uint32_t)g_mpubuf, 5u, 0u, 1u, 0u);
+#else
+    MPU_RNR = 1u;
+    MPU_RASR = 0u;
+#endif
+    MPU_RNR = 2u;
+    MPU_RASR = 0u;
+    MPU_CTRL = 3u; /* ENABLE, HFNMIENA */
+    barrier();
+#endif
+    puts_("LOCKUP-BEGIN\n");
+    __asm__ volatile("udf #1");
+    puts_("LOCKUP-NOT\n");
+    for (;;) {
+    }
+}
+
+static void hook_lockup(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    (void)frame;
+    (void)excret;
+#if defined(SYS_LOCKUP_NMI)
+    if (exc == 3u) {
+        ICSR = 1u << 31; /* NMIPENDSET */
+        barrier();
+        for (;;) {
+        }
+    }
+    if (exc == 2u) {
+        lockup_now();
+    }
+#else
+    if (exc == 3u) {
+        lockup_now();
+    }
+#endif
+}
+#else
+static void hook_lockup(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    (void)frame;
+    (void)excret;
+    if (exc == 3u) {
+        /* What the UDF left, cleared: what follows is the lockup's. */
+        CFSR = CFSR;
+        HFSR = HFSR;
+        barrier();
+        sys_lazy_touch(0x33333333u); /* CONTROL.FPCA, at priority -1 */
+        ICSR = 1u << 31; /* NMIPENDSET: taken at once */
+        barrier();
+        for (;;) {
+        }
+    }
+    if (exc == 2u) {
+        mpu_region(0u, 0u, 32u, 3u, 0u, 0u);
+        mpu_region(1u, FPCAR & ~31u, 5u, 0u, 1u, 0u);
+        MPU_RNR = 2u;
+        MPU_RASR = 0u;
+        MPU_CTRL = 3u; /* ENABLE, HFNMIENA */
+        barrier();
+        puts_("LOCKUP-BEGIN\n");
+        sys_lazy_touch(0x22222222u); /* the save, refused */
+        puts_("LOCKUP-NOT\n");
+        for (;;) {
+        }
+    }
+}
+#endif
+
+#if defined(SYS_LOCKUP_HFRDY)
+/*
+ * The branch beside the lockup (run.py --define SYS_LOCKUP_HFRDY): the
+ * NMI preempts the thread itself, MemManage disabled, so the half is
+ * reserved with HFRDY set and MMRDY clear. The same refusal at -2 should
+ * not lock up: a FORCED HardFault pends behind the NMI, which spins.
+ */
+static void lockup_enter(void)
+{
+    SHCSR &= ~(1u << 16); /* MMRDY clear at the reservation */
+    barrier();
+    sys_lazy_touch(0x33333333u); /* CONTROL.FPCA, in the thread */
+    ICSR = 1u << 31;
+    barrier();
+}
+#else
+static void lockup_enter(void)
+{
+    __asm__ volatile("udf #0"); /* a HardFault, UsageFault disabled */
+}
+#endif
+
+static void t_lazy_lockup(void)
+{
+    MPU_CTRL = 0u;
+    CPACR = 0x00F00000u;
+    FPCCR = (1u << 31) | (1u << 30); /* ASPEN, LSPEN */
+    SHCSR &= ~(7u << 16); /* UDF escalates to HardFault */
+    barrier();
+    g_hook = hook_lockup;
+    lockup_enter();
+    for (;;) {
+    }
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -2051,5 +2182,6 @@ int main(void)
     t_lazy();
     t_stacking(); /* last: the one most likely to stop the board */
     puts_("SYS-END\nDIFF-END\n");
+    t_lazy_lockup(); /* after the end: it does not return */
     return 0;
 }

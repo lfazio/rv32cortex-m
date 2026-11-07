@@ -32,5 +32,9 @@ M = [
     ("tail-chain-lr", E, "    c->r[ARMV7M_LR] = excret;\n    (void)vector_to(c, exc, excret);", "    (void)vector_to(c, exc, excret);"),
     ("disabled-fault-takeable", E, "    const uint32_t off = (~c->shcsr >> 12) & 0x70u;", "    const uint32_t off = 0u;"),
     ("fpccr-readonly-again", N, "c->fpccr = v & 0xC000017Bu;", "c->fpccr = (c->fpccr & ~0xC0000000u) | (v & 0xC0000000u);"),
+    ("lockup-no-iaccviol", E, "        c->cfsr |= MMFSR_IACCVIOL;\n        c->hfsr |= HFSR_FORCED;", "        c->hfsr |= HFSR_FORCED;"),
+    ("lockup-no-forced", E, "        c->hfsr |= HFSR_FORCED;\n        return ARMV7M_X_LOCKUP;", "        return ARMV7M_X_LOCKUP;"),
+    ("lockup-never", E, "    if (now <= -1 && !hfrdy) {", "    if (false) {"),
+    ("lockup-ignores-hfrdy", E, "    if (now <= -1 && !hfrdy) {", "    if (now <= -1) {"),
     ("fp-check-ignores-save-fault", F, "        const X x = armv7m_fp_lazy_save(c);\n\n        if (x != OK) {\n            return x;\n        }", "        (void)armv7m_fp_lazy_save(c);"),
 ]

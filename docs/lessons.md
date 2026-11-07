@@ -4464,6 +4464,19 @@ session, and every one of them recurred:
   **Take where the time goes from the profile and how much from the
   plain build, and check the two agree on the counters first.**
 
+- **A locked-up core can still be asked.** The last unasked branch of
+  the lazy save was a lockup, put off because it means locking the
+  board up on purpose. A locked-up M7 answers the probe without a
+  reset, so the test runs after everything else and `run.py` reads the
+  status registers once the console says it is about to: FORCED and
+  IACCVIOL, neither modelled. The first reading had FORCED already set
+  by the `udf` that started the test, so whether the lockup set it was
+  invisible until the handler cleared what the setup left; and
+  IACCVIOL was one reading until four more lockups, each a define away,
+  said it belongs to this one alone. **Clear what the setup leaves in a
+  status register before asking what the event sets, and vary the
+  conditions until one bit has a single cause.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
