@@ -60,6 +60,8 @@ a7-cm-interp|--frontend armv7m armv7m-coremark.bin
 a7-cm-jit|--frontend armv7m --jit armv7m-coremark.bin
 ppc-dhry-jit|--jit ppc-dhrystone.elf
 ppc-cm-jit|--jit ppc-coremark.elf
+ppc-whet-interp|ppc-whetstone.elf
+ppc-whet-jit|--jit ppc-whetstone.elf
 g4-cm-interp|--frontend g4mh --load 0x80000000 g4mh-coremark.bin
 g4-cm-jit|--frontend g4mh --load 0x80000000 --jit g4mh-coremark.bin'
 

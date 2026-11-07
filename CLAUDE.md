@@ -266,6 +266,9 @@ Each has cost more than one session, and every one recurred.
   multiplied device reach and found no mutant the seeds find.
 - **A differential fuzzer cannot see what both sides share, and a seed
   is a test: run each alone and read what it did** (`FUZZ_SHOW=1`).
+  Nor can it reach what random words do not spell: four mutants of
+  PowerPC's new FP helpers ran 180 s each unfound until a seed put the
+  operations in a block (`efpu-mid-block.S`).
   G4MH's LDSR to PLMR never made the core look for an interrupt; both
   backends run LDSR in the interpreter, so they agreed, and the seed
   written to reach it took no interrupt.

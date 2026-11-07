@@ -253,12 +253,59 @@ EMU_HOT_TEXT static uint32_t ppc_ir_efs(emu_cpu_t *cpu, uint32_t op,
     return 0u;
 }
 
+/*
+ * The four that are most of an FP program -- Whetstone's 1.27 million
+ * EFPU instructions are 98% efsmul, efsadd, efssub and efsdiv -- have a
+ * helper each, and nothing to unpack: the operands arrive as values,
+ * and `aux`, the helper's third argument (emu_ir.h), is rd, bit 5 for a
+ * 16-bit instruction, and bit 7 so that it is never 0. The pc is the
+ * block's: the translator puts it before every instruction, and a
+ * helper call keeps it there (pass_dead_puts).
+ */
+#define EFS_AUX_LEN2 0x20u
+#define EFS_AUX_SET 0x80u
+
+/* Out of line: the interrupts are what a program almost never takes. */
+EMU_NOINLINE static uint32_t efs_raise(ppc_cpu_t *c, uint32_t e, uint32_t aux)
+{
+    const uint32_t pc = c->pc;
+
+    if (e == (uint32_t)PPC_IVOR_FP_DATA) {
+        ppc_cpu_raise(c, PPC_IVOR_FP_DATA, pc, PPC_ESR_SPE);
+    } else {
+        ppc_cpu_raise(c, PPC_IVOR_FP_ROUND,
+                      pc + (((aux & EFS_AUX_LEN2) != 0u) ? 2u : 4u),
+                      PPC_ESR_SPE);
+    }
+    return raised(c);
+}
+
+#define PPC_IR_EFS_OP(name, fn)                                                \
+    EMU_HOT_TEXT static uint32_t name(emu_cpu_t *cpu, uint32_t a, uint32_t b,  \
+                                      uint32_t aux)                            \
+    {                                                                          \
+        ppc_cpu_t *const c = (ppc_cpu_t *)cpu;                                 \
+        const uint32_t e = fn(c, a, b, &c->r[aux & 31u]);                      \
+                                                                               \
+        return EMU_LIKELY(e == PPC_EXC_NONE) ? 0u : efs_raise(c, e, aux);      \
+    }
+PPC_IR_EFS_OP(ppc_ir_efsadd, ppc_fpu_add)
+PPC_IR_EFS_OP(ppc_ir_efssub, ppc_fpu_sub)
+PPC_IR_EFS_OP(ppc_ir_efsmul, ppc_fpu_mul)
+PPC_IR_EFS_OP(ppc_ir_efsdiv, ppc_fpu_div)
+#undef PPC_IR_EFS_OP
+
 static const void *const ppc_ir_helpers[] = {
-    (const void *)ppc_ir_step,
-    (const void *)ppc_ir_efs,
+    (const void *)ppc_ir_step,   (const void *)ppc_ir_efs,
+    (const void *)ppc_ir_efsadd, (const void *)ppc_ir_efssub,
+    (const void *)ppc_ir_efsmul, (const void *)ppc_ir_efsdiv,
 };
 #define PPC_HELPER_STEP 0u
 #define PPC_HELPER_EFS 1u
+#define PPC_HELPER_EFSADD 2u
+#define PPC_HELPER_EFSSUB 3u
+#define PPC_HELPER_EFSMUL 4u
+#define PPC_HELPER_EFSDIV 5u
 
 static uint32_t ppc_reg_offset(uint32_t n)
 {
@@ -1355,13 +1402,42 @@ static bool is_efs(const I *d)
     return d->sem >= PPC_S_EFSADD && d->sem <= PPC_S_EFSCTH;
 }
 
-/* A scalar EFPU instruction, through the FP unit's own helper. */
+/*
+ * A scalar EFPU instruction, through the FP unit's own helpers: one of
+ * the four with an entry of its own, its operands as values, or the
+ * rest through ppc_ir_efs with the fields packed.
+ */
 static void lower_efs(T *t, const I *d)
 {
     B *const b = t->b;
+    uint32_t h;
 
-    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, K(b, efs_op(d)), K(b, t->pc),
-                      PPC_HELPER_EFS, 0u);
+    switch (d->sem) {
+    case PPC_S_EFSADD:
+        h = PPC_HELPER_EFSADD;
+        break;
+    case PPC_S_EFSSUB:
+        h = PPC_HELPER_EFSSUB;
+        break;
+    case PPC_S_EFSMUL:
+        h = PPC_HELPER_EFSMUL;
+        break;
+    case PPC_S_EFSDIV:
+        h = PPC_HELPER_EFSDIV;
+        break;
+    default:
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, K(b, efs_op(d)),
+                          K(b, t->pc), PPC_HELPER_EFS, 0u);
+        return;
+    }
+    /* In this order: two calls as arguments would be in either. */
+    const uint16_t a = G(b, d->ra);
+    const uint16_t bv = G(b, d->rb);
+
+    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP,
+                      (uint8_t)(EFS_AUX_SET | d->rd |
+                                ((d->len == 2u) ? EFS_AUX_LEN2 : 0u)),
+                      a, bv, h, 0u);
 }
 
 /*

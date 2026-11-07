@@ -1662,16 +1662,19 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP: {
         /*
-         * System V: the cpu pointer in rdi and two arguments after it.
-         * rbx holds the cpu pointer and is callee-saved, so it survives
-         * the call; every live value is in the frame, so nothing else
-         * needs preserving.
+         * System V: the cpu pointer in rdi, two arguments after it, and
+         * `aux` in ecx when it is non-zero (emu_ir.h). rbx holds the cpu
+         * pointer and is callee-saved, so it survives the call; every
+         * live value is in the frame, so nothing else needs preserving.
          */
         if (t->helpers == NULL || in->imm >= t->helper_count) {
             return false;
         }
         ld_operand(X86_EDX, in->b); /* arg2 */
         ld_operand(X86_ESI, in->a); /* arg1 */
+        if (in->aux != 0u) {
+            x86_mov_imm32(X86_ECX, in->aux); /* arg3 */
+        }
         emu_jit_emit8(0x48);
         emu_jit_emit8(0x89);
         emu_jit_emit8(0xDF); /* mov rdi, rbx */

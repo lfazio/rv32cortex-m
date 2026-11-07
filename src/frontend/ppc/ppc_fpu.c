@@ -377,8 +377,14 @@ EMU_HOT_TEXT static void op_add(res_t *r, uint32_t a, uint32_t b, bool neg_b,
     }
 }
 
-/* efsmul: a zero or denormal operand wins over an infinity or a NaN. */
-static void op_mul(res_t *r, uint32_t a, uint32_t b, uint32_t rm)
+/*
+ * efsmul: a zero or denormal operand wins over an infinity or a NaN.
+ * Inlined, here and in op_div, into both callers: ppc_fpu_exec had it
+ * inlined while it was the only one, and a second caller (ppc_fpu_mul)
+ * left it out of line -- a call from ITCM into flash on the board.
+ */
+static EMU_ALWAYS_INLINE void op_mul(res_t *r, uint32_t a, uint32_t b,
+                                     uint32_t rm)
 {
     const int ka = kind(a);
     const int kb = kind(b);
@@ -398,7 +404,8 @@ static void op_mul(res_t *r, uint32_t a, uint32_t b, uint32_t rm)
 }
 
 /* efsdiv (table 5-2): the divisor decides first. */
-static void op_div(res_t *r, uint32_t a, uint32_t b, uint32_t rm)
+static EMU_ALWAYS_INLINE void op_div(res_t *r, uint32_t a, uint32_t b,
+                                     uint32_t rm)
 {
     const int ka = kind(a);
     const int kb = kind(b);
@@ -978,4 +985,47 @@ EMU_HOT_TEXT uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd,
         return (uint32_t)PPC_IVOR_PROGRAM;
     }
     return finish(c, &r, &c->r[rd]);
+}
+
+/*
+ * Four of the cases above, one function each, the operands given: what
+ * a translated block calls for the operations that are most of an FP
+ * program (ppc_ir.c). The same op_* and the same finish -- so FG, FX,
+ * the sticky bits and both interrupts stay one implementation -- without
+ * the switch or the register reads. In ITCM, as round_f64 says.
+ */
+EMU_HOT_TEXT uint32_t ppc_fpu_add(ppc_cpu_t *c, uint32_t a, uint32_t b,
+                                  uint32_t *dst)
+{
+    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+
+    op_add(&r, a, b, false, rmode(c));
+    return finish(c, &r, dst);
+}
+
+EMU_HOT_TEXT uint32_t ppc_fpu_sub(ppc_cpu_t *c, uint32_t a, uint32_t b,
+                                  uint32_t *dst)
+{
+    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+
+    op_add(&r, a, b, true, rmode(c));
+    return finish(c, &r, dst);
+}
+
+EMU_HOT_TEXT uint32_t ppc_fpu_mul(ppc_cpu_t *c, uint32_t a, uint32_t b,
+                                  uint32_t *dst)
+{
+    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+
+    op_mul(&r, a, b, rmode(c));
+    return finish(c, &r, dst);
+}
+
+EMU_HOT_TEXT uint32_t ppc_fpu_div(ppc_cpu_t *c, uint32_t a, uint32_t b,
+                                  uint32_t *dst)
+{
+    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+
+    op_div(&r, a, b, rmode(c));
+    return finish(c, &r, dst);
 }

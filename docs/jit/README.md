@@ -75,7 +75,10 @@ Three outcomes, and every frontend counts them:
 - **helper** — the interpreter's own single-instruction core, called
   from inside the block. A helper call is a translation; declining is
   not. Ending a block for an awkward instruction fragments hot code, and
-  what is declined costs more than what is translated badly;
+  what is declined costs more than what is translated badly. A helper
+  gets the cpu, two operands and, when the instruction's `aux` is
+  non-zero, `aux` as a third argument (`emu_ir.h`) -- which is how
+  PowerPC's FP helpers learn rd without unpacking anything;
 - **declined** — the block ends and the interpreter runs the instruction
   from the dispatcher. Each frontend declines the instructions that
   change what a block may assume (a CSR write, an MSR write, a mode

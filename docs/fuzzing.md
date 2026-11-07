@@ -883,6 +883,20 @@ And inputs held for the permitted differences above:
 `rv32-jit/flw-fault-fs-dirtier` (no longer a difference: FS is exact), `rv32-jit/trap-first-in-block-run-count`
 and `ppc-jit/decrementer-taken-a-block-late`.
 
+**The PowerPC target could not spell an FP instruction.** Its programs
+are random words, and a random word is a given EFPU operation about
+once in 130,000 -- so when the four operations got a helper each
+([frontend/ppc.md](frontend/ppc.md)), mutants that swapped the
+operands, computed a subtraction as an addition, dropped rd's top bit,
+or named the wrong instruction in an interrupt each ran 180 s
+unfound. `seeds/ppc-jit/efpu-mid-block.S` puts the four in the middle
+of a block, with operands that are not symmetric, results in r0, r17
+and r31, an inexact sum, a denormal and a divide by zero for the
+enables the configuration word sets: three of the five were found by
+the seed itself, the others in 8 and 111 s. Run alone (`FUZZ_SHOW=1`),
+it retires all 16 with no enables and takes the round interrupt at the
+first inexact result with all five.
+
 Each run below is after its target's fixes, and found nothing more:
 
 | target | time | inputs | compared | translations | block entries |

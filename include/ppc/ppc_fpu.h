@@ -30,6 +30,16 @@ extern "C" {
 uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd, uint32_t ra,
                       uint32_t rb, uint32_t crf);
 
+/*
+ * efsadd, efssub, efsmul and efsdiv with their operands given and the
+ * result to `dst`: ppc_fpu_exec's cases without its dispatch, for a
+ * translated block (ppc_ir.c). The same return values.
+ */
+uint32_t ppc_fpu_add(ppc_cpu_t *c, uint32_t a, uint32_t b, uint32_t *dst);
+uint32_t ppc_fpu_sub(ppc_cpu_t *c, uint32_t a, uint32_t b, uint32_t *dst);
+uint32_t ppc_fpu_mul(ppc_cpu_t *c, uint32_t a, uint32_t b, uint32_t *dst);
+uint32_t ppc_fpu_div(ppc_cpu_t *c, uint32_t a, uint32_t b, uint32_t *dst);
+
 #ifdef __cplusplus
 }
 #endif

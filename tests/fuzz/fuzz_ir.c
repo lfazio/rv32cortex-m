@@ -194,13 +194,14 @@ static uint32_t f_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
  * flags -- what a frontend's helper may do, and what the passes must
  * therefore treat a call as doing.
  */
-static uint32_t h_mix(emu_cpu_t *cpu, uint32_t a, uint32_t b)
+/* And the third argument, `aux`: emitted non-zero, so it is passed. */
+static uint32_t h_mix(emu_cpu_t *cpu, uint32_t a, uint32_t b, uint32_t aux)
 {
     fcpu_t *const c = (fcpu_t *)(void *)cpu;
 
     g_st.helpers++;
-    c->hlog = (c->hlog ^ a ^ (b << 1)) * 0x01000193u;
-    return a * 31u + b;
+    c->hlog = (c->hlog ^ a ^ (b << 1) ^ (aux << 9)) * 0x01000193u;
+    return a * 31u + b + aux;
 }
 
 static uint32_t h_peek(emu_cpu_t *cpu, uint32_t a, uint32_t b)
@@ -749,7 +750,15 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         if (h == H_TRAP) {
             (void)E(EMU_IR_HELPER_TRAP, 0u, a, b, H_TRAP, 0u);
         } else {
-            d = E(EMU_IR_HELPER, 0u, a, b, h, 0u);
+            /*
+             * h_mix's third argument, never 0, from what was drawn
+             * rather than another byte, so older inputs keep their
+             * streams. The others are emitted without one.
+             */
+            const uint8_t aux =
+                (h == 0u) ? (uint8_t)(1u + ((a * 7u + b) & 0x7Fu)) : 0u;
+
+            d = E(EMU_IR_HELPER, aux, a, b, h, 0u);
         }
         break;
     }

@@ -4444,6 +4444,18 @@ session, and every one of them recurred:
   read which multilib a build linked, and a hot path's disassembly for
   the calls the compiler made on its behalf.**
 
+- **A fuzzer of random words cannot spell a long opcode.** PowerPC's
+  four FP operations got a helper each, and the JIT-against-interpreter
+  fuzzer, run on mutants of them -- operands swapped, a subtraction
+  computed as an addition, rd's top bit dropped, a round interrupt
+  naming this instruction instead of the next -- found none in 180 s
+  apiece: a random word is efsadd about once in 130,000, and its block
+  is then cut short by whatever random word follows. A seed with the
+  four in the middle of a block found three before fuzzing began.
+  **When a new path arrives, run its mutants against the fuzzer before
+  trusting a clean run, and give the fuzzer the instruction if it
+  cannot say it.**
+
 - **A profiled firmware is a different program for the JIT.** The PC
   profile's 32 KB of samples come out of guest RAM, and PowerPC
   CoreMark under the JIT ran at 65.32 host cycles an instruction

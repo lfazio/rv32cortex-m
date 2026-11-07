@@ -2372,10 +2372,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * shipped, and presented as a board run whose counters were
          * identical to the previous one to the digit.
          *
-         * AAPCS: r0 the cpu, r1 and r2 the arguments. r4-r11 are
-         * callee-saved, so allocated temps survive with nothing emitted
-         * around them, which is the whole reason the allocator was
-         * given those registers.
+         * AAPCS: r0 the cpu, r1 and r2 the arguments, r3 `aux` when it
+         * is non-zero (emu_ir.h). r4-r11 are callee-saved, so allocated
+         * temps survive with nothing emitted around them, which is the
+         * whole reason the allocator was given those registers.
          */
         if (t->helpers == NULL || in->imm >= t->helper_count) {
             return false;
@@ -2394,6 +2394,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         if (rb != T2_R2) {
             t2_mov(T2_R2, rb);
+        }
+        if (in->aux != 0u) {
+            /* MOVS: its N and Z die at the call, which clobbers both. */
+            (void)t2_movs_imm8(T2_R3, in->aux);
         }
         t2_mov(T2_R0, T2_CPU);
         t2_call(t->helpers[in->imm]);

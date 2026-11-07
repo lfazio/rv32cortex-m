@@ -396,6 +396,13 @@ typedef enum emu_ir_op {
      * keeps a block whole -- this project has measured that declining an
      * instruction costs more than translating it badly, because ending
      * the block fragments hot code.
+     *
+     * The arguments are `a`, `b` and, **only when it is non-zero**,
+     * `aux`: helper(cpu, a, b, aux). A helper emitted with aux 0 gets
+     * whatever the third argument register held and must not read it;
+     * one that takes a constant that can be 0 sets a bit of its own
+     * (PowerPC's FP helpers set bit 7). The load is left out at 0 so that
+     * a helper which takes two arguments costs not a byte more.
      */
     EMU_IR_HELPER,
 

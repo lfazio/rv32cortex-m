@@ -420,12 +420,14 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
 /*
  * The helper convention, which is the lowerings' and not a guess: both
- * pass the cpu and the two operands, and take the result from the
- * return register (x86-64 rdi, esi, edx -> eax; Thumb-2 r0, r1, r2 ->
- * r0). A helper declared with fewer parameters ignores the rest under
- * both conventions, as it does when compiled code calls it.
+ * pass the cpu, the two operands and, when it is non-zero, `aux`, and
+ * take the result from the return register (x86-64 rdi, esi, edx, ecx
+ * -> eax; Thumb-2 r0, r1, r2, r3 -> r0). A helper declared with fewer
+ * parameters ignores the rest under both conventions, as it does when
+ * compiled code calls it.
  */
-typedef uint32_t (*ir_helper_fn)(emu_cpu_t *cpu, uint32_t a, uint32_t b);
+typedef uint32_t (*ir_helper_fn)(emu_cpu_t *cpu, uint32_t a, uint32_t b,
+                                 uint32_t aux);
 
 static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
                             const emu_ir_target_t *t, uint32_t *retired)
@@ -919,7 +921,8 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
          */
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
-            r = ((ir_helper_fn)(uintptr_t)t->helpers[in->imm])(cpu, a, bv);
+            r = ((ir_helper_fn)(uintptr_t)t->helpers[in->imm])(cpu, a, bv,
+                                                               in->aux);
             if (in->op == (uint8_t)EMU_IR_HELPER_TRAP && r != 0u) {
                 return IR_RUN_DONE;
             }

@@ -993,6 +993,25 @@ that CoreMark uses moved. A lowering would now save the 55-cycle call
 and the unpacking and dispatch, and still owe FG, FX and the sticky
 bits exactly.
 
+**A helper per operation took the unpacking and the dispatch.**
+Whetstone's 1.27 million EFPU instructions are 98% efsmul, efsadd,
+efssub and efsdiv, so those four have a helper each (`ppc_ir_efsadd`
+and the rest, on `ppc_fpu_add` and its siblings): the operands arrive as
+IR values, rd and the length as the helper's third argument -- `aux`,
+which the IR now passes when it is non-zero (`emu_ir.h`) -- and the pc
+is the block's, put there before every instruction. The same `op_*`
+and `finish` as `ppc_fpu_exec`, so FG, FX, the sticky bits and both
+interrupts are still one implementation; the rest of the unit keeps
+`ppc_ir_efs`. `op_mul` and `op_div` are forced inline, because a second
+caller each had taken them out of `ppc_fpu_exec` -- out of ITCM on the
+board, and +0.54% of interpreted Whetstone on the host (+0.18% after).
+By callgrind, Whetstone under the JIT 493.9M host instructions to
+450.3M (-8.8%), CoreMark unchanged; on the F746, Whetstone under the
+JIT 65.23 to 62.86 and 65.23 to 63.61 host cycles an instruction at two
+layouts (the wall clock 2.49 s to 2.40 and 2.43), interpreted 247.39 to
+246.77, and CoreMark under the JIT, which runs none of it, 33.49 to
+33.62. The call is what is left.
+
 ## The JIT
 
 `--jit` selects `ppc_backend_jit`, built from `ppc_ir.c` through the
