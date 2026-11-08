@@ -68,7 +68,7 @@ typedef struct emu_session_cfg {
     /*
      * Placement, for a platform that lets a caller override it.
      *
-     * `load_addr` 0 means EMU_GUEST_ROM_BASE, where the image is already
+     * `load_addr` 0 means the guest map's rom_base, where the image is already
      * mapped read-only and there is nothing to copy. Anything else is
      * written into the bus, which is what a guest linked to run from RAM
      * needs -- riscv-tests are exactly that, and they also *write to

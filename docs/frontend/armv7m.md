@@ -450,8 +450,22 @@ What a block may assume, and what invalidates it:
   native divide are specialised on those.
 - **Self-modifying code**: nothing on this architecture announces it, so
   a store into a page translated code came from (`smc_*`, a bitmap of
-  writable pages) discards the translations. Code in flash costs one
-  compare per store and nothing else.
+  writable pages) discards the translations -- and **stops the block
+  that made it** (`smc_stop`), whose own later instructions may be the
+  ones rewritten: the interpreter reruns the store from its encoding as
+  it was before the store, and the next instruction is fetched again.
+  The architecture would let them run stale until an ISB; the
+  interpreter never does, and fuzz-armv7m-jit, given the program in
+  writable RAM (`CFG_SMC`), found the JIT doing it at once (a `movs`
+  two instructions on, r1 5 against 0), and then the rerun fetching a
+  store that had rewritten itself (`str r1, [r0]` read back as `movs r0,
+  #0`). Code in flash costs one compare per store and nothing else.
+- **A block stops before a known entry** (`emu_jit_entry_known`): a pc
+  a block begins at, or did until it was evicted, ends the block being
+  translated, with a chained exit to it. Two thirds of what CoreMark x200
+  translated at 96 KB was a second copy of code already in the buffer;
+  with the stop it compacts 2 times where it compacted 32, and runs 42%
+  faster on the F746 ([backend/thumb2.md](../backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
 - **ISB ends a block through the dispatcher**, so an exception the
   guest has just pended is taken before the next instruction — two
   board tests failed until it did.
@@ -554,7 +568,9 @@ of them.
 
 ## Guests
 
-`tests/guest/armv7m/`, built with the ARM toolchain:
+`tests/guest/armv7m/`, built with the ARM toolchain, **for the M7's own
+map**: the image at the flash's `0x0800_0000`, a 16 KiB ITCM at zero,
+RAM from the DTCM's `0x2000_0000` on ([memory.md](../memory.md#armv7-m)).
 
 | Image | Purpose |
 |---|---|
@@ -565,6 +581,8 @@ of them.
 | `t2exec` | the real Thumb-2 encoder, emitting into RAM and executing it |
 | `coremark`, `dhrystone`, `crypto` | the shared benchmarks, with SysTick as the clock |
 | `mmiobench` | GPIOB against RAM through the passthrough window, timed by TIM2 -- see [the peripheral window](#the-peripheral-window) |
+| `tcm` | code copied into the ITCM and run there, rewritten and run again; the DTCM's edges and the SRAM above it |
+| `stepover`, `faulthead` | a store's imprecise BusFault stepped over, and a fault at a block's first instruction, then a lockup: the run's total on both backends (`same-on-both-backends.py`) |
 
 The benchmarks keep time with SysTick (`systick_clock.h`), which in this
 emulator counts instructions. That makes them tests as well: the

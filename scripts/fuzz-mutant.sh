@@ -56,7 +56,7 @@ LOG=$B.$T.log
 NAME=fuzz-$ISA-jit
 SET=$T-jit
 case $T in # targets with no -jit
-ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | gdb | upload | virtio)
+ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | gdb | upload | virtio | telnet)
     NAME=fuzz-$T
     SET=$T
     ;;

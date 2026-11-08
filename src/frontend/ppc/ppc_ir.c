@@ -1527,6 +1527,15 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         I d;
         T t;
 
+        /*
+         * Before a pc a block already begins at, or did: exit to it, which
+         * chains, rather than translate a second copy of the code there
+         * (emu_jit_entry_known).
+         */
+        if (count != 0u && emu_jit_entry_known(cur)) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, NOT, NOT, cur, 0u);
+            break;
+        }
         if (!fetch(c, cur, &insn, &len)) {
             break;
         }

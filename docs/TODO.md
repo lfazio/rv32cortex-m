@@ -46,8 +46,12 @@ measured at.
     whether an ISB or an
     interrupt raised by a store is honoured *in time* -- both set aside
     today ([fuzzing.md](fuzzing.md#devices-and-interrupts)); and
-    self-modifying code, which ARMv7-M detects exactly and nothing has
-    fuzzed. Interrupt controllers are mapped for every frontend, and
+    self-modifying code on RV32, G4MH and PowerPC, which architecturally
+    needs a sync instruction (FENCE.I, SYNCI, `isync`) between the store
+    and the fetch, so a random program would compare only where it
+    happened to write one -- ARMv7-M's, which the frontend detects
+    without one, is fuzzed (`CFG_SMC`: two defects). Interrupt
+    controllers are mapped for every frontend, and
     G4MH and PowerPC run two cores ([fuzzing.md](fuzzing.md#more-than-one-core)).
     No GPL emulator, not even as a reference.
   - **The IR**: done for the passes and the x86-64 lowering
@@ -70,16 +74,20 @@ measured at.
     instructions under the MMU, and a TLB change on one core retiring
     another's blocks; RV32 compressed code and anything but loads and
     stores, which `fuzz-rv32-vm` compares between the backends only;
-    G4MH's and ARMv7-M's MPUs on a second core; and ARMv7-M's exception
+    G4MH's MPUs on a second core -- fuzz-g4mh-mpu discards every block
+    before each step, because each step rewrites its code, so a second
+    core's MPU against blocks the first built needs a harness that
+    keeps them -- and ARMv7-M's exception
     frames, whose stack `fuzz-armv7m-mpu` keeps open to every access --
     the board's answers on stacking faults (`stk-*`, `unstk-*`) are
     held by `test_stacking_board_answers` instead.
   - **What arrives from outside the guest**: done for the ELF loader,
     the gdb stub, the upload paths and the virtio rings (`fuzz-elf`,
     `fuzz-gdb`, `fuzz-upload`, `fuzz-virtio`: sixteen defects,
-    [fuzzing.md](fuzzing.md#what-arrives-from-outside-the-guest)). Not
-    reached: lwIP's own TFTP packet parsing, the telnet console and
-    SLIP's framing, and virtio-9p, whose fuzzing would be the host's
+    [fuzzing.md](fuzzing.md#what-arrives-from-outside-the-guest)), and
+    the telnet console (`fuzz-telnet`: one). Not reached: TFTP's packet
+    parsing and SLIP's framing, both lwIP's own code and not this
+    tree's, and virtio-9p, whose fuzzing would be the host's
     filesystem's -- a scratch directory in a mount namespace would make
     it safe to try.
   - **ARMv7-M on the board**: feed a fuzzer's corpus to rawgen's
@@ -98,29 +106,18 @@ measured at.
       [performance.md](performance.md#driver-performance-the-passthrough-window)),
       ARMv7-M (5.5-13x) and G4MH (2.5-4.2x,
       [frontend/g4mh.md](frontend/g4mh.md#the-peripheral-window)).
-- [ ] **ARMv7-M's JIT charges a block that faults on its first
-      instruction one unit, its interpreter nothing.** The rest of what
-      a block's helpers spend is charged as the interpreters charge it
-      ([jit/README.md](jit/README.md#chaining-compaction-and-committed-code));
-      this is the dispatcher's floor, which keeps a fault that faults
-      again from spinning the loop. A loop whose head is a faulting load
-      retired 804 interpreted and 806 under the JIT. ARMv7-M could do
-      without the floor, since such a fault ends in lockup there, but no
-      frontend can yet say so.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **ARMv7-M's and PowerPC's CoreMark do not fit their 96 KB
-      buffers, and most of the overflow is copies.** At 200 iterations
-      ARMv7-M compacts 32 times, translates 2,596 blocks for 198
-      resident, and interprets 1,467,796 instructions at the 100 pcs it
-      gave up on; PowerPC compacts 40 times. Measured on the F746
-      ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)):
-      66% of ARMv7-M's translated bytes and 34% of PowerPC's are guest
-      code already in a resident block, mostly blocks that begin inside
-      another and run through its tail; no single IR operation is more
-      than 21%. The next thing to try is a block that stops before a pc
-      already known as an entry and exits to it, chained -- a question
-      every frontend's translator would ask the framework -- measured by
-      the same `overlap` line, the translation count and the time.
+- [ ] **Why the gated stop cost G4MH 13.7%.** A block stops before a
+      known entry in ARMv7-M's and PowerPC's translators, always
+      (`emu_jit_entry_known`), and both CoreMarks now fit their 96 KB:
+      42% and 35% faster on the F746. In RV32's and G4MH's, whose
+      CoreMarks fit, the stop only split blocks (+4.3%, +3.3%), so they
+      do not ask. Gated to blocks translated after an eviction, RV32
+      lost nothing, but G4MH ran 35% more block entries and 13.7%
+      slower with any of three gates, for a reason not found
+      ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
+      Finding it would let one rule serve all four, and a guest that
+      overflows RV32's or G4MH's buffer would want it.
 - [ ] **A firmware in WFI cannot be attached.** HCLK is gated in
       Sleep unless DBGMCU_CR.DBG_SLEEP is set, and then neither probe-rs
       nor OpenOCD reaches the core, so every live question is asked
@@ -249,13 +246,10 @@ From the last measurements in [linux.md](linux.md).
 ## ArmvX-m
 
 - [ ] Implement neon extensions if available
-- [ ] **The ARMv7-M frontend is a model of the F746's ITCM and DTCM**,
-      and the ARMv8-M frontend is a model of the N657's TCMs. The
-      frontends' `bind` functions are the only place where a guest can
-      see what the board has, so they must be extended to describe the
-      TCMs to their guests.
 - [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
-- [ ] **ARMv8-M in the armvX-m frontend.**
+- [ ] **ARMv8-M in the armvX-m frontend**, with the N657's own map as
+      ARMv7-M has the F746's (`emu_cpu_ops_t::guest_map`,
+      [memory.md](memory.md#armv7-m)): its TCMs, its flash, its SRAM.
 
 ## RH850 / G4MH
 

@@ -23,7 +23,7 @@
     .thumb
 
     .section .vectors, "a"
-    .word   0x80010000          /* initial SP: top of the guest RAM window */
+    .word   0x20010000          /* initial SP: the DTCM's top */
     .word   _start + 1          /* reset, with the Thumb bit the core needs */
 
     .text

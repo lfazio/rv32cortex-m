@@ -65,7 +65,10 @@ flash ops accept -- and ARMv7-M and PowerPC had none, so `load` wrote
 them with `X`. The stub now lists the bus's regions in address order --
 RAM as `ram`, ROM as `rom`, devices and the passthrough window as `ram`
 -- and the flash ops' window (`base`, `size()`: the board's arena) as
-`flash` with a block size, leaving out any region inside it. Served when
+`flash` with a block size, leaving out any region inside it. The base is
+the selected frontend's image base (`emu_guest_map()`): `0x0800_0000`
+for ARMv7-M, whose guests have the M7's map ([memory.md](memory.md#armv7-m)),
+`EMU_GUEST_ROM_BASE` for the rest. Served when
 the platform offers flash ops, which is the board: there are none on
 the host, so `test_gdb.c` is the map's only test.
 

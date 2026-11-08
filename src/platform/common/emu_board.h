@@ -55,6 +55,16 @@ struct emu_uart;
 bool emu_build_address_space(emu_bus_t *bus, struct emu_uart *uart);
 
 /*
+ * The guest map the address space is built to: the selected frontend's
+ * (emu_cpu_ops_t::guest_map), or emu_memmap.h's shared one. Selected
+ * once the frontend is known, before the first build; read by everything
+ * that places the image or RAM -- the session, uploads, gdb's flash.
+ * Until something selects one it is the shared map.
+ */
+void emu_guest_map_select(const emu_guest_map_t *map);
+const emu_guest_map_t *emu_guest_map(void);
+
+/*
  * Bring a guest up: address space, the frontend's devices, cleared RAM
  * and exit state, reset and boot. In emu_address_space.c. An upload
  * repeats all of it, which is why it is one function.

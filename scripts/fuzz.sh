@@ -55,14 +55,14 @@ T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio | all) ;;
+rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio | telnet | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm, elf, upload, gdb, virtio or all)"
+    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm, elf, upload, gdb, virtio, telnet or all)"
     exit 2
     ;;
 esac
 if [ "$T" = all ]; then
-    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu g4mh-mpu armv7m-mpu ppc-tlb rv32-vm elf upload gdb virtio; do
+    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu g4mh-mpu armv7m-mpu ppc-tlb rv32-vm elf upload gdb virtio telnet; do
         "$0" "$SECS" "$t" "$@" || exit 1
     done
     exit 0
@@ -79,7 +79,7 @@ SET=$T-jit
 # instruction stream: the guests that seed fuzz-elf are tens of KB.
 MAXLEN=1024
 case $T in
-ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio)
+ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio | telnet)
     BIN=fuzz-$T
     SET=$T
     ;;
@@ -183,9 +183,12 @@ asm() {
     LD_EMU=
     [ "$T" = rv32 ] && LD_EMU="-m elf32lriscv"
     [ "$T" = ppc ] && LD_EMU="-m elf32ppc"
+    # Where the target runs its program: ARMv7-M's is the M7's flash.
+    TEXT=0x20000000
+    [ "$T" = armv7m ] && TEXT=0x08000000
     # shellcheck disable=SC2086 # FLAGS and LD_EMU are word lists
     "$CC_SEED" $FLAGS -c -o "$2.o" "$1" &&
-        "${CC_SEED%gcc}ld" $LD_EMU -Ttext=0x20000000 -e 0x20000000 \
+        "${CC_SEED%gcc}ld" $LD_EMU -Ttext=$TEXT -e $TEXT \
             -o "$2.elf" "$2.o" &&
         "${CC_SEED%gcc}objcopy" -O binary -j .text "$2.elf" "$2"
 }
@@ -213,11 +216,13 @@ rv32)
     seeds
     ;;
 armv7m)
+    # And under CFG_SMC (bit 14): the program in RAM, rewritten as it runs.
+    SMC='\000\100\000\000'
     for g in coremark dhrystone crypto; do
         text "$B/guest/armv7m-$g.elf" "$B/corpus/a7-$g.text" &&
-            seed "$B/corpus/a7-$g.text" "$g" "$Z"
+            seed "$B/corpus/a7-$g.text" "$g" "$Z" "$SMC"
     done
-    seeds "$Z"
+    seeds "$Z" "$SMC"
     ;;
 ppc)
     # VLE, Book E, and VLE on two cores (CFG_CORE1, bit 11).

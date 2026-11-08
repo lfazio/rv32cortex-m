@@ -22,9 +22,16 @@
 
 ENTRY(_start)
 
+/*
+ * board.ld's map, which is the M7's -- and since ARMv7-M guests were given
+ * the part's own map (include/armv7m/armv7m_memmap.h), the emulator's
+ * too: the flash at 0x0800_0000, RAM from the DTCM at 0x2000_0000. 320 KiB
+ * as on the board, so that a case lays out the same on both sides; the
+ * emulator has more behind it.
+ */
 MEMORY {
-    ROM (rx)  : ORIGIN = 0x20000000, LENGTH = 1M
-    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 1M
+    ROM (rx)  : ORIGIN = 0x08000000, LENGTH = 1M
+    RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 320K
 }
 
 /* The host runner maps a megabyte (emu_args.c), and nothing after it. */

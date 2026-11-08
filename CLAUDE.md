@@ -94,7 +94,7 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|elf|upload|gdb|virtio|all]
+./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|elf|upload|gdb|virtio|telnet|all]
                                 # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; `ir`: random
                                 # IR blocks, before the passes against the
@@ -245,9 +245,12 @@ Each has cost more than one session, and every one recurred.
   fuzz-armv7m-mpu's stack in a region open to all meant no frame ever
   faulted, and three stacking behaviours were wrong. A status bit no
   test reads (STKERR) is the same blind spot: grep for its readers.
-- **The fuzzers find what the suites share a blind spot for**: eighteen
-  defects, eight in an interpreter, and sixteen in what arrives from
-  outside the guest (docs/fuzzing.md). A UBSan report in
+- **The fuzzers find what the suites share a blind spot for**: twenty
+  defects, eight in an interpreter, and seventeen in what arrives from
+  outside the guest (docs/fuzzing.md). Exclude a behaviour from a
+  fuzzer and nothing tests it: code in ROM kept self-modifying code out,
+  and ARMv7-M's JIT, given its program in RAM, ran a block's own
+  rewritten instructions stale at once. A UBSan report in
   the interpreter is a finding even when both backends agree.
 - **A reference that declines what it does not model checks only what
   is left -- and modelling more tests the checker.** `emu_ir_interp`
@@ -457,6 +460,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   LDM.MP wrote MPU entries directly and skipped the window's masks, the
   generation (a block outlived the execute permission it lost) and
   SVLOCK; its test asserted the unmasked words.
+- **A store into code is a translate-time read of the running block**:
+  the hit discarded ARMv7-M's translations and the block that wrote
+  went on with the old instructions; stopped there, the rerun must use
+  the encoding from before the store, or a store that rewrote itself
+  runs as what it wrote (`smc_stop`, `armv7m-jit/smc-*`).
 - **A value read once for a span is stale for every write inside it**:
   a translated IT block put back xPSR as the IT found it around each
   access, losing Q a member had set (`armv7m-jit/q-set-in-it-lost-at-access`).
@@ -500,6 +508,13 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **A capability query is worth nothing if the backend cannot lower the
   fallback**: Thumb-2 declined `EMU_IR_HELPER_TRAP`, so every honest "no"
   cost the whole block. Two hosts disagreeing completely is the tell.
+- **A buffer that does not hold its working set may be holding copies**:
+  two thirds of what ARMv7-M CoreMark translated at 96 KB, a third of
+  PowerPC's, was code already in a resident block. Stopping before a
+  known entry (`emu_jit_entry_known`) made both fit, 42% and 35%
+  faster -- and split blocks where the buffer already fitted, RV32 4.3%
+  and G4MH 3.3% slower, so only ARMv7-M and PowerPC ask. Never stop
+  before a pc given up on: it is interpreted and cannot be chained to.
 - **The code cache dominates JIT performance**: below the working set the
   JIT loses to the interpreter. A cyclic hot set larger than the buffer
   is no retention problem -- no order holds it -- and cost Whetstone 20x
@@ -974,6 +989,9 @@ to that file.
    guest with a vector table that names its cause
 
 Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
+A frontend whose guests are linked for a part's own addresses says so
+in `emu_cpu_ops_t::guest_map` (ARMv7-M's is the M7's, docs/memory.md);
+the platform builds from it, and the frontend still owns no memory.
 That is the property to check when the contract changes: build the firmware
 with `-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON` and see that it
 links -- and that the frontend does not allocate its own memory map

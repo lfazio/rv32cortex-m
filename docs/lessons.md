@@ -4528,6 +4528,52 @@ session, and every one of them recurred:
   changes, rerun every guest that asserts it, not only the suite that
   prompted the change.**
 
+- **A buffer that does not hold its working set may be holding
+  copies.** ARMv7-M and PowerPC CoreMark overflowed their 96 KB, and the
+  bytes per IR operation said nothing was to blame: LOAD was 21%. Asked
+  instead what each new block shared with the resident ones, the stats
+  build said two thirds of ARMv7-M's translated bytes and a third of
+  PowerPC's were code already in the buffer -- blocks entered part-way
+  through another and running on through its tail. Stopping before a
+  known entry made both fit: 2,596 translations to 577, 42% faster. And
+  the same stop cost RV32 4.3% and G4MH 3.3%, whose CoreMarks fitted and
+  only had their hot blocks split. Three gates were measured to keep one
+  rule for all four; each kept RV32 whole and cost G4MH 13.7%, for a
+  reason not found. **Ask what fills a cache before how big each thing
+  in it is, and measure a fix where the problem is absent as well as
+  where it is.**
+
+- **A fuzzer's safety rule is a test it never runs.** fuzz-armv7m-jit
+  put its program in ROM so that self-modifying code, which an
+  interpreter and a translator may legally disagree on, could not
+  arise -- and ARMv7-M's frontend claims to detect it exactly, which no
+  test had asked. Given the program in RAM, the first seed found the
+  block that made a store running its own rewritten instruction stale;
+  the fix -- stop the block and rerun the store -- then reran the store
+  from memory, and the corpus found a store that had rewritten itself
+  running as what it wrote. **When a claim is exactly the thing a
+  harness excludes, remove the exclusion for that claim.**
+
+- **Writing the reference finds what running it would.** fuzz-telnet's
+  reference was RFC 854, and the first line of its command state -- IAC
+  IAC is the data byte 255 -- disagreed with the console, which read it
+  as a command with an option byte and lost the next byte too, under a
+  comment saying everything but WILL/WONT/DO/DONT ends at once. The
+  first run found it in a second. A mutant it could not find -- the
+  output ring overwriting its oldest byte -- needed 4 KiB of output that
+  no input short enough to fuzz could spell; an operation writing one
+  byte many times found it in two seconds. **A mutant not found may be
+  out of reach, not unnoticed: give the fuzzer the word it lacks.**
+
+- **A regression input is about the map it was written for.** Moving
+  fuzz-armv7m-jit to the M7's addresses left eight of its nine saved
+  inputs doing what they did, and one -- a vector table built at the old
+  RAM base by an absolute `mov` -- retiring 6 instructions where it had
+  retired 145, still passing, no longer asking its question. Comparing
+  each input's retired count before and after the move is what showed
+  it, and one immediate rebased it. **Before moving a harness, record
+  what each saved input does, and compare after.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

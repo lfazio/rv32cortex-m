@@ -14,7 +14,9 @@ packets, an upload, a guest's virtio rings
 ([below](#what-arrives-from-outside-the-guest)), which found sixteen
 defects of their own, ten by running and six by being written. The
 first ten found
-eighteen defects in code that every suite passed --
+eighteen defects in code that every suite passed -- twenty since
+fuzz-armv7m-jit was given its program in writable RAM, and seventeen
+outside the guest since fuzz-telnet --
 eight of them in an interpreter, which is the reference -- and one of
 those turned out to be a whole class, which a board then answered
 encoding by encoding. Writing fuzz-g4mh-mpu's reference found seven
@@ -38,6 +40,7 @@ both backends shared it.
 | `fuzz-upload` | what a completed TFTP transfer or gdb `load` should run, byte for byte, in an arena that behaves as the F746's |
 | `fuzz-gdb` | the protocol's framing, and that a packet writes no more memory than it carries; the sanitizers for the rest |
 | `fuzz-virtio` | the sanitizers and the timeout: a device must neither reach past guest RAM nor follow a chain for ever |
+| `fuzz-telnet` | RFC 854 for what the guest reads from the console's byte stream; for what reaches the client, the bytes the guest wrote, in order, within the window |
 
 No GPL emulator is consulted, by any of them.
 
@@ -84,7 +87,18 @@ permits:
 
 - **Code is ROM**, so a store into it faults on both. Self-modifying
   code without a synchronising instruction may legally differ between
-  an interpreter and a translator.
+  an interpreter and a translator. **Except ARMv7-M's under
+  `CFG_SMC`** (bit 14 of its configuration word, so half of all
+  inputs): the program in RAM that is writable and executable, a copy on
+  each side, r0-r5 pointing into it, compared as memory. ARMv7-M has no
+  instruction that announces a rewrite and the frontend detects one
+  (`smc_*`); the architecture would let the store's next instructions
+  run stale until an ISB, but the interpreter never does, and the JIT is
+  held to it. Asked, it found the block that made such a store running
+  its own rewritten instructions stale, and then the rerun that stops it
+  fetching a store that had rewritten itself. Every device seed and
+  guest text runs under it too, and `seeds/armv7m-jit/smc-in-block.S`
+  puts the store two instructions ahead of what it rewrites.
 - **Data is not executable**, so a jump into it faults rather than
   running bytes the program wrote.
 - **A run that does not finish is not compared.** A JIT stops only
@@ -851,8 +865,24 @@ Clean runs after the fixes: `fuzz-elf` 400,000 inputs; `fuzz-upload`
 byte); `fuzz-gdb` 2,000,000 (11 million packets); `fuzz-virtio` 133,648
 in 150 s (286,253 buffers posted).
 
-Not reached: lwIP's TFTP packet parsing, which is lwIP's (only the
-callbacks are ours); the telnet console and SLIP framing; virtio-9p;
+**`fuzz-telnet`** (`fuzz_telnet.c`) is the telnet console
+(`net_telnet.c`, #included, lwIP stood in for by `lwip-stub/`) driven by
+a script of what lwIP and the guest do: a client connecting and leaving,
+bytes arriving as a pbuf chain cut anywhere, the guest reading and
+writing its UART, polls and acknowledgements with a window of the
+input's choosing, and a write of one byte many times over, which is
+what fills the 4 KiB output ring -- no input short enough to fuzz could
+spell it out, and the mutant that lets the ring overwrite its oldest
+byte was found only once it existed. The reference reads RFC 854 for
+the receive side, with the console's documented simplification for
+subnegotiation, and holds the send side to the bytes the guest wrote,
+options first, in order, never past the window. Writing it found that
+IAC IAC, the data byte 255, was read as a command taking an option
+byte; four mutants -- that, an option byte delivered as data, a write
+past the window, the ring's overflow -- are each found in seconds.
+
+Not reached: TFTP's packet parsing and SLIP's framing, which are lwIP's
+(only the TFTP callbacks are ours); virtio-9p;
 and two clients at once on the gdb stub, which the transport does not
 allow. Found writing it, and fixed since: a reload rebuilt the bus
 without the virtio devices ([host/README.md](host/README.md)).
@@ -878,6 +908,9 @@ Each fix was confirmed by reverting it with its regression in place.
 | an LDSR lowering the interrupt ceiling (PLMR, ISPR, INTCFG) never made the core look again, so the channel it admitted stayed pending; the manual says the next instruction sees it. **Found by writing a seed, not by a divergence**: both backends run LDSR in the interpreter | the G4MH core, `g4mh_sr_write` | `test_ldsr_lowers_ceiling` |
 | a store whose bus error is imprecise, run by the interpreter fallback inside a block, let the block go on: the JIT took the BusFault 68 instructions after the interpreter. Found the hour the imprecise model was written, before it was committed -- the store helper had been taught to stop its block and the fallback had not | `armv7m_ir.c`, `a7_ir_step` | `armv7m-jit/imprecise-store-in-a-stepped-insn` |
 | **Q set inside an IT block was lost at the next load or store in it**: the translator put xPSR back, as the IT instruction had found it, around every access in the block, so a multiply-accumulate's saturation vanished -- from the live xPSR and from the frame a fault stacked. Found during the dictionary sessions (below), in an input that touches no device | `armv7m_ir.c`, `it_access` | the `itblock` guest's `IT-Q-across-access` (on the F746 it fails with the old translator), `armv7m-jit/q-set-in-it-lost-at-access` |
+| ARMv7-M under the JIT ran a block's own later instructions stale after a store into them -- the hit discarded the translations, but the block that made the store went on | `armv7m_ir.c` (`smc_stop`) | `armv7m-jit/smc-store-ahead-in-block`, seed `smc-in-block.S` |
+| the rerun that stops such a block fetched the store again, and a store that had rewritten itself ran as what it wrote (`str r1, [r0]` as `movs r0, #0`) | `armv7m_ir.c` (`finish_imprecise`) | `armv7m-jit/smc-store-rewrites-itself` |
+| the telnet console read IAC IAC as a command with an option byte: the data byte 255 was lost, and the byte after it | `net_telnet.c` | `telnet/iac-iac-is-data` |
 
 And inputs held for the permitted differences above:
 `rv32-jit/flw-fault-fs-dirtier` (no longer a difference: FS is exact), `rv32-jit/trap-first-in-block-run-count`
@@ -1089,5 +1122,7 @@ interrupt made deliverable by a store, and ARMv7-M's CCR and MPU before
 the ISB, are set aside rather than compared, so ISB's synchronisation
 is untested here; a third core, and PowerPC's cores waking each
 other, which its INTCs cannot do; runs longer than 20,000
-instructions; and self-modifying code. RV32 does not yet have Spike as a
-third side. The other targets are in [TODO.md](TODO.md).
+instructions; and self-modifying code on RV32, G4MH and PowerPC, which
+needs a sync instruction between the store and the fetch that a random
+program seldom writes (ARMv7-M's is fuzzed, above). RV32 does not yet
+have Spike as a third side. The other targets are in [TODO.md](TODO.md).

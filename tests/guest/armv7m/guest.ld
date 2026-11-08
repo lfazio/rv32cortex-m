@@ -22,9 +22,14 @@
 
 ENTRY(_start)
 
+/*
+ * The M7's map, as the F746 has it (include/armv7m/armv7m_memmap.h): the
+ * image at the flash, RAM from the DTCM on. It was the shared map's
+ * 0x2000_0000 and 0x8000_0000 until ARMv7-M guests were given the part's.
+ */
 MEMORY {
-    ROM (rx)  : ORIGIN = 0x20000000, LENGTH = 1M
-    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 1M
+    ROM (rx)  : ORIGIN = 0x08000000, LENGTH = 1M
+    RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 1M
 }
 
 SECTIONS {

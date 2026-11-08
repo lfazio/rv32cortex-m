@@ -164,10 +164,12 @@ void emu_args_usage(void)
     emu_console_printf("\n");
 
     emu_console_printf("  --load ADDR          load address for a flat "
-                       "binary (default 0x%08x,\n",
+                       "binary (default: the flash window,\n"
+                       "                       0x%08x, or 0x08000000 for "
+                       "armv7m); one linked for RAM\n",
                        (unsigned)EMU_GUEST_ROM_BASE);
-    emu_console_printf("                       the flash window); one linked "
-                       "for RAM wants 0x%08x\n",
+    emu_console_printf("                       wants 0x%08x (0x20000000 for "
+                       "armv7m)\n",
                        (unsigned)EMU_GUEST_RAM_BASE);
     emu_console_printf("  --ram BYTES          guest RAM size (default %u)\n",
                        (unsigned)DEFAULT_RAM_SIZE);
@@ -193,7 +195,7 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
 {
     *status = 0;
     memset(opt, 0, sizeof(*opt));
-    opt->load_addr = EMU_GUEST_ROM_BASE;
+    opt->load_addr = 0u; /* the frontend's image base: emu_session */
     opt->ram_size = DEFAULT_RAM_SIZE;
     opt->fb_width = DEFAULT_FB_WIDTH;
     opt->fb_height = DEFAULT_FB_HEIGHT;

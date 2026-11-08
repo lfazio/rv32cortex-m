@@ -19,6 +19,7 @@
 #include "armv7m/armv7m_cpu.h"
 #include "armv7m/armv7m_disasm.h"
 #include "armv7m/armv7m_ir.h"
+#include "armv7m/armv7m_memmap.h"
 
 #include "emu/emu_cpu.h"
 #include "emu/emu_gdb.h"
@@ -67,6 +68,7 @@ void armv7m_smc_hit(armv7m_cpu_t *c, uint32_t addr)
     c->smc_span = 0u;
     c->smc_wide = false;
     c->smc_watch = 0u;
+    c->smc_stop = true; /* for a store from inside a block */
     memset(c->smc_bits, 0, sizeof(c->smc_bits));
     if (armv7m_backend->invalidate != NULL) {
         armv7m_backend->invalidate((emu_cpu_t *)c, addr, 4u);
@@ -120,13 +122,14 @@ static void armv7m_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
      * of zero**.
      *
      * On real silicon the vector table is at address 0 because that is
-     * where the part maps its flash. Here a guest is linked at
-     * EMU_GUEST_ROM_BASE and there is nothing at 0, so taking the
-     * architectural default would read a table of zeroes, fall back to
-     * the loader's entry point, and begin executing at the *table* --
-     * whose first word is a stack pointer. That decodes as whatever the
-     * address happens to look like, which is the silent-wrong-answer
-     * shape rather than a fault.
+     * where the part aliases its flash at boot. Here a guest is linked at
+     * the flash's own address (armv7m_memmap.h) and 0 is the ITCM, empty
+     * at reset, so taking the architectural default would read a table of
+     * zeroes, fall back to the loader's entry point, and begin executing
+     * at the *table* -- whose first word is a stack pointer. That decodes
+     * as whatever the address happens to look like, which is the
+     * silent-wrong-answer shape rather than a fault. An F746 program sets
+     * VTOR to its flash in SystemInit for the same reason.
      */
     c->vtor = reset_pc;
 }
@@ -556,6 +559,14 @@ static void armv7m_report(emu_print_fn out, void *ctx)
 }
 #endif
 
+/* The M7's map, as the F746 has it: armv7m_memmap.h. */
+static const emu_guest_map_t k_armv7m_map = {
+    .rom_base = ARMV7M_GUEST_FLASH_BASE,
+    .ram_base = ARMV7M_GUEST_RAM_BASE,
+    .tcm_base = ARMV7M_GUEST_ITCM_BASE,
+    .tcm_size = ARMV7M_GUEST_ITCM_SIZE,
+};
+
 const emu_cpu_ops_t armv7m_frontend = {
     .name = "armv7m",
     .desc = "ARM Cortex-M (ARMv7E-M, Thumb-2)",
@@ -565,6 +576,7 @@ const emu_cpu_ops_t armv7m_frontend = {
      * recorded in the entry point's low bit and in attributes, not in
      * e_machine. */
     .elf_machine = 40u,
+    .guest_map = &k_armv7m_map,
 
     .instance = armv7m_instance,
     .init = armv7m_ops_init,

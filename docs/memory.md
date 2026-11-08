@@ -167,6 +167,42 @@ Measured, F746, `-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON`:
 | before | 3.44 MiB + firmware | no — `cannot move location counter backwards` |
 | after | 320 KiB total, 192 of it CRAM + LRAM | yes |
 
+## ARMv7-M
+
+**The M7's own map, as the F746 has it** (RM0385 2.2,
+`include/armv7m/armv7m_memmap.h`), so that a program linked for the
+part runs as linked:
+
+```
+0x0000_0000  ITCM   16 KiB, executable RAM, out of the front of guest RAM
+0x0800_0000  FLASH  the image, read-only, executed in place
+0x2000_0000  RAM    the DTCM's 64 KiB, then the SRAMs, contiguous as on
+                    the part, for as much as the platform gives
+0x4000_0000  pass   the ARM's own peripherals, identity-mapped
+0xE000_0000  SCS    NVIC, SysTick, SCB, MPU: the frontend's
+```
+
+It is the one frontend with a map of its own: `emu_cpu_ops_t::guest_map`
+(`emu_guest_map_t`, in `emu_memmap.h`) says where the image, RAM and a
+TCM go, and the platform builds the address space, places the image,
+takes uploads and tells gdb its flash from it (`emu_guest_map()`). NULL
+is the shared map, which the other three keep. The ITCM is the first
+16 KiB of the RAM the platform gives, mapped at zero and cleared with
+every guest, so the frontend owns no memory -- the rule below -- and the
+guest's RAM is what is left, from `0x2000_0000`.
+
+Until 2026-11-08 an ARMv7-M guest had the shared map: its image at
+`0x2000_0000`, where the M7 has its DTCM, and its RAM at `0x8000_0000`,
+where it has external memory. Moving it moved every ARMv7-M link script
+(`tests/guest/armv7m/guest.ld`, `tests/armv7m-diff/emu.ld`, which is now
+`board.ld`'s map with the board's 320 KiB) and fuzz-armv7m-jit's
+machine; `guest-armv7m-tcm-both` runs code from the ITCM, rewrites it
+and runs it again, and writes the DTCM's edges.
+
+The TCMs are RAM like any other here -- the emulator has no wait states
+to model -- and on the F746 the guest's are host SRAM: the host's own
+ITCM and DTCM hold the emulator's loop and its translated code.
+
 ## The rule
 
 When adding a frontend, ask what its regions are *backed by* before

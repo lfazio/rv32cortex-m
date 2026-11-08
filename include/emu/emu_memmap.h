@@ -49,6 +49,41 @@
 
 #define EMU_GUEST_RAM_BASE 0x80000000u
 
+/*
+ * A frontend's own map, for one whose guests are linked for a part's
+ * fixed addresses rather than for the shared ones above. ARMv7-M's is the
+ * M7's -- the image where the F746's flash is, an ITCM at zero, RAM from
+ * the DTCM on -- so that a program for the part runs as linked
+ * (armv7m/armv7m_memmap.h). emu_cpu_ops_t::guest_map; NULL is the shared
+ * map, which every other frontend uses.
+ */
+#ifndef __ASSEMBLER__ /* guests' start-up includes this file */
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct emu_guest_map {
+    uint32_t rom_base; /* the image, served read-only             */
+    uint32_t ram_base; /* guest RAM: the platform's, less the TCM */
+    /*
+     * Executable RAM at a fixed address -- a core's ITCM -- taken from the
+     * front of the RAM the platform gives, so that a frontend owns no
+     * memory of its own (docs/memory.md). tcm_size 0: none.
+     */
+    uint32_t tcm_base;
+    uint32_t tcm_size;
+} emu_guest_map_t;
+
+/* `map`, or the shared one when it is NULL. */
+static inline const emu_guest_map_t *
+emu_guest_map_or_shared(const emu_guest_map_t *map)
+{
+    static const emu_guest_map_t shared = {EMU_GUEST_ROM_BASE,
+                                           EMU_GUEST_RAM_BASE, 0u, 0u};
+
+    return (map != NULL) ? map : &shared;
+}
+#endif /* __ASSEMBLER__ */
+
 /* Where a guest starts executing unless the platform says otherwise. */
 /*
  * Reset into flash, not RAM.

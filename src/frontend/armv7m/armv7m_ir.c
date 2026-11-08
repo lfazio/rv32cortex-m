@@ -67,6 +67,7 @@
 #include "armv7m/armv7m_backend.h"
 #include "armv7m/armv7m_cpu.h"
 #include "armv7m/armv7m_decode.h"
+#include "armv7m/armv7m_memmap.h"
 
 #include "emu/emu_bus.h"
 #include "emu/emu_ir.h"
@@ -205,23 +206,56 @@ EMU_HOT_TEXT static void a7_count(emu_cpu_t *cpu, uint32_t n);
  * counted here, and the block stops with the pc after it; the dispatcher
  * then takes what is pending. A store to a device register in the same
  * instruction as one into nothing is written twice; nothing else is.
+ *
+ * **And a store into code** (`smc_stop`): the hit discarded every
+ * translation, but this block is running and may hold the instructions
+ * the store rewrote. Stopped here, the next instruction is fetched again,
+ * which is what the interpreter does. The architecture would allow stale
+ * ones until an ISB; the interpreter never runs one, and the JIT is held
+ * to it: fuzz-armv7m-jit under CFG_SMC found r1 = 5 against 0 for a
+ * movs two instructions on (seeds/armv7m-jit/smc-in-block.S). The rerun
+ * writes the same bytes again, which hit nothing: the hit emptied the
+ * map. **It reruns the instruction as it was before the store**, `enc`
+ * from the helper, because a store into code can rewrite itself: `str
+ * r1, [r0]` with r0 at its own address read back as `movs r0, #0` and
+ * ran that instead (fuzz-armv7m-jit). An imprecise store's bytes cannot
+ * change, and are fetched here.
  */
-static EMU_NOINLINE uint32_t finish_imprecise(armv7m_cpu_t *c)
+static bool fetch_insn(armv7m_cpu_t *c, uint32_t pc, uint32_t *enc)
 {
-    const uint32_t pc = c->r[R_PC];
     uint16_t w0 = 0u;
     uint16_t w1 = 0u;
+
+    if (!armv7m_fetch_probe(c, pc, &w0) ||
+        (armv7m_is_32bit(w0) && !armv7m_fetch_probe(c, pc + 2u, &w1))) {
+        return false; /* not reachable: the block was translated from it */
+    }
+    *enc = (uint32_t)w0 | ((uint32_t)w1 << 16);
+    return true;
+}
+
+static EMU_NOINLINE uint32_t finish_imprecise(armv7m_cpu_t *c,
+                                              const uint32_t *enc)
+{
+    const uint32_t pc = c->r[R_PC];
+    uint32_t insn = 0u;
     bool ok;
 
     c->imprecise = false;
-    if (!armv7m_fetch_probe(c, pc, &w0) ||
-        (armv7m_is_32bit(w0) && !armv7m_fetch_probe(c, pc + 2u, &w1))) {
-        return 0u; /* not reachable: the block was translated from it */
+    c->smc_stop = false;
+    if (enc != NULL) {
+        insn = *enc;
+    } else if (!fetch_insn(c, pc, &insn)) {
+        return 0u;
     }
+    const uint16_t w0 = (uint16_t)insn;
+    const uint16_t w1 = (uint16_t)(insn >> 16);
+
     armv7m_flags_pack(c);
     ok = armv7m_step_insn(c, w0, w1, pc);
     armv7m_flags_unpack(c);
     c->imprecise = false;
+    c->smc_stop = false;
     c->jit_ctx = armv7m_jit_ctx(c);
     c->irq_maybe = true;
     if (ok) {
@@ -241,10 +275,19 @@ static uint32_t a7_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     if ((spec & A7_MEM_ALIGNED) != 0u && (addr & (size - 1u)) != 0u) {
         x = ARMV7M_X_UNALIGNED;
     } else {
+        uint32_t enc = 0u;
+        bool have = false;
+
+        /* A store that can land in code can rewrite itself: its encoding
+         * first, for finish_imprecise. The test armv7m_wrote makes. */
+        if (EMU_UNLIKELY((addr - c->smc_lo) < c->smc_span)) {
+            have = fetch_insn(c, c->r[R_PC], &enc);
+        }
         c->imprecise = false;
+        c->smc_stop = false;
         x = armv7m_store_u(c, addr, size, val);
-        if (EMU_UNLIKELY(c->imprecise)) {
-            return finish_imprecise(c);
+        if (EMU_UNLIKELY(c->imprecise | c->smc_stop)) {
+            return finish_imprecise(c, have ? &enc : NULL);
         }
     }
     if (EMU_UNLIKELY(x != ARMV7M_X_NONE)) {
@@ -270,15 +313,18 @@ static uint32_t a7_ir_step(emu_cpu_t *cpu, uint32_t insn, uint32_t pc)
 
     armv7m_flags_pack(c);
     c->imprecise = false;
+    c->smc_stop = false;
     ok = armv7m_step_insn(c, (uint16_t)insn, (uint16_t)(insn >> 16), pc);
     armv7m_flags_unpack(c);
     c->jit_ctx = armv7m_jit_ctx(c);
     c->irq_maybe = true;
-    if (EMU_UNLIKELY(ok && c->imprecise)) {
-        /* A store in it was imprecise: it retired, so count it, and stop
-         * the block for the dispatcher to take the BusFault before the
-         * next instruction -- see finish_imprecise. */
+    if (EMU_UNLIKELY(ok && (c->imprecise | c->smc_stop))) {
+        /* A store in it was imprecise, or rewrote code: it retired, so
+         * count it, and stop the block for the dispatcher -- to take the
+         * BusFault before the next instruction, or fetch the next one
+         * again -- see finish_imprecise. */
         c->imprecise = false;
+        c->smc_stop = false;
         a7_count(cpu, 1u);
         c->ir_charged++;
         return 1u;
@@ -2173,7 +2219,7 @@ uint32_t armv7m_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     b->has_fast = a7_fast_mem(c, &b->fast);
     /* Under exactly the RAM window's conditions, and once armed. */
     b->has_rom = b->has_fast && c->rom_armed &&
-                 emu_ir_rom_window(c->bus, EMU_GUEST_ROM_BASE, &b->rom);
+                 emu_ir_rom_window(c->bus, ARMV7M_GUEST_FLASH_BASE, &b->rom);
     b->has_pt = b->has_fast && c->pt_armed &&
                 emu_ir_pt_window(c->bus, &b->pt);
 
@@ -2197,6 +2243,15 @@ uint32_t armv7m_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         I d;
         T t;
 
+        /*
+         * Before a pc a block already begins at, or did: exit to it, which
+         * chains, rather than translate a second copy of the code there
+         * (emu_jit_entry_known).
+         */
+        if (count != 0u && emu_jit_entry_known(cur)) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, NOT, NOT, cur, 0u);
+            break;
+        }
         if (!fetch(c, cur, &w0, &w1, &len)) {
             break;
         }
@@ -2425,6 +2480,8 @@ const emu_ir_frontend_t armv7m_ir_frontend = {
     .wake = NULL,
     .take_irq = a7_take_irq,
     .irq_not_retired = true, /* as armv7m_run: an entry retires nothing */
+    /* Nor a fault, and one that faults again locks up: see the field. */
+    .fault_not_charged = true,
     .count = a7_count,
     .after_interp = a7_after_interp,
     .code_bytes = EMU_HOST_JIT_CODE_BYTES,

@@ -257,6 +257,26 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-armv7m-stepover-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # ARMv7-M charges a fault nothing, and ends in lockup when one cannot
+    # be taken (emu_jit_ops_t::fault_not_charged): both, here.
+    # The M7's map (armv7m_memmap.h): code copied into the ITCM and run
+    # there, rewritten and run again, and the DTCM's edges.
+    if(TARGET guest-armv7m-tcm)
+        add_test(NAME guest-armv7m-tcm-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-tcm.bin"
+                         TCM-OK --frontend armv7m --max-insn 100000)
+        set_tests_properties(guest-armv7m-tcm-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
+    if(TARGET guest-armv7m-faulthead)
+        add_test(NAME guest-armv7m-faulthead-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-faulthead.bin"
+                         FAULTHEAD-OK --frontend armv7m --max-insn 100000)
+        set_tests_properties(guest-armv7m-faulthead-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(EMU_GUEST_ARCH_G4MH)
         add_test(NAME guest-g4mh-mmiobench-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

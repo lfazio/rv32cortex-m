@@ -25,9 +25,15 @@
  *   - lr starts at that BKPT as well, so `bx lr` ends a program that
  *     reads like a function.
  *   - Code is ROM and data RAM is not executable, for the reasons the
- *     RV32 target gives: self-modifying code is the one thing an
- *     interpreter and a translator may legally disagree on, and a jump
- *     into data must fault rather than run what the program wrote.
+ *     RV32 target gives: a jump into data must fault rather than run
+ *     what the program wrote. **Unless the configuration says
+ *     CFG_SMC**: then the program is in RAM that is writable and
+ *     executable, a copy on each side, r0-r5 point into it, and it is
+ *     compared as memory. ARMv7-M has no instruction that announces
+ *     self-modifying code, and the frontend detects a store into a page
+ *     translated code came from (`smc_*`); the architecture would let a
+ *     store's next instructions run stale until an ISB, but the
+ *     interpreter never does, and the JIT is held to it.
  *   - The System Control Space is mapped, through fz_dev_t, so a
  *     program can enable, prioritise and pend interrupts, move VTOR,
  *     set CCR and the MPU. Three kinds of write are allowed to come out
@@ -60,12 +66,18 @@
 
 #include "fuzz_harness.h"
 
-#define CODE_BASE 0x20000000u
+/*
+ * The M7's map, as an ARMv7-M guest has it (armv7m/armv7m_memmap.h): code
+ * at the flash, where the JIT's image window looks, and RAM from the
+ * DTCM's address. It was the shared map's 0x2000_0000 and 0x8000_0000
+ * until ARMv7-M guests were given the part's.
+ */
+#define CODE_BASE 0x08000000u
 #define CODE_SIZE 0x1000u /* the program, then BKPTs */
-#define VEC_BASE 0x20010000u
+#define VEC_BASE 0x08010000u
 #define VEC_STUB 0x400u /* offset of the BKPT every vector names */
 #define VEC_SIZE 0x800u
-#define RAM_BASE 0x80000000u
+#define RAM_BASE 0x20000000u
 #define RAM_SIZE 0x4000u
 #define REG_BASE (RAM_BASE + 0x2000u) /* r0-r12 start pointing here */
 #define MSP_INIT (RAM_BASE + 0x1000u)
@@ -89,6 +101,7 @@
 #define CFG_FAULTS                                                             \
     (1u << 13) /* SHCSR: MemManage, BusFault and
                                   UsageFault enabled, not escalated */
+#define CFG_SMC (1u << 14) /* the program in RAM, written as it runs */
 
 #define CCR_UNALIGN_TRP (1u << 3)
 #define CCR_DIV_0_TRP (1u << 4)
@@ -102,6 +115,7 @@ typedef struct side {
     uint32_t scs_gen; /* jit_gen before the write in progress */
     emu_bus_t bus;
     uint8_t ram[RAM_SIZE];
+    uint8_t code[CODE_SIZE]; /* CFG_SMC: this side's copy of the program */
 } side_t;
 
 static uint8_t g_code[CODE_SIZE];
@@ -214,10 +228,24 @@ static void build(side_t *sd)
     };
     armv7m_cpu_t *c = &sd->cpu;
 
+    const emu_region_t code = {
+        .base = CODE_BASE,
+        .size = CODE_SIZE,
+        .host = sd->code,
+        .name = "code",
+        .kind = EMU_MEM_RAM,
+        .perm = EMU_PERM_RWX, /* CFG_SMC: see the header */
+        .widths = EMU_WANY,
+    };
+    const bool smc = (g_cfg & CFG_SMC) != 0u;
+
     emu_bus_init(&sd->bus);
     memcpy(sd->ram, g_ram_init, RAM_SIZE);
+    memcpy(sd->code, g_code, CODE_SIZE);
     if (!emu_bus_add(&sd->bus, &ram) ||
-        !emu_bus_add_rom(&sd->bus, "code", CODE_BASE, g_code, CODE_SIZE) ||
+        !(smc ? emu_bus_add(&sd->bus, &code)
+              : emu_bus_add_rom(&sd->bus, "code", CODE_BASE, g_code,
+                                CODE_SIZE)) ||
         !emu_bus_add_rom(&sd->bus, "vectors", VEC_BASE, g_vec, VEC_SIZE) ||
         !emu_bus_add_mmio(&sd->bus, "scs", ARMV7M_SCS_BASE, ARMV7M_SCS_SIZE,
                           &fz_dev_ops, &sd->scs_dev)) {
@@ -242,6 +270,12 @@ static void build(side_t *sd)
 
     for (uint32_t i = 0; i < 13u; i++) {
         c->r[i] = REG_BASE + i * 32u;
+    }
+    /* Where a store rewrites the program: its own first 192 bytes. */
+    if (smc) {
+        for (uint32_t i = 0; i < 6u; i++) {
+            c->r[i] = CODE_BASE + i * 32u;
+        }
     }
     c->r[ARMV7M_LR] = (VEC_BASE + VEC_STUB) | 1u;
     c->r[ARMV7M_PC] = CODE_BASE;
@@ -372,6 +406,9 @@ static void compare(void)
     SAME(faulted);
     SAME(lockup);
     fz_diff_mem(&g_target, "ram", g_interp.ram, g_jit.ram, RAM_SIZE);
+    if (g_cfg & CFG_SMC) {
+        fz_diff_mem(&g_target, "code", g_interp.code, g_jit.code, CODE_SIZE);
+    }
     fz_verdict(&g_target, &g_interp.run, &g_jit.run);
     /* Stopped in PendSV's, SysTick's or an external interrupt's handler. */
     if ((g_interp.cpu.xpsr & 0x1FFu) >= ARMV7M_EXC_PENDSV) {

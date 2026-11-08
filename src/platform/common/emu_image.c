@@ -268,7 +268,7 @@ static bool gdb_flash_erase(uint32_t addr, uint32_t len)
 {
     (void)len;
 
-    if (addr < EMU_GUEST_ROM_BASE) {
+    if (addr < emu_guest_map()->rom_base) {
         return false;
     }
     /*
@@ -317,10 +317,11 @@ static bool gf_flush(void)
 static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
 {
     const uint8_t *const src = (const uint8_t *)data;
-    const uint32_t off = addr - EMU_GUEST_ROM_BASE;
+    const uint32_t rom = emu_guest_map()->rom_base;
+    const uint32_t off = addr - rom;
     uint32_t pos = 0u;
 
-    if (g_up_owner != UP_GDB || addr < EMU_GUEST_ROM_BASE ||
+    if (g_up_owner != UP_GDB || addr < rom ||
         !fits_arena((uint64_t)off + len)) {
         return false;
     }
@@ -391,10 +392,17 @@ static bool gdb_flash_done(void)
     return true;
 }
 
-const emu_gdb_flash_ops_t emu_image_gdb_flash = {
+/* The base is the guest map's, so it is filled in when asked for. */
+static emu_gdb_flash_ops_t g_gdb_flash = {
     gdb_flash_erase,    gdb_flash_write,        gdb_flash_done,
     EMU_GUEST_ROM_BASE, board_flash_arena_size,
 };
+
+const emu_gdb_flash_ops_t *emu_image_gdb_flash(void)
+{
+    g_gdb_flash.base = emu_guest_map()->rom_base;
+    return &g_gdb_flash;
+}
 
 /*
  * Take a freshly uploaded image, if one is waiting. True when the guest

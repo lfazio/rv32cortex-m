@@ -193,6 +193,12 @@ typedef struct emu_jit_stats {
      */
     uint32_t declined_cached;
     /*
+     * Blocks a translator ended before a pc that a block begins at, or
+     * did until compaction evicted it (emu_jit_entry_known), instead of
+     * translating a second copy of the code there.
+     */
+    uint32_t entry_stops;
+    /*
      * Instructions interpreted because their pc had not yet missed the
      * block table often enough to be worth a translation -- see
      * emu_jit_set_hot_threshold. Part of interp_fallbacks, and printed
@@ -497,6 +503,18 @@ typedef struct emu_jit_ops {
      * -- the two backends must agree on what a run retired. */
     bool (*take_irq)(emu_cpu_t *cpu);
     bool irq_not_retired;
+    /*
+     * Whether this frontend's interpreter charges a fault nothing, and a
+     * fault that faults again ends of its own accord, so that a block
+     * which retired and spent nothing may be charged nothing. Otherwise
+     * the dispatcher charges such a block one: RV32's, PowerPC's and
+     * G4MH's interpreters charge an exception one, and a handler that
+     * faults at its own vector would spin the loop uncharged. ARMv7-M's
+     * charges none, and a fault that cannot be taken locks up -- a loop
+     * whose head was a faulting load retired 804 interpreted and 806
+     * under the JIT, one for each time the dispatcher entered it.
+     */
+    bool fault_not_charged;
 
     /* Add `n` to whatever counts retired instructions and cycles. */
     void (*count)(emu_cpu_t *cpu, uint32_t n);
@@ -794,6 +812,21 @@ static inline bool emu_jit_overflowed(void)
 {
     return emu_jit_overflow;
 }
+
+/*
+ * For a translator, during a translation: whether a block already begins
+ * at `pc` in the context being translated, or did until compaction
+ * evicted it. A translator stops before such a pc, after its first
+ * instruction, and exits to it -- a constant exit, which chains -- rather
+ * than translating a second copy of the code there. Measured on the
+ * F746 at 96 KB, 66% of what ARMv7-M CoreMark translated and 34% of
+ * PowerPC's was guest code already in a resident block, mostly blocks
+ * entered part-way through another and running on through its tail
+ * (docs/backend/thumb2.md). A block translated before an entry inside
+ * it was seen still holds that code; the next translation of it, after
+ * an eviction, stops there. False outside a translation.
+ */
+bool emu_jit_entry_known(uint32_t pc);
 
 /* --- the dispatch loop -------------------------------------------- */
 

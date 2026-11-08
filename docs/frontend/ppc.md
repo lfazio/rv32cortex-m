@@ -1017,8 +1017,14 @@ layouts (the wall clock 2.49 s to 2.40 and 2.43), interpreted 247.39 to
 ## The JIT
 
 `--jit` selects `ppc_backend_jit`, built from `ppc_ir.c` through the
-shared IR pipeline ([../jit/README.md](../jit/README.md)). Three
-outcomes per instruction, counted in the run's report:
+shared IR pipeline ([../jit/README.md](../jit/README.md)). **A block
+stops before a pc another block begins at, or did until it was evicted**
+(`emu_jit_entry_known`): a third of what CoreMark translated at 96 KB
+was a copy of code already in the buffer, and with the stop CoreMark x200
+translates 412 blocks where it translated 4,780, compacts twice where it
+compacted 40, and runs 35% faster on the F746
+([../backend/thumb2.md](../backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
+Three outcomes per instruction, counted in the run's report:
 
 ```
 -- ppc translator (per instruction translated) --

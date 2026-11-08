@@ -214,15 +214,36 @@ static void telnet_drop(void)
  * subnegotiation to a server offering nothing, and the cost of being
  * wrong is a few stray bytes on a console, not a protocol error.
  */
+/*
+ * A full receive ring means the guest is not reading its UART. Drop
+ * rather than block: the run loop is what would have to block, and
+ * stalling the emulator because a console byte has nowhere to go would
+ * turn a cosmetic problem into a hang.
+ */
+static void rx_put(uint8_t c)
+{
+    if ((g_rx_head - g_rx_tail) < RX_SIZE) {
+        g_rx[g_rx_head++ & RX_MASK] = c;
+    }
+}
+
 static void telnet_rx_byte(uint8_t c)
 {
     switch (g_iac_state) {
     case IAC_CMD:
         /*
-         * WILL/WONT/DO/DONT each carry an option byte; everything else
-         * is a two-byte command that ends here.
+         * IAC IAC is the data byte 255 (RFC 854). WILL/WONT/DO/DONT each
+         * carry an option byte, and so does SB here; everything else is a
+         * two-byte command that ends here. The 255 used to count as one
+         * carrying an option, so it was lost and so was the byte after
+         * it (fuzz-telnet).
          */
-        g_iac_state = (c >= TELNET_SB && c != TELNET_SE) ? IAC_OPT : IAC_NONE;
+        if (c == TELNET_IAC) {
+            g_iac_state = IAC_NONE;
+            rx_put(c);
+            return;
+        }
+        g_iac_state = (c >= TELNET_SB) ? IAC_OPT : IAC_NONE;
         return;
 
     case IAC_OPT:
@@ -237,16 +258,7 @@ static void telnet_rx_byte(uint8_t c)
         g_iac_state = IAC_CMD;
         return;
     }
-
-    /*
-     * A full receive ring means the guest is not reading its UART. Drop
-     * rather than block: the run loop is what would have to block, and
-     * stalling the emulator because a console byte has nowhere to go
-     * would turn a cosmetic problem into a hang.
-     */
-    if ((g_rx_head - g_rx_tail) < RX_SIZE) {
-        g_rx[g_rx_head++ & RX_MASK] = c;
-    }
+    rx_put(c);
 }
 
 static err_t telnet_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,

@@ -106,6 +106,13 @@ uintptr_t board_flash_arena_base(void)
     return (uintptr_t)g_arena;
 }
 
+/* emu_address_space.c's, which this target does not build: the shared
+ * map, whose image base is where the arena has always been reached. */
+const emu_guest_map_t *emu_guest_map(void)
+{
+    return emu_guest_map_or_shared(NULL);
+}
+
 uint32_t board_flash_arena_size(void)
 {
     return ARENA_SIZE;
@@ -379,7 +386,7 @@ static uint32_t gdb_addr(in_t *in)
 static void event(in_t *in)
 {
     static uint8_t buf[1100];
-    const emu_gdb_flash_ops_t *const f = &emu_image_gdb_flash;
+    const emu_gdb_flash_ops_t *const f = emu_image_gdb_flash();
     const uint32_t op = take(in, 1u) % 11u;
 
     g_st.events++;

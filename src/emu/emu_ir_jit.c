@@ -479,6 +479,7 @@ static bool ir_diff_ref(emu_cpu_t *cpu, uint32_t *retired,
         prefix##_ops_live = prefix##_jit_ops;                                                           \
         prefix##_ops_live.interp = (fe).interp;                                                         \
         prefix##_ops_live.irq_not_retired = (fe).irq_not_retired;                                       \
+        prefix##_ops_live.fault_not_charged = (fe).fault_not_charged;                                   \
         prefix##_ops_live.state_bytes = (fe).diff_state_bytes;                                          \
         if (emu_jit_init((fe).code_bytes)) {                                                            \
             return true;                                                                                \

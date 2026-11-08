@@ -79,6 +79,10 @@ if(EMU_GUEST_ARCH_ARMV7M)
         add_armv7m_guest(mmiobench SOURCES start.S mmiobench.c)
         # An imprecise store's BusFault, 100 times: same-on-both-backends.py.
         add_armv7m_guest(stepover SOURCES stepover.S)
+        # A fault at a block's first instruction, then a lockup.
+        add_armv7m_guest(faulthead SOURCES faulthead.S)
+        # The M7's map: code in the ITCM, the DTCM and the SRAM above it.
+        add_armv7m_guest(tcm SOURCES tcm.S)
 
         #
         # **The Thumb-2 encoder, as a guest, executing what it emits.**

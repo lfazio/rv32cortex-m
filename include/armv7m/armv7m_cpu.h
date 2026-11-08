@@ -395,6 +395,14 @@ typedef struct armv7m_cpu {
      */
     bool imprecise;
     /*
+     * Set by a store that landed in a page translated code came from
+     * (armv7m_smc_hit), for the JIT's store helpers: the block making it
+     * may hold the instructions it rewrote, so it stops after the store,
+     * as for an imprecise bus error, and the next instruction is fetched
+     * again. Cleared by the helper before each store. Cold.
+     */
+    bool smc_stop;
+    /*
      * Instructions a JIT helper retired after its block stopped before
      * them -- a store whose bus error was imprecise (armv7m_ir.c's
      * finish_imprecise, a7_ir_step) -- which the dispatcher charges to

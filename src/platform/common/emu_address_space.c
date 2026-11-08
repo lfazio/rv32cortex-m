@@ -8,7 +8,8 @@
  *   guest-ro   the image's read-only half, served from where it already
  *              lives -- host flash, typically -- so it costs no RAM
  *   ram        guest RAM, starting where that half ends
- *   rom        the whole image again, read-only, at EMU_GUEST_ROM_BASE.
+ *   rom        the whole image again, read-only, at the map's rom_base --
+ *              EMU_GUEST_ROM_BASE unless the frontend has its own map.
  *              This is where the guest's own .data initialiser lives:
  *              start.S copies from __data_lma, which points here
  *   uart0      the NS16550 the guest prints through
@@ -41,6 +42,18 @@
 
 #include <string.h>
 
+static const emu_guest_map_t *g_map;
+
+void emu_guest_map_select(const emu_guest_map_t *map)
+{
+    g_map = emu_guest_map_or_shared(map);
+}
+
+const emu_guest_map_t *emu_guest_map(void)
+{
+    return emu_guest_map_or_shared(g_map);
+}
+
 /*
  * Where the guest starts. EMU_GUEST_RESET_PC for a flat binary, and the
  * ELF's own e_entry for an ELF -- set while the address space is built,
@@ -48,15 +61,31 @@
  */
 bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 {
+    const emu_guest_map_t *const map = emu_guest_map();
+
     emu_bus_init(bus);
+
+    /*
+     * A TCM first, out of the front of the platform's RAM, and cleared:
+     * the session clears the RAM it boots with, which is what is left.
+     * Rebuilt for every guest, so every guest gets it zeroed.
+     */
+    if (map->tcm_size != 0u) {
+        if (board_ram_size <= map->tcm_size ||
+            !emu_bus_add_ram(bus, "tcm", map->tcm_base, board_ram,
+                             map->tcm_size)) {
+            return false;
+        }
+        memset(board_ram, 0, map->tcm_size);
+    }
 
     /*
      * Guest RAM first, because an ELF's segments are placed against it:
      * emu_elf_map has to be able to ask whether a segment lands inside
      * this window, and it can only copy one that does.
      */
-    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE, board_ram,
-                         board_ram_size)) {
+    if (!emu_bus_add_ram(bus, "ram", map->ram_base, board_ram + map->tcm_size,
+                         board_ram_size - map->tcm_size)) {
         return false;
     }
 
@@ -88,7 +117,7 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * ELF would overlap the segments it is about to map.
      */
     if (!emu_elf_is_elf(board_img, board_img_size) &&
-        !emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE, board_img,
+        !emu_bus_add_rom(bus, "flash", map->rom_base, board_img,
                          board_img_size)) {
         return false;
     }

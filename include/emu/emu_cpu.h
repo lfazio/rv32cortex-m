@@ -45,6 +45,7 @@
 #include "emu_types.h"
 #include "emu_bus.h"
 #include "emu_cache.h"
+#include "emu_memmap.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -349,6 +350,17 @@ typedef struct emu_cpu_ops {
      * prevent.
      */
     void (*set_image)(const void *base, uint32_t size);
+
+    /*
+     * Where this frontend's guests expect their image, their RAM and any
+     * RAM a core has at a fixed address, or NULL for the shared map of
+     * emu_memmap.h. ARMv7-M's is the M7's: the image at the F746's flash,
+     * a 16 KiB ITCM at zero, RAM from the DTCM's 0x2000_0000 on -- what a
+     * program for the part is linked for. The platform builds the address
+     * space from it (emu_guest_map(), platform/common) and boots with its
+     * RAM; the TCM comes out of the RAM the platform gives.
+     */
+    const emu_guest_map_t *guest_map;
 
     /*
      * How gdb should see this architecture's registers, or NULL for a

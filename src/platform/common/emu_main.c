@@ -108,11 +108,14 @@ static void session_fail(const char *msg, const char *detail)
  * at start-up. */
 static void cfg_refresh(void)
 {
+    const emu_guest_map_t *const map = emu_guest_map();
+
     g_cfg.image = board_img;
     g_cfg.image_size = board_img_size;
-    g_cfg.ram_base = EMU_GUEST_RAM_BASE;
-    g_cfg.ram_size = board_ram_size;
-    g_cfg.ram_host = board_ram;
+    /* Less the TCM the address space takes from the front of it. */
+    g_cfg.ram_base = map->ram_base;
+    g_cfg.ram_size = board_ram_size - map->tcm_size;
+    g_cfg.ram_host = board_ram + map->tcm_size;
 }
 
 /*
@@ -503,6 +506,7 @@ static int emu_main_body(int argc, char **argv)
     if (g_cfg.ops == NULL) {
         return 2;
     }
+    emu_guest_map_select(g_cfg.ops->guest_map);
 
     emu_console_printf("\n\nemu: %s on %s @ %u MHz\n", g_cfg.ops->desc,
                        board_core_name,

@@ -479,10 +479,43 @@ are not the lever there: LOAD is 21% of ARMv7-M's at 39 bytes each,
 STORE 9% at 48, and no operation is a third. ARMv7-M's blocks are long
 (16.5 guest instructions on average, 516 bytes) and entered at many
 points -- loop heads, return addresses -- each entry a new block to its
-end. What would remove it is a block that stops where a known entry
-begins and exits to it, chained, which every frontend's translator
-would have to ask the framework about; it has not been tried
-([TODO.md](../TODO.md)).
+end.
+
+**So a block stops before a known entry** (`emu_jit_entry_known`): the
+translator asks, before every instruction after its first, whether a
+block begins at that pc in this context, or did until compaction
+evicted it, and if so ends with a constant exit to it, which chains.
+Not before a pc the thrash detector has given up on, which is
+interpreted to its next jump and cannot be chained to. A block
+translated before an entry inside it was seen keeps its copy; the next
+translation of it stops there. On the F746 at 96 KB, the same stats
+builds:
+
+| CoreMark | translations | compactions | host cycles / insn | wall |
+|---|---|---|---|---|
+| ARMv7-M x200 | 2,596 to **577** | 32 to **2** | 30.78 to **17.62** | 7.82 to 4.46 s |
+| PowerPC x40 | 1,659 to **412** | 14 to **2** | 32.37 to **20.94** | 1.79 to 1.16 s |
+| PowerPC x200 | 4,780 to **412** | 40 to **2** | 34.40 to **19.10** | 9.51 to 5.29 s |
+
+Both now fit. **But the stop splits a block a hot path ran straight
+through**, and where the buffer already holds the working set that is
+all it does. Four rules, against a worktree at dfb2362, CoreMark under
+the JIT on the F746 at two `.text` offsets, the retired count and CRC
+the same in every pair:
+
+| stop before a known entry | RV32 (64 KB) | ARMv7-M | PowerPC | G4MH (64 KB) |
+|---|---|---|---|---|
+| always | +4.3% | **-42%** | **-35%** | +3.3% |
+| only translating a pc evicted before | -0.4% | -17% | -34% | +13.7% |
+| ...or anything once a pc was given up on | -0.4% | -18% | -34% | +13.7% |
+| ...and never before a pc given up on | -0.4% | -38% | -34% | +13.7% |
+
+RV32's and G4MH's CoreMarks fit their buffers, and the gate cost G4MH
+35% more block entries for a reason not found ([TODO.md](../TODO.md)).
+**So ARMv7-M's and PowerPC's translators stop, always, and RV32's and
+G4MH's do not** -- the best of what was measured, and a choice made on
+CoreMark: a guest that overflows RV32's or G4MH's buffer would want the
+stop too.
 
 The scan adds a field to each block entry, which the 72-byte assertion
 allows in a stats build only: the build measures bytes, not time.

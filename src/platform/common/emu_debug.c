@@ -177,7 +177,7 @@ void emu_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops)
          * emu_image's own ops answer accordingly; there is nothing to
          * decide here.
          */
-        flash = &emu_image_gdb_flash;
+        flash = emu_image_gdb_flash();
 
         net_gdb_args_t a = {&sys->core[0], gt, flash, false};
 

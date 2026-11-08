@@ -1187,6 +1187,8 @@ typedef struct emu_ir_frontend {
      * under the JIT against 11,144,363 interpreted -- a SysTick each.
      */
     bool irq_not_retired;
+    /* As emu_jit_ops_t::fault_not_charged; copied with irq_not_retired. */
+    bool fault_not_charged;
     void (*count)(emu_cpu_t *cpu, uint32_t n);
     void (*after_interp)(emu_cpu_t *cpu);
 

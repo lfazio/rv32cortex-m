@@ -5,6 +5,7 @@
  */
 
 #include "emu_session.h"
+#include "emu_board.h"
 #include "emu_console.h"
 
 #include "board.h"
@@ -58,15 +59,15 @@ static void fail(const emu_session_cfg_t *cfg, const char *msg,
  *                  also write to their own image, which the read-only
  *                  window would fault.
  *
- *   flat, in place nothing to do: the window at EMU_GUEST_ROM_BASE *is*
+ *   flat, in place nothing to do: the window at the map's rom_base *is*
  *                  this buffer, so the bytes are already where the guest
  *                  will fetch them.
  */
 static bool place_image(emu_system_t *sys, const emu_session_cfg_t *cfg,
                         uint32_t *entry_out)
 {
-    const uint32_t load =
-        (cfg->load_addr != 0u) ? cfg->load_addr : EMU_GUEST_ROM_BASE;
+    const uint32_t rom = emu_guest_map()->rom_base;
+    const uint32_t load = (cfg->load_addr != 0u) ? cfg->load_addr : rom;
     uint32_t entry = cfg->entry;
     emu_bus_t *const bus = sys->core[0].bus;
 
@@ -74,7 +75,7 @@ static bool place_image(emu_system_t *sys, const emu_session_cfg_t *cfg,
         uint32_t e = 0u;
         const char *err;
 
-        if (cfg->ram_size != 0u && load == EMU_GUEST_ROM_BASE) {
+        if (cfg->ram_size != 0u && load == rom) {
             err = emu_elf_map(bus, cfg->image, cfg->image_size,
                               cfg->ops->elf_machine, cfg->ops->elf_machine_alt,
                               cfg->ram_base, cfg->ram_size, &e, NULL);
@@ -90,7 +91,7 @@ static bool place_image(emu_system_t *sys, const emu_session_cfg_t *cfg,
         if (entry == 0u) {
             entry = e;
         }
-    } else if (load != EMU_GUEST_ROM_BASE) {
+    } else if (load != rom) {
         if (!emu_bus_load(bus, load, cfg->image, cfg->image_size)) {
             fail(cfg, "image does not fit at the load address", NULL);
             return false;

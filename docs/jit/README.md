@@ -189,12 +189,29 @@ faulting loads 98 and 100 short (`test_block_charged_its_helpers`,
 where its helpers enter an exception, or finish an imprecise store;
 interrupts are not counted there.
 
-What is left is ARMv7-M's floor: its interpreter charges a precise
-fault nothing, and a block that faults on its first instruction is
-charged one. A loop whose head is a faulting load retired 804
+**And a block that retired nothing is charged one** -- the trap moved
+the pc, and charging nothing would let a handler that faults at its own
+vector spin the loop -- unless the frontend says nothing is safe
+(`emu_jit_ops_t::fault_not_charged`). ARMv7-M does: its interpreter
+charges a precise fault nothing, and a fault that cannot be taken locks
+up. With the floor, a loop whose head is a faulting load retired 804
 interpreted and 806 under the JIT, once for each time the dispatcher,
-not a chain, entered that block. Charging nothing would end the loop
-only because a fault that faults again on ARMv7-M ends in lockup.
+not a chain, entered that block; without it, 785 on both, and the run
+that then points VTOR at a HardFault vector no region covers still
+ends, in lockup (`guest-armv7m-faulthead-both`). Six minutes of
+fuzz-armv7m-jit found nothing it lets spin.
+
+**A translator may stop before a known entry** (`emu_jit_entry_known`):
+during a translation, true for a pc a block begins at in the context
+being translated, or did until compaction evicted it -- not one given up
+on, which cannot be chained to. ARMv7-M's and PowerPC's translators ask
+before every instruction after the first, and end the block with a
+constant exit to it; a third to two thirds of what their CoreMarks
+translated at 96 KB had been a copy of code already in the buffer, and
+both now fit, 42% and 35% faster on the F746. RV32's and G4MH's do not
+ask: their CoreMarks fit, and the stop only split blocks there
+([backend/thumb2.md](../backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
+Counted as `entry stops` on the `blk entr` line.
 
 When the buffer fills, `compact()` keeps the blocks that have been
 looked up more than once, slides them down, and drops the rest. **A

@@ -27,7 +27,7 @@
     .thumb
 
     .section .vectors, "a"
-    .word   0x80010000          /* initial SP: top of the guest RAM window */
+    .word   0x20010000          /* initial SP: the DTCM's top */
     .word   _start + 1
     .word   fault + 1           /* NMI */
     .word   fault + 1           /* HardFault */
@@ -37,7 +37,7 @@
     .global _start
 _start:
     ldr     r4, =0x60000000     /* no region */
-    ldr     r5, =0x80001000     /* a RAM word, one for each loop */
+    ldr     r5, =0x20001000     /* a RAM word, one for each loop */
     movs    r7, #100
     movs    r6, #0
 loop:

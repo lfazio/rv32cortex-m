@@ -332,6 +332,28 @@ set_tests_properties(fuzz-upload-smoke PROPERTIES
     PASS_REGULAR_EXPRESSION
         "[1-9][0-9]* completed, [1-9][0-9]* failed, [1-9][0-9]* abandoned.*gdb [1-9][0-9]* erases, [1-9][0-9]* writes.*[1-9][0-9]* done; [1-9][0-9]* reloads, [1-9][0-9]* checked byte for byte"
     LABELS fuzz)
+#
+# fuzz-telnet: the console's byte stream through net_telnet.c's
+# callbacks, against RFC 854 (fuzz_telnet.c); lwIP stood in for as for
+# fuzz-upload.
+#
+add_executable(fuzz-telnet fuzz_telnet.c)
+target_link_options(fuzz-telnet PRIVATE -fsanitize=fuzzer)
+target_compile_options(fuzz-telnet PRIVATE -Wall -Wextra -Wundef)
+target_include_directories(fuzz-telnet PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/lwip-stub
+    ${PROJECT_SOURCE_DIR}/src/net)
+add_test(NAME fuzz-telnet-smoke
+         COMMAND $<TARGET_FILE:fuzz-telnet> -runs=50000 -seed=1 -max_len=2048
+                 -timeout=10)
+set_tests_properties(fuzz-telnet-smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION "Done 50000 runs" LABELS fuzz)
+add_test(NAME fuzz-telnet-regressions
+         COMMAND $<TARGET_FILE:fuzz-telnet> -runs=0 -timeout=10
+                 ${CMAKE_CURRENT_SOURCE_DIR}/regressions/telnet)
+set_tests_properties(fuzz-telnet-regressions PROPERTIES
+    PASS_REGULAR_EXPRESSION "Done [0-9]+ runs" LABELS fuzz)
+
 file(GLOB _upload_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/upload/*)
 if(_upload_saved)
     add_test(NAME fuzz-upload-regressions

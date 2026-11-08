@@ -1317,6 +1317,41 @@ static void note_overlap(const jit_block_t *nb, uint32_t self)
 }
 #endif
 
+/* The translation in progress, for emu_jit_entry_known. */
+static EMU_PER_CORE bool g_xlat_active;
+static EMU_PER_CORE uint64_t g_xlat_context;
+
+bool emu_jit_entry_known(uint32_t pc)
+{
+    if (!g_xlat_active) {
+        return false;
+    }
+    /* Not lookup(): a translator asking must not count as a hit. */
+    for (int32_t i = g_hash[pc_hash(pc, g_xlat_context)]; i >= 0;
+         i = g_blocks[i].next) {
+        if (g_blocks[i].guest_pc == pc &&
+            g_blocks[i].context == g_xlat_context) {
+            g_stats.entry_stops++;
+            return true;
+        }
+    }
+    /*
+     * A miss counted or an eviction noted: both were entered. Not a pc
+     * given up on, which is interpreted to its next jump and cannot be
+     * chained to: a block stopped before one sent the code it would have
+     * run translated through the dispatcher and the interpreter instead
+     * -- G4MH CoreMark, 35% more block entries and 13.7% slower on the
+     * F746. A declined one would stop the block by itself.
+     */
+    const uint32_t v = seen_of(pc, g_xlat_context);
+
+    if (v != 0u && v != JIT_SEEN_DECLINED && v != JIT_SEEN_THRASH) {
+        g_stats.entry_stops++;
+        return true;
+    }
+    return false;
+}
+
 static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
                                    const emu_jit_ops_t *ops, uint64_t context,
                                    bool *overflowed)
@@ -1334,7 +1369,10 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
 #endif
     memset(&emu_jit_layout, 0, sizeof(emu_jit_layout));
 
+    g_xlat_active = true;
+    g_xlat_context = context;
     const uint32_t insns = ops->translate(cpu, pc);
+    g_xlat_active = false;
 #ifdef EMU_JIT_PROFILE
     g_stats.cyc_translate += prof_now() - t0;
 #endif
@@ -1930,17 +1968,18 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
          * and what the block's helpers spent beside it
          * (emu_jit_hot_t::charged).
          *
-         * And never nothing. A block that trapped on its first
-         * instruction retires nothing, yet it made progress -- the trap
-         * moved pc into a handler. Charging the budget nothing for that
-         * spins this loop forever while the guest runs on underneath,
-         * which no instruction cap can break because the cap is the
-         * caller's.
+         * And never nothing, unless the frontend says nothing is safe
+         * (emu_jit_ops_t::fault_not_charged). A block that trapped on its
+         * first instruction retires nothing, yet it made progress -- the
+         * trap moved pc into a handler. Where a handler can fault at its
+         * own vector for ever, charging the budget nothing for that spins
+         * this loop while the guest runs on underneath, which no
+         * instruction cap can break because the cap is the caller's.
          */
         const uint32_t charge =
             n + ((hot.charged != NULL) ? *hot.charged - charged0 : 0u);
 
-        done += (charge != 0u) ? charge : 1u;
+        done += (charge != 0u || ops->fault_not_charged) ? charge : 1u;
 
         if (n != 0u && ops->count != NULL) {
             ops->count(cpu, n);

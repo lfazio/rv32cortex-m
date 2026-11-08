@@ -49,7 +49,7 @@ bool emu_image_take_pending(void);
  * debugger attached and in control, which is exactly the position from
  * which a guest bug is worth looking at.
  */
-extern const emu_gdb_flash_ops_t emu_image_gdb_flash;
+const emu_gdb_flash_ops_t *emu_image_gdb_flash(void);
 
 #ifdef __cplusplus
 }
