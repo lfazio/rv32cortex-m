@@ -168,6 +168,20 @@ typedef struct emu_jit_stats {
      * nobody read.
      */
     uint32_t links;
+    /*
+     * Constant exits emitted unchained because the block had used its
+     * EMU_JIT_MAX_CHAIN slots: each returns to the dispatcher every time
+     * it is taken. Counted per translation, by the backends
+     * (emu_jit_note_no_chain_slot).
+     */
+    uint32_t no_chain_slot;
+    /*
+     * Returns through an unlinked exit (EMU_JIT_RET_UNLINKED) after
+     * which nothing was linked, the target being in reach: what the
+     * search costs for nothing. A count near the links is the search
+     * failing to find the exit.
+     */
+    uint32_t link_missed;
     uint32_t code_used;
     uint32_t code_size;
     /*
@@ -376,10 +390,32 @@ typedef struct emu_jit_hot {
  * because a chained exit has already torn its own down and must not do
  * it twice.
  *
+ * `unlinked`, counted from `tail`, is where an exit not yet linked
+ * jumps, and where the framework points one back when it unlinks it: an
+ * epilogue like `tail`'s that also sets EMU_JIT_RET_UNLINKED in the
+ * count it returns.
+ *
  * A backend that fills nothing gets the dispatcher, which is always
  * correct.
  */
 #define EMU_JIT_MAX_CHAIN 2u
+
+/*
+ * Set in a block's return value when it left by a chained exit still
+ * unlinked; the count is the rest.
+ *
+ * **The only return after which the dispatcher links anything**, and
+ * so the only one that pays for looking. The dispatcher knows the block
+ * it called, not the one that returned: once the first has chained into
+ * others, the exit taken may be a later block's, and finding it means a
+ * search through the chain (link_exit). Run on every return, that
+ * search doubled RV32's and ARMv7-M's CoreMark times on the F746 --
+ * about 550 host cycles a dispatch, where nearly every return is a
+ * computed exit or a chain that met EMU_JIT_LOOP_CAP and has nothing to
+ * link. A return through an unlinked exit happens once or twice an
+ * edge.
+ */
+#define EMU_JIT_RET_UNLINKED 0x80000000u
 
 typedef struct emu_jit_link {
     uint32_t target_pc; /* guest address this exit goes to  */
@@ -393,6 +429,11 @@ typedef struct emu_jit_layout {
     emu_jit_link_t link[EMU_JIT_MAX_CHAIN];
     uint8_t nlink;
     bool chainable;
+    /*
+     * Bytes past `tail`, where the padding was: sixteen bits keep a
+     * block's entry at 72 bytes, and the epilogue between is a few.
+     */
+    uint16_t unlinked;
 } emu_jit_layout_t;
 
 /*
@@ -628,6 +669,9 @@ void emu_jit_invalidate_range(uint32_t lo, uint32_t hi,
 
 void emu_jit_get_stats(emu_jit_stats_t *out);
 
+/* For a backend, while translating: a constant exit found no chain slot. */
+void emu_jit_note_no_chain_slot(void);
+
 /*
  * Translate only what is hot: a pc missing the block table is
  * interpreted, one instruction at a time, until it has missed this many
@@ -824,7 +868,10 @@ static inline bool emu_jit_overflowed(void)
  * entered part-way through another and running on through its tail
  * (docs/backend/thumb2.md). A block translated before an entry inside
  * it was seen still holds that code; the next translation of it, after
- * an eviction, stops there. False outside a translation.
+ * an eviction, stops there. All four translators ask: where the buffer
+ * holds the working set the stop only splits blocks (RV32 and G4MH
+ * CoreMark at 64 KB, about 4%), and where it does not it is worth 9-45%.
+ * False outside a translation.
  */
 bool emu_jit_entry_known(uint32_t pc);
 

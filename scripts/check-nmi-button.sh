@@ -22,8 +22,8 @@
 # Not an ARMv7-M guest for the second: the frontend runs WFI as a NOP,
 # which the architecture permits, so such a guest never parks.
 #
-# The firmware keeps HCLK on in Sleep in this build (DBG_SLEEP), or the
-# probe could not reach a core waiting in WFI.
+# The firmware keeps HCLK on in Sleep (DBG_SLEEP, every F746 build), or
+# the probe could not reach a core waiting in WFI.
 #
 # Exit 0 if both did, 1 if not, 2 if a build or the probe failed.
 # EMU_PROBE names the probe when more than one is attached.

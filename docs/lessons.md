@@ -4574,6 +4574,74 @@ session, and every one of them recurred:
   it, and one immediate rebased it. **Before moving a harness, record
   what each saved input does, and compare after.**
 
+- **The dispatcher knows the block it called, not the one that
+  returned.** `link_exit` pointed an exit of the block the dispatcher
+  had entered at the block about to run -- right while blocks ran
+  alone, wrong once the first chained into others, where the exit taken
+  was a later block's and was never linked: it went through the
+  dispatcher on every pass. A stop gated to blocks translated after an
+  eviction cut a G4MH loop into three blocks, each dispatched 92,000
+  times, and that cost -- 35% more block entries, 13.7% -- was put down
+  to the gate for a whole round. The fix, a search through the chain
+  for the exit, passed every host suite and doubled RV32's and ARMv7-M's
+  CoreMark times on the F746, about 550 host cycles a dispatch: nearly
+  every return is a computed exit or a chain that met the loop cap, and
+  each searched eight blocks for nothing. Searching only after a return
+  through an unlinked exit -- the block sets a bit in the count it
+  returns, six bytes on Thumb-2 -- made all four frontends 3.6-8.0%
+  faster with the stop rules unchanged, and the search ran once or
+  twice an edge (`missed 1` in RV32's run). **A cost the dispatcher pays
+  per return is paid by every block: make the one return that can use
+  the work say so, and measure the fix on the board before trusting a
+  host suite that passed it.**
+
+- **A rule chosen where its problem is absent is chosen on nothing.**
+  The stop before a known entry was left out of RV32's and G4MH's
+  translators because their CoreMarks fit 64 KB, where it only split
+  blocks, about 4%. At 32 KB -- the size the board's JIT validation runs
+  at -- it was worth 18.8% to RV32's CoreMark x650, 8.9% to G4MH's and
+  45% to RV32's Whetstone, and the linking fix without it was 12.5% and
+  5.7% slower than no fix at all, which no 64 KB row could show. With
+  it, every row measured was at least as fast as before, so all four
+  frontends stop. **Measure a cache policy where the cache is short as
+  well as where it is not, and choose on both.**
+
+- **A register only a power-on reset clears is set by whoever wrote it
+  last -- the probe included.** The question was what DBGMCU_CR.DBG_SLEEP
+  changes, so that every F746 firmware could set it. With it set, CYCCNT
+  ran at the core's clock through a WFI, read through the probe. The
+  control -- the commit before, which never sets it -- was reachable
+  parked too, CYCCNT at 216.3 MHz, as if the bit did nothing. It was set
+  all along: DBGMCU_CR survives every reset but power-on, a firmware
+  that cleared it at boot found 0x7 there, and found 0x7 again after the
+  probe's reads, because probe-rs sets DBG_SLEEP, DBG_STOP and
+  DBG_STANDBY whenever it attaches. The answer came from inside the
+  firmware, with no probe in the loop: in the park loop, a quarter of a
+  second of WFI by SysTick's millisecond counted 53,999,852 cycles with
+  the bit set; cleared, SysTick still woke the core 250 times, CYCCNT
+  counted 43,558, only the time awake, and the probe could not connect
+  -- the failure the TODO had described, and lwIP's 6% once. Even that
+  was read wrong first: a one-second version printed its second line
+  more than a second after the run's end, which board-run.py no longer
+  captures, and read as "SysTick never woke it". (A version in
+  board_hw_init printed nothing at all, for a reason not looked into.)
+  The check build now clears the register at boot, as a power-on would,
+  and a firmware without its line fails `check-wfi-attach.sh`. **When
+  the instrument can write the thing
+  under test, measure from where it cannot -- and a control that passes
+  where it should fail is the instrument first.**
+
+- **A capture that ends on a result must ask whose result it is.**
+  board-run.py stops a second after `emu-result`. The flash target
+  starts the firmware, and the script resets it again under
+  `--connect-under-reset`; RV32 CoreMark, 1.75 s, finished the first run
+  in between, with its banner already cleared from the line -- so the
+  capture held that run's whole result, then the real run's banner, and
+  ended a second later: "did not finish", a row lost from an A/B. The
+  capture now ends only on a result after the last banner, and drops
+  what came before it. **A run started twice is two runs: key the end
+  on the start.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

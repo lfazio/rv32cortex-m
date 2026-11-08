@@ -928,8 +928,11 @@ static void emit_frame_release(uint32_t frame)
  */
 static bool chain_exit(uint32_t target_pc)
 {
-    if (!emu_jit_layout.chainable ||
-        emu_jit_layout.nlink >= EMU_JIT_MAX_CHAIN) {
+    if (!emu_jit_layout.chainable) {
+        return false;
+    }
+    if (emu_jit_layout.nlink >= EMU_JIT_MAX_CHAIN) {
+        emu_jit_note_no_chain_slot();
         return false;
     }
     emit_frame_release(g_frame);
@@ -951,7 +954,7 @@ static bool chain_exit(uint32_t target_pc)
         (uint32_t)(site - g_block_start);
     emu_jit_layout.link[emu_jit_layout.nlink].linked = false;
     emu_jit_layout.nlink++;
-    note_exit_nf(site, false);
+    /* Aimed at the unlinked epilogue once it exists: see emu_ir_lower. */
     return true;
 }
 
@@ -2459,6 +2462,13 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_rom = b->rom;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
+    /*
+     * The links are this function's output: a caller that lowers block
+     * after block without the framework's reset (test_ir, fuzz-ir) must
+     * not have the last block's sites patched into this one.
+     */
+    emu_jit_layout.nlink = 0u;
+    emu_jit_layout.unlinked = 0u;
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;
@@ -2671,6 +2681,26 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
     t2_mov(T2_R0, T2_CNT);
     t2_pop(list | T2_LIST_PC);
+
+    /*
+     * Where an exit not yet linked goes: the same return, with
+     * EMU_JIT_RET_UNLINKED in the count, so that the dispatcher looks for
+     * an exit to link after this return and no other.
+     */
+    if (emu_jit_layout.nlink != 0u) {
+        uint8_t *const tail = g_block_start + emu_jit_layout.tail;
+        uint8_t *const unlinked = emu_jit_here();
+        uint16_t flag;
+
+        (void)t2_expand_imm(EMU_JIT_RET_UNLINKED, &flag);
+        t2_orr_imm(T2_CNT, T2_CNT, flag);
+        patch_branch_n(t2_b_forward_n(), tail, false); /* two bytes back */
+        emu_jit_layout.unlinked = (uint16_t)(unlinked - tail);
+        for (uint32_t k = 0; k < emu_jit_layout.nlink; k++) {
+            patch_branch(g_block_start + emu_jit_layout.link[k].site,
+                         unlinked, false);
+        }
+    }
     pool_emit();
 
     return !emu_jit_overflowed() && !g_exits_lost;

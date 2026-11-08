@@ -16,6 +16,10 @@ explain.
                                                 # the interpreter
     tests/armv7m-diff/run.py --suite raw --count 0 --regs 300 --from x.elf
                                                 # sp and pc in register fields
+    tests/armv7m-diff/run.py --suite raw --count 0 --resume \
+        --from-fuzz build/fuzz/corpus/armv7m-jit  # a fuzzer's encodings,
+                                                # past any case the board
+                                                # does not survive
 
 `--rerun` is what makes the board's answers a regression suite: once a
 directory holds `emu.bin` and `board.out`, any later emulator -- or the
@@ -261,6 +265,56 @@ def compare(out, emu_text, board_text, limit):
     return bad == 0 and missing == 0 and len(brd) > 0
 
 
+def resume_raw(a, gen, extra):
+    """The raw suite, carried on past a case after which the board said
+    nothing more.
+
+    An encoding the M7 executes may move sp or pc where the harness cannot
+    come back from, and it then prints nothing for that case or any after
+    it: the fuzz corpus's first board run stopped at 1,557 of 4,000. That
+    case is an answer -- the board did *something* the harness did not
+    survive -- so it is recorded, and the cases after it are run again
+    from a new image, until every case has run or been the one that
+    stopped the board. Each part is a directory under --out.
+    """
+    skip = 0
+    part = 0
+    stops = []
+    ok = True
+    while True:
+        out = os.path.join(a.out, "part%d" % part)
+        os.makedirs(out, exist_ok=True)
+        sh(gen + ["--out", out, "--skip", str(skip)])
+        with open(os.path.join(out, "cases.txt")) as f:
+            texts = [l.rstrip("\n").partition("\t")[2] for l in f]
+        if not texts:
+            break
+        build(out, "emu", "cases")
+        emu_text = run_emu(out, a.emu, extra)
+        build(out, "board", "cases")
+        board_text = run_board(out, a.port, a.baud, a.probe, a.timeout)
+        emu, _ = parse(emu_text)
+        brd, _ = parse(board_text)
+        ok = compare(out, emu_text, board_text, a.limit) and ok
+        ran = len(brd)
+        if ran >= len(texts):
+            break
+        n = skip + ran
+        said = ("emulator: cfsr %s fault-pc %s" % tuple(emu[ran][-2:])
+                if ran in emu else "emulator: stopped too")
+        stops.append((n, texts[ran], said))
+        print("board stopped at case %d: %s (%s)" % (n, texts[ran], said))
+        if ran in emu:
+            ok = False
+        skip = n + 1
+        part += 1
+    print("resumed %d time(s); the board stopped at %d case(s)%s"
+          % (part, len(stops), ":" if stops else ""))
+    for n, t, said in stops:
+        print("    %d: %s -- %s" % (n, t, said))
+    return ok
+
+
 def self_check(out, emu):
     """
     The same image interpreted and translated, line for line.
@@ -322,6 +376,15 @@ def main():
                     help="raw: encodings to run unfiltered, hex[:rN],...")
     ap.add_argument("--repeat", type=int, default=4,
                     help="raw: how many times each --enc encoding runs")
+    ap.add_argument("--from-fuzz", dest="fuzz", action="append", default=[],
+                    help="raw: a fuzz-armv7m-jit corpus directory, whose "
+                         "32-bit encodings are asked of the board")
+    ap.add_argument("--resume", action="store_true",
+                    help="raw: when the board stops printing partway, "
+                         "record the case it stopped at and run the rest "
+                         "from a new image (one directory per part)")
+    ap.add_argument("--fuzz-max", type=int, default=3000,
+                    help="raw: with --from-fuzz, at most this many cases")
     ap.add_argument("--regs", type=int, default=0,
                     help="raw: corpus instructions to rerun with sp or pc "
                          "in their register fields (needs --from)")
@@ -385,10 +448,19 @@ def main():
             gen += ["--from", src]
         if a.enc:
             gen += ["--enc", a.enc, "--repeat", str(a.repeat)]
+        for d in a.fuzz:
+            gen += ["--from-fuzz", d]
+        if a.fuzz:
+            gen += ["--fuzz-max", str(a.fuzz_max)]
         if a.regs:
             gen += ["--regs", str(a.regs)]
         if a.regs_sp:
             gen += ["--regs-sp"]
+        if a.resume:
+            if a.no_board or a.self_check:
+                sys.exit("--resume is for a run on the board")
+            gen = [x for x in gen if x not in ("--out", a.out)]
+            sys.exit(0 if resume_raw(a, gen, extra) else 1)
         sh(gen)
         a.suite = "cases"   # the same harness; only the cases differ
     build(a.out, "emu", a.suite)

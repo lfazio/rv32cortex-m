@@ -10,7 +10,7 @@ encoding space. That rest is most of it -- 150 million of the 402 million
 decoders were found to disagree, and where both were found wrong
 together.
 
-So this writes `.inst.w` and asks the board. Two sources of encodings:
+So this writes `.inst.w` and asks the board. Three sources of encodings:
 
   random     uniform over the 32-bit space
   mutants    an instruction the assembler really produced, with one bit
@@ -18,6 +18,12 @@ So this writes `.inst.w` and asks the board. Two sources of encodings:
              neighbouring row of a decode table, or a register number one
              past the end of the bank, none of which a uniform draw finds
              in any useful number
+  fuzz       every 32-bit encoding in fuzz-armv7m-jit's corpus
+             (`--from-fuzz DIR`): what coverage-guided fuzzing kept
+             because it reached code nothing else did. That fuzzer holds
+             the JIT to the interpreter; this asks the M7 the same
+             encodings, so the board stays the oracle for what only it
+             can answer
 
 **An arbitrary encoding cannot simply be executed.** It might be a store
 through a random register, a branch, a write to CONTROL or a WFI that
@@ -187,6 +193,37 @@ def corpus(elfs, dis):
     return out
 
 
+def fuzz_corpus(dirs):
+    """Every distinct 32-bit encoding in fuzz-armv7m-jit inputs.
+
+    An input is a configuration word -- four bytes, the core's state --
+    and then Thumb code from its first halfword, as fuzz_armv7m_jit.c
+    reads it. A halfword whose top five bits are 0b11101 or above begins
+    a 32-bit encoding; the walk follows lengths as the core would, so a
+    second halfword is never read as a first. What the configuration
+    chose is not carried: a case runs in the harness's own state.
+    """
+    seen = set()
+    out = []
+    for d in dirs:
+        for name in sorted(os.listdir(d)):
+            data = open(os.path.join(d, name), "rb").read()[4:]
+            i = 0
+            while i + 2 <= len(data):
+                hw = data[i] | data[i + 1] << 8
+                if (hw >> 11) >= 0x1D:
+                    if i + 4 > len(data):
+                        break
+                    enc = (hw << 16) | data[i + 2] | data[i + 3] << 8
+                    if enc not in seen:
+                        seen.add(enc)
+                        out.append(enc)
+                    i += 4
+                else:
+                    i += 2
+    return out
+
+
 def disassemble(encs, dis, tmpdir):
     path = os.path.join(tmpdir, "rawgen.bin")
     with open(path, "wb") as f:
@@ -260,6 +297,15 @@ def main():
     ap.add_argument("--regs-sp", action="store_true",
                     help="--regs: sp as a destination too, where the "
                          "decoder says UNDEFINED")
+    ap.add_argument("--from-fuzz", dest="fuzz", action="append", default=[],
+                    help="a fuzz-armv7m-jit corpus directory; repeatable")
+    ap.add_argument("--fuzz-max", type=int, default=3000,
+                    help="--from-fuzz: at most this many of its encodings "
+                         "that pass the filter")
+    ap.add_argument("--skip", type=int, default=0,
+                    help="drop the first N cases, the same seed and "
+                         "sources otherwise: run.py --resume, past a case "
+                         "after which the board said nothing more")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rng = random.Random(a.seed)
@@ -330,6 +376,29 @@ def main():
                          text="%08x  %s    <- %s" % (enc, text, why))
             c.raw = True
             named.append(c)
+    if a.fuzz:
+        encs = [e for e in fuzz_corpus(a.fuzz) if e not in seen]
+        rng.shuffle(encs)
+        kept = {"undecoded": 0, "register": 0, "memory": 0}
+        texts = disassemble(encs, a.dis, a.out) if encs else []
+        for enc, text in zip(encs, texts):
+            if sum(kept.values()) >= a.fuzz_max:
+                break
+            seen.add(enc)
+            c = classify(enc, text)
+            if c is None:
+                continue
+            c.text += "    <- fuzz corpus"
+            k = ("undecoded" if "(not decoded)" in c.text
+                 else "memory" if c.setup else "register")
+            # Capped at half, as for a uniform draw.
+            if k == "undecoded" and kept[k] >= a.fuzz_max // 2:
+                continue
+            kept[k] += 1
+            named.append(c)
+        print("fuzz corpus: %d encodings, %d run (%s)" % (
+            len(encs), sum(kept.values()),
+            ", ".join("%s %d" % kv for kv in sorted(kept.items()))))
     while len(cases) < a.count:
         cand = [c for c in candidates(rng, 4 * a.count, sources)
                 if c[0] not in seen and (c[0] >> 27) in (0x1D, 0x1E, 0x1F)]
@@ -355,7 +424,7 @@ def main():
             if len(cases) >= a.count:
                 break
     rng.shuffle(cases)
-    cases = named + cases
+    cases = (named + cases)[a.skip:]
     gen.emit(cases, a.seed, a.out)
     print("raw cases: %d  (%s)" % (len(cases), ", ".join(
         "%s %d" % kv for kv in sorted(kinds.items()))))

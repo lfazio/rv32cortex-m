@@ -226,7 +226,9 @@ frame a guest presented, as a PPM at exit -- the picture from a run
 with no window), `--nmi-at N` (assert the NMI pin once N instructions
 have retired: G4MH's FENMI, ARMv7-M's NMI; a frontend without the pin
 says so). On the F746, `-DEMU_NMI_BUTTON=ON` makes the user button the
-pin (docs/stm32f446/README.md).
+pin, and `-DEMU_WFI_CHECK=ON` times a WFI from inside the firmware on
+its first park, as `scripts/check-wfi-attach.sh` asks
+(docs/stm32f446/README.md).
 
 ### Games
 

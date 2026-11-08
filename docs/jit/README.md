@@ -152,12 +152,30 @@ back passes every suite while proving nothing.
 ## Chaining, compaction and committed code
 
 A block's exit to a constant target is emitted as a jump to the block's
-own tail, and patched to land in the successor once both exist and the
-edge has been taken (`EMU_JIT_MAX_CHAIN` exits per block). **A link is
-made the second time an exit is followed**: after translating a block
-the dispatcher forgets the one it came from, since translating may have
-compacted, so the first traversal of an edge translates and the second
-links. A chain never reaches the dispatcher, so each link carries the
+own *unlinked* return -- its epilogue, with `EMU_JIT_RET_UNLINKED` set
+in the count it returns -- and patched to land in the successor once
+both exist and the edge has been taken (`EMU_JIT_MAX_CHAIN` exits per
+block). **A link is made the second time an exit is followed**: after
+translating a block the dispatcher forgets the one it came from, since
+translating may have compacted, so the first traversal of an edge
+translates and the second links.
+
+**The dispatcher links only after a return that says so**, and then
+searches the chain for the exit. It knows the block it called, not the
+one that returned: when the first chained into others, the exit taken
+may be a later block's, and linking only the called block's exits left
+that later exit going through the dispatcher on every pass -- a G4MH
+loop cut into three blocks dispatched each of them 92,000 times. So
+`link_exit` asks the called block, then the blocks its linked exits
+lead to, eight at most. Searched after every return, that cost about
+550 host cycles a dispatch on the F746 and doubled RV32's and ARMv7-M's
+CoreMark times, because nearly every return is a computed exit or a
+chain that met the loop cap, with nothing to link. The flag costs six
+bytes a block on Thumb-2 (`ORR.W`, `B` back to the tail) and the search
+runs once or twice an edge: `links ... (missed N)` counts the searches
+that found nothing. A link is made only within one context, and an
+interrupt between the return and the next block forgets the block
+(`test_chain_no_link_across_an_interrupt`). A chain never reaches the dispatcher, so each link carries the
 same bound a self-loop does — `EMU_JIT_LOOP_CAP` retired instructions —
 or nothing would check for a pending interrupt; an instruction that
 must reach the dispatcher at once, as G4MH's EI must for what it
@@ -204,12 +222,14 @@ fuzz-armv7m-jit found nothing it lets spin.
 **A translator may stop before a known entry** (`emu_jit_entry_known`):
 during a translation, true for a pc a block begins at in the context
 being translated, or did until compaction evicted it -- not one given up
-on, which cannot be chained to. ARMv7-M's and PowerPC's translators ask
-before every instruction after the first, and end the block with a
-constant exit to it; a third to two thirds of what their CoreMarks
+on, which cannot be chained to. All four translators ask before every
+instruction after the first, and end the block with a constant exit to
+it; a third to two thirds of what ARMv7-M's and PowerPC's CoreMarks
 translated at 96 KB had been a copy of code already in the buffer, and
-both now fit, 42% and 35% faster on the F746. RV32's and G4MH's do not
-ask: their CoreMarks fit, and the stop only split blocks there
+both now fit, 42% and 35% faster on the F746. RV32's and G4MH's
+CoreMarks fit their 64 KB, where the stop only splits blocks and costs
+about 4%; at 32 KB it is worth 19% and 9%, and 45% to RV32's Whetstone
+-- one rule, never slower than no stop on any row measured
 ([backend/thumb2.md](../backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
 Counted as `entry stops` on the `blk entr` line.
 
@@ -221,9 +241,11 @@ exiting to it (`EMU_JIT_CHAIN_HEAT`, on): without that the body of a
 hot loop read as cold and was evicted while the block jumping into it
 survived. Worth 6-7% and 11% of translations on the F746 at 96 KB; see
 [tuning.md](tuning.md#retention-and-chained-blocks). Before
-anything moves, **every chained exit is pointed back at its own tail**:
-a surviving block's jump otherwise lands in whatever now occupies the
-bytes its successor had.
+anything moves, **every chained exit is pointed back at its own
+unlinked return**: a surviving block's jump otherwise lands in whatever
+now occupies the bytes its successor had -- and pointed at the plain
+tail instead, it would never say it was unlinked and never be linked
+again.
 
 That unlinking silently did nothing whenever the compaction was caused
 by a translation *overflowing* the buffer — the hooks that rewrite

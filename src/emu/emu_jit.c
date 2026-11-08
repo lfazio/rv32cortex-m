@@ -954,8 +954,10 @@ static void unlink_all(const emu_jit_ops_t *ops)
         }
         for (uint32_t k = 0; k < b->layout.nlink; k++) {
             if (b->layout.link[k].linked) {
+                /* Back where an unlinked exit goes, to be linked again. */
                 ops->patch_link(b->code + b->layout.link[k].site,
-                                b->code + b->layout.tail);
+                                b->code + b->layout.tail +
+                                    b->layout.unlinked);
                 b->layout.link[k].linked = false;
             }
         }
@@ -971,12 +973,25 @@ static void unlink_all(const emu_jit_ops_t *ops)
  * guest actually takes, and costs two compares on the dispatch that
  * would have happened anyway.
  */
-static void link_exit(jit_block_t *from, const jit_block_t *to,
-                      const emu_jit_ops_t *ops)
+/*
+ * lookup() without counting a hit: compaction is not an entry, nor is a
+ * search for the exit to link.
+ */
+static jit_block_t *find_block(uint32_t pc, uint64_t context)
 {
-    if (ops->patch_link == NULL || from == NULL || !to->layout.chainable) {
-        return;
+    for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
+         i = g_blocks[i].next) {
+        if (g_blocks[i].guest_pc == pc && g_blocks[i].context == context) {
+            return &g_blocks[i];
+        }
     }
+    return NULL;
+}
+
+/* An unlinked exit of `from` to `to`, linked; false if it has none. */
+static bool link_one(jit_block_t *from, const jit_block_t *to,
+                     const emu_jit_ops_t *ops)
+{
     for (uint32_t k = 0; k < from->layout.nlink; k++) {
         emu_jit_link_t *const l = &from->layout.link[k];
 
@@ -985,9 +1000,70 @@ static void link_exit(jit_block_t *from, const jit_block_t *to,
                             to->code + to->layout.chain_entry);
             l->linked = true;
             g_stats.links++;
-            return;
+            return true;
         }
     }
+    return false;
+}
+
+/*
+ * Point an exit to `to` at it, starting with the block the dispatcher
+ * entered, which returned through an unlinked exit
+ * (EMU_JIT_RET_UNLINKED). **Not only that block's**: the dispatcher
+ * knows the block it called, not the one that returned, and when the
+ * first chained into others the exit taken may be a later block's.
+ * Looking at `from` alone linked nothing then -- or another of its exits
+ * to the same pc -- and that later exit went through the dispatcher on
+ * every pass: a G4MH loop cut into three blocks dispatched each of them
+ * 92,000 times. So the blocks `from`'s linked exits lead to are asked
+ * too, a few hops deep; linking any exit to `to` is right, a link only
+ * skipping the dispatcher.
+ *
+ * **Only within one context.** A chain never changes it -- the context
+ * moves on the interpreter fallback and on traps, neither of which
+ * leaves a block by a chained exit -- so a `to` in another one was
+ * reached some other way, an interrupt taken in between, and linking
+ * an exit to it would run a block made for other state.
+ */
+#define JIT_LINK_SEARCH 8u /* blocks asked, `from` first */
+
+static void link_exit(jit_block_t *from, const jit_block_t *to,
+                      const emu_jit_ops_t *ops)
+{
+    jit_block_t *queue[JIT_LINK_SEARCH];
+    uint32_t head = 0u;
+    uint32_t tail = 0u;
+
+    if (ops->patch_link == NULL || from == NULL || !to->layout.chainable ||
+        to->context != from->context) {
+        return;
+    }
+    queue[tail++] = from;
+    while (head < tail) {
+        jit_block_t *const cur = queue[head++];
+
+        if (link_one(cur, to, ops)) {
+            return;
+        }
+        /* Breadth first along its linked exits: either may be the path. */
+        for (uint32_t k = 0; k < cur->layout.nlink; k++) {
+            const emu_jit_link_t *const l = &cur->layout.link[k];
+            jit_block_t *nb;
+            bool seen = false;
+
+            if (!l->linked || tail == JIT_LINK_SEARCH) {
+                continue;
+            }
+            nb = find_block(l->target_pc, cur->context);
+            for (uint32_t i = 0; i < tail && nb != NULL; i++) {
+                seen = seen || queue[i] == nb;
+            }
+            if (nb != NULL && !seen) {
+                queue[tail++] = nb;
+            }
+        }
+    }
+    g_stats.link_missed++;
 }
 
 static jit_block_t *lookup(uint32_t pc, uint64_t context)
@@ -1028,18 +1104,6 @@ emu_run_reason_t emu_jit_step(emu_cpu_t *cpu, const emu_jit_ops_t *ops)
 void emu_jit_set_chain_heat(bool on)
 {
     g_chain_heat = on;
-}
-
-/* lookup() without counting a hit: compaction is not an entry. */
-static jit_block_t *find_block(uint32_t pc, uint64_t context)
-{
-    for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
-         i = g_blocks[i].next) {
-        if (g_blocks[i].guest_pc == pc && g_blocks[i].context == context) {
-            return &g_blocks[i];
-        }
-    }
-    return NULL;
 }
 
 /*
@@ -1208,6 +1272,11 @@ void emu_jit_rewind(uint8_t *to)
     if (to >= g_code && to <= g_emit) {
         g_emit = to;
     }
+}
+
+void emu_jit_note_no_chain_slot(void)
+{
+    g_stats.no_chain_slot++;
 }
 
 void emu_jit_get_stats(emu_jit_stats_t *out)
@@ -1568,7 +1637,8 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
     memcpy(g_diff_want, cpu, ops->state_bytes);
     memcpy(cpu, g_diff_before, ops->state_bytes);
 
-    const uint32_t n = block_entry(b->code)(cpu, emu_jit_block_arg);
+    const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
+    const uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
 
     const uint8_t *const got = (const uint8_t *)cpu;
     for (uint32_t off = 0; off + 4u <= ops->state_bytes; off += 4u) {
@@ -1578,13 +1648,13 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
         memcpy(&e, g_diff_want + off, 4u);
         if (a != e) {
             emu_jit_diff_report(pc, off, e, a);
-            return n; /* the first divergence is the one */
+            return ret; /* the first divergence is the one */
         }
     }
     if (n != want_n) {
         emu_jit_diff_report(pc, EMU_JIT_DIFF_RETIRED, want_n, n);
     }
-    return n;
+    return ret; /* with EMU_JIT_RET_UNLINKED, for the dispatcher */
 }
 #endif /* EMU_JIT_DIFF */
 
@@ -1713,6 +1783,7 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
     return r;
 }
 
+
 EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
                                           uint32_t *retired,
                                           const emu_jit_ops_t *ops)
@@ -1783,11 +1854,13 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
      */
     uint32_t batch = 1u;
     /*
-     * The block that last returned to this loop, so the exit it took can
-     * be pointed straight at its successor. Cleared whenever the guest
-     * did something other than fall out of a block -- an interpreted
-     * instruction, a trap, a flush -- because then the edge about to be
-     * taken is not the one that block's exit encodes.
+     * The block this loop last called, if it returned through an exit
+     * not yet linked (EMU_JIT_RET_UNLINKED), so that exit can be pointed
+     * straight at its successor; NULL after any other return. Cleared
+     * too whenever the guest did something other than fall out of a
+     * block -- an interpreted instruction, an interrupt, a flush --
+     * because then the edge about to be taken is not the one that exit
+     * encodes.
      */
     jit_block_t *prev = NULL;
 
@@ -1804,6 +1877,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             if (!ops->irq_not_retired) {
                 done++; /* as RV32's and PowerPC's interpreters count it */
             }
+            prev = NULL;
             continue;
         }
 
@@ -1951,16 +2025,20 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
          * present and the context matched, which is the moment the edge
          * is known to be real.
          */
-        link_exit(prev, b, ops);
-        prev = b;
+        if (prev != NULL) {
+            link_exit(prev, b, ops);
+        }
 
         const uint32_t charged0 = (hot.charged != NULL) ? *hot.charged : 0u;
 #ifdef EMU_JIT_DIFF
-        const uint32_t n = run_block_checked(cpu, b, ops, fresh);
+        const uint32_t ret = run_block_checked(cpu, b, ops, fresh);
 #else
         (void)fresh; /* read by the differential checker alone */
-        const uint32_t n = block_entry(b->code)(cpu, emu_jit_block_arg);
+        const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
 #endif
+        const uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
+
+        prev = (ret & EMU_JIT_RET_UNLINKED) ? b : NULL;
         g_stats.block_entries++;
 
         /*

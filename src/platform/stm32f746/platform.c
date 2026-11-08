@@ -188,15 +188,9 @@ static volatile bool g_nmi_pressed;
 void board_nmi_button_init(void)
 {
     /*
-     * HCLK on in Sleep, so that the probe reaches the core while the
-     * firmware waits in WFI -- parked after a run, or waiting for this
-     * very press: without it neither probe-rs nor OpenOCD attaches to a
-     * firmware in WFI (OpenOCD reads CPUID as 0), and the press cannot be
-     * made through the probe. Only here, because what else it moves --
-     * CYCCNT across a WFI, which lwIP tells the time by -- has not been
-     * measured.
+     * The press is made through the probe while the firmware waits in
+     * WFI, which board_hw_init's DBGMCU_CR.DBG_SLEEP lets it reach.
      */
-    DBGMCU->CR |= DBGMCU_CR_DBG_SLEEP;
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_SYSCFG_CLK_ENABLE();
     GPIOC->MODER &= ~(3u << (13u * 2u)); /* input, as out of reset */

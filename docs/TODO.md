@@ -90,9 +90,12 @@ measured at.
     tree's, and virtio-9p, whose fuzzing would be the host's
     filesystem's -- a scratch directory in a mount namespace would make
     it safe to try.
-  - **ARMv7-M on the board**: feed a fuzzer's corpus to rawgen's
-    harness, so the F746 stays the oracle for what it alone can
-    answer.
+  - **ARMv7-M on the board**: done for fuzz-armv7m-jit's corpus
+    (`run.py --suite raw --from-fuzz ... --resume`: 4,000 encodings,
+    two differing, [fuzzing.md](fuzzing.md#the-corpus-on-the-board)).
+    Not reached: the corpus's sequences -- each encoding is asked alone,
+    in the harness's state, not in the program and configuration that
+    reached it.
 
       Every target needs a mutant it finds before it counts, as every
       test here does: a fuzzer that runs for an hour and reports nothing
@@ -107,25 +110,24 @@ measured at.
       ARMv7-M (5.5-13x) and G4MH (2.5-4.2x,
       [frontend/g4mh.md](frontend/g4mh.md#the-peripheral-window)).
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **Why the gated stop cost G4MH 13.7%.** A block stops before a
-      known entry in ARMv7-M's and PowerPC's translators, always
-      (`emu_jit_entry_known`), and both CoreMarks now fit their 96 KB:
-      42% and 35% faster on the F746. In RV32's and G4MH's, whose
-      CoreMarks fit, the stop only split blocks (+4.3%, +3.3%), so they
-      do not ask. Gated to blocks translated after an eviction, RV32
-      lost nothing, but G4MH ran 35% more block entries and 13.7%
-      slower with any of three gates, for a reason not found
+- [ ] **Why the dispatcher's linking fix alone is slower under
+      pressure.** Linking a later block's exit made all four CoreMarks
+      3.6-8.0% faster at their default buffers, but without the stop
+      before a known entry it cost RV32 CoreMark x650 12.5% at 32 KB,
+      G4MH's 5.7% and RV32 Whetstone 18%: 894 links against 548, twice
+      the evictions and twice the pcs given up on. Every frontend stops
+      now, which more than wins it back, so nothing ships in that state
+      -- but whatever retention does wrong with more chained blocks may
+      be costing the stop's figures too
       ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
-      Finding it would let one rule serve all four, and a guest that
-      overflows RV32's or G4MH's buffer would want it.
-- [ ] **A firmware in WFI cannot be attached.** HCLK is gated in
-      Sleep unless DBGMCU_CR.DBG_SLEEP is set, and then neither probe-rs
-      nor OpenOCD reaches the core, so every live question is asked
-      with `--connect-under-reset`, which destroys the state asked
-      about. The NMI-button build sets it
-      ([stm32f446/README.md](stm32f446/README.md#interrupts)); for
-      every firmware, measure what it moves first -- CYCCNT across a
-      WFI, which lwIP tells the time by.
+- [ ] **DBGMCU_CR.DBG_SLEEP on the F446 and the N6.** Every F746
+      firmware sets it now, so the probe reaches one parked in WFI, and
+      CYCCNT runs through the sleep at the core's clock
+      (`scripts/check-wfi-attach.sh`). Neither other part has been
+      asked: the F446 is not attached, and the N6's DBGMCU is not the
+      F7's. And with the counter running in Sleep, the park loop could
+      sleep with lwIP up on the F746 too (`board_idle`), untried over
+      SLIP.
 - [ ] **Why a profiled PowerPC run is a different run.** The PC
       profile's 32 KB come out of the guest's RAM (118 KiB against 150),
       and PowerPC CoreMark under the JIT went from 37.66 to 65.32 host
@@ -134,14 +136,30 @@ measured at.
 - [ ] **Below 32 KB the JIT is still slower than the interpreter.**
       Giving up on pcs that keep being evicted
       ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))
-      took Whetstone on the F746 from not finishing to 4.06 s at 32 KB,
-      ahead of the interpreter's 6.29 s, but 16 KB is 8.30 s and 8 KB
-      17.87 s. There the retries are what is left: every 65,536
-      interpreted dispatches all the marks are forgotten and the cycle
-      thrashes again until re-marked (6 and 11 retries). A retry that
+      took Whetstone on the F746 from not finishing to 3.80 s at 32 KB,
+      and the stop before a known entry, in RV32 now, to 2.08 s,
+      against the interpreter's 6.02 s; but 16 KB is 7.93 s and 8 KB
+      13.24 s (8.11 and 16.92 without the stop). There the retries are
+      what is left: every 65,536 interpreted dispatches all the marks
+      are forgotten and the cycle thrashes again until re-marked (7 and
+      10 retries). A retry that
       grows each time it is undone, or that forgets only marks older
       than the last, is the next thing to try -- measured on the board,
       where a translation costs tens of thousands of cycles.
+- [ ] **ARMv7-M: sp as the M7 writes it.** Two answers the board gave
+      and the frontend does not model
+      ([fuzzing.md](fuzzing.md#the-corpus-on-the-board)): `ADD.W`/`SUB.W
+      sp, sp, Rm` with any shift executes as written, where the decoder
+      raises UNDEFINSTR (`armv7m_dp_regs_rule`, n = 13); and every
+      write to sp drops bits [1:0], where only MSR masks them. Asked as
+      `--enc` sequences that save sp, write it and put it back
+      (`4669+2341+eb0d+0db3+4668+468d` and the like: `eb0d` with
+      `0db3`, `0d93`, `0da3`, `1d03`, `0d33`; `ebad 0db3`; and for the
+      low bits `469d`, `449d`, `f10d 0d01`, `f20d 0d01`, `f1ad 0d01`,
+      `ea4f 0d03` with an odd value). The interpreter writes sp from
+      several hot paths -- the 16-bit `mov sp`/`add sp` among them --
+      so the mask is a board A/B, and both answers belong in
+      `test_sp_pc_board_answers` once modelled. Not asked: `ldr sp`.
 - [ ] **ARMv7-M's sp/pc and IT rules cost its interpreter 7.1% on the
       F746** (143.44 to 153.69 host cycles an instruction on CoreMark,
       154.52 today;

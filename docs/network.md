@@ -266,7 +266,11 @@ cycles, gated by `__WFI`. Parking in it slowed the stack's notion of time
 to **6% of real time**: 29 seconds of wall clock advanced lwIP's clock by
 1.74. Every timeout in the stack is slowed by that factor, which became
 fatal in TFTP, whose 10-second session timeout then needs ~3 minutes. The
-park loop no longer sleeps while the stack is up.
+park loop no longer sleeps while the stack is up. On the F746 the
+counter stops only while DBGMCU_CR.DBG_SLEEP is clear, which every build
+there now sets: a quarter of a second of WFI counts 53,999,852 cycles
+with it, and 43,558 without -- only the time awake, across 250 SysTick
+wake-ups ([stm32f446/README.md](stm32f446/README.md#interrupts)).
 
 **The host end of the wire has two settings that fail silently.**
 `slattach -s 921600` does not work — net-tools maps `-s` through a fixed

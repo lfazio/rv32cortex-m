@@ -15,6 +15,7 @@
 /* For board_sync_icache's declaration: overriding a weak symbol without
  * seeing its prototype is how the signatures come apart. */
 #include "emu/emu_thumb2.h"
+#include "emu_console.h"
 
 #include "stm32f7xx_hal.h"
 
@@ -631,6 +632,10 @@ void board_led_toggle(board_led_t led)
     LED_PORT->BSRR = (LED_PORT->ODR & pin) ? (pin << 16) : pin;
 }
 
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+static volatile uint32_t g_wfi_cleared; /* DBGMCU_CR after the clear */
+#endif
+
 void board_hw_init(void)
 {
     /*
@@ -660,10 +665,77 @@ void board_hw_init(void)
     console_init();
     dwt_init();
     led_init();
+
+    /*
+     * The clocks on in Sleep. Measured in the park loop with no probe
+     * attached (EMU_WFI_CHECK): with DBG_SLEEP set, a quarter of a second
+     * of WFI counted 53,999,852 cycles; cleared, SysTick still woke the
+     * core 250 times but CYCCNT counted 43,558, only the time awake, and
+     * the probe could not connect -- neither probe-rs nor OpenOCD reaches
+     * a core waiting in WFI without it, and a parked firmware's lwIP
+     * clock once ran at 6% of real time (board_idle).
+     *
+     * Every build, because the register is not the firmware's alone:
+     * only a power-on reset clears it, and probe-rs sets 0x7 whenever it
+     * attaches, so without this what a firmware did in Sleep depended on
+     * what wrote the register last (scripts/check-wfi-attach.sh). What
+     * it costs is the power Sleep would have saved, on a bench board.
+     */
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+    /*
+     * As a power-on reset leaves it (see board_wfi), and read back after
+     * a barrier: one run without it found bit 0 set again at the park,
+     * for a reason not found, with nothing here setting it.
+     */
+    DBGMCU->CR = 0u;
+    __DSB();
+    g_wfi_cleared = DBGMCU->CR;
+#endif
+    DBGMCU->CR |= DBGMCU_CR_DBG_SLEEP;
 }
+
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+/*
+ * -DEMU_WFI_CHECK=ON: the first time the firmware parks, a quarter of a
+ * second of WFI by SysTick's millisecond, timed by CYCCNT -- from inside,
+ * because the probe sets DBGMCU_CR whenever it attaches and so cannot
+ * ask what the firmware's own setting does. board_hw_init clears the
+ * register first, as a power-on reset would. With DBG_SLEEP set this
+ * prints about 54M cycles and 250 wake-ups; without it the 250 wake-ups
+ * still come, SysTick running, and CYCCNT counts only the time awake --
+ * 45,002 cycles -- and the probe cannot connect
+ * (scripts/check-wfi-attach.sh).
+ */
+static void wfi_check(void)
+{
+    uint32_t wakes = 0u;
+    uint32_t t0 = HAL_GetTick();
+
+    while (HAL_GetTick() == t0) {
+    }
+    t0 = HAL_GetTick();
+    const uint32_t c0 = DWT->CYCCNT;
+    while (HAL_GetTick() - t0 < 250u) {
+        __WFI();
+        wakes++;
+    }
+    emu_console_printf("wfi-check cycles %u wakes %u dbgmcu %08x "
+                       "cleared %08x\n",
+                       (unsigned)(DWT->CYCCNT - c0), (unsigned)wakes,
+                       (unsigned)DBGMCU->CR, (unsigned)g_wfi_cleared);
+}
+#endif
 
 void board_wfi(void)
 {
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+    static bool checked;
+
+    if (!checked) {
+        checked = true;
+        wfi_check();
+    }
+#endif
     __WFI();
 }
 

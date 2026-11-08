@@ -236,6 +236,14 @@ bytes; both are out of line now. Below 32 KB the JIT is still slower
 than the interpreter -- 1.3 times at 16 KB, 2.8 at 8 -- where it was more
 than 19 times slower; see [TODO.md](../TODO.md).
 
+With the stop before a known entry in RV32's translator too
+([backend/thumb2.md](../backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there))
+and the dispatcher's linking fixed beside it: Whetstone at 32 KB
+2.08 s, 2.9 times ahead of the interpreter's 6.02 s, at 16 KB 7.93 s
+and at 8 KB 13.24 s; CoreMark x650 at 32 KB 33.70 s, valid,
+`crcfinal 0x25e3` (b5277c7, before both: 3.80, 8.11, 16.92 and
+41.48 s).
+
 ### The hooks a block calls
 
 Every block ends in the frontend's `count` hook (retired instructions,

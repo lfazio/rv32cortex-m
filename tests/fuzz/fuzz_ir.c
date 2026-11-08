@@ -1180,6 +1180,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     restore(&cpu);
     n = ((uint32_t(*)(void *, const void *))(void *)g_code)(&cpu, NULL);
+    /* A constant exit leaves unlinked here, and says so in the count. */
+    n &= ~EMU_JIT_RET_UNLINKED;
     save(&got, &cpu, n);
 
     g_st.compared++;

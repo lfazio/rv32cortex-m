@@ -109,9 +109,24 @@ guests never park.
 The probe has to reach a firmware in WFI for that, and could not: a
 running emulator firmware is attached with `--connect-under-reset`
 everywhere because neither probe-rs nor OpenOCD gets through while the
-core waits in WFI with HCLK gated (OpenOCD reads CPUID as 0). The
-button build sets DBGMCU_CR.DBG_SLEEP; whether every firmware should is
-open ([TODO](../TODO.md)).
+core waits in WFI with HCLK gated (OpenOCD reads CPUID as 0). **Every
+F746 build sets DBGMCU_CR.DBG_SLEEP now**, in `board_hw_init`. Asked
+from inside the firmware, in the park loop and with no probe attached
+(`-DEMU_WFI_CHECK=ON`): with the bit set, a quarter of a second of WFI
+by SysTick's millisecond counted 53,999,852 cycles; cleared, SysTick
+still woke the core 250 times, CYCCNT counted 43,558 -- only the time
+awake -- and the probe could not connect. The register is not the
+firmware's alone -- only a power-on reset clears it, and probe-rs sets
+it to 0x7 whenever it attaches -- so before, what a firmware did in
+Sleep depended on what wrote it last: the commit before this, which
+never sets it, passed a probe's check because the probe had. So the
+check build clears the register at boot, as a power-on would, before
+the firmware's own line sets it. `scripts/check-wfi-attach.sh [TREE]`
+builds it, runs it to its park, wants the cycle count, then reads
+DHCSR's S_SLEEP, CYCCNT twice four seconds apart and DBGMCU_CR through
+the probe, without a reset; with the firmware's line removed it fails,
+twice of two. The F446 and the N6 do not set the bit
+([TODO](../TODO.md)).
 
 ## Cache maintenance
 

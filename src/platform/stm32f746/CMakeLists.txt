@@ -210,6 +210,12 @@ endif()
 option(EMU_NMI_BUTTON "The user button (PC13) as the guest's NMI pin" OFF)
 target_compile_definitions(emu-stm32f746 PRIVATE
     EMU_NMI_BUTTON=$<BOOL:${EMU_NMI_BUTTON}>)
+# A quarter of a second of WFI timed from inside on the first park, with
+# DBGMCU_CR cleared at boot as a power-on would: board.c's wfi_check,
+# scripts/check-wfi-attach.sh. Off by default.
+option(EMU_WFI_CHECK "Time a WFI from inside the firmware on its first park" OFF)
+target_compile_definitions(emu-stm32f746 PRIVATE
+    EMU_WFI_CHECK=$<BOOL:${EMU_WFI_CHECK}>)
 
 # A PC profile from the tick, printed after the run: stm32f7xx_it.c.
 set(EMU_PC_PROFILE 0 CACHE STRING

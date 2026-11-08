@@ -501,6 +501,12 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **The framework owns the host's conventions** (the Thumb bit, table
   sizes per target); per-dispatch callbacks cost 129 cycles where four
   loads of bound pointers cost nothing.
+- **The dispatcher knows the block it called, not the one that
+  returned**: linking the called block's exits left a later block's
+  unlinked for good (a G4MH loop, 92,000 dispatches a block, blamed on
+  a gate). Searching the chain after every return doubled RV32 CoreMark
+  on the F746; after a return that says its exit was unlinked
+  (`EMU_JIT_RET_UNLINKED`), all four were 3.6-8.0% faster.
 - **A hash must keep its chain and use every input bit.** A direct-mapped
   block table hid colliding hot blocks (1,977 translations against
   1,465); a declined-pc cache indexed by low bits evicted every pair
@@ -512,9 +518,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   two thirds of what ARMv7-M CoreMark translated at 96 KB, a third of
   PowerPC's, was code already in a resident block. Stopping before a
   known entry (`emu_jit_entry_known`) made both fit, 42% and 35%
-  faster -- and split blocks where the buffer already fitted, RV32 4.3%
-  and G4MH 3.3% slower, so only ARMv7-M and PowerPC ask. Never stop
-  before a pc given up on: it is interpreted and cannot be chained to.
+  faster. Where the buffer fits it only splits blocks (RV32 and G4MH
+  CoreMark, about 4%), and a choice made there is a choice made on the
+  case the stop is not for: at 32 KB it is worth 19% and 9%, Whetstone
+  45%, so all four ask. Never stop before a pc given up on: it is
+  interpreted and cannot be chained to.
 - **The code cache dominates JIT performance**: below the working set the
   JIT loses to the interpreter. A cyclic hot set larger than the buffer
   is no retention problem -- no order holds it -- and cost Whetstone 20x
@@ -718,10 +726,15 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   HardFault loop once code moved. A difference every run shows is a
   defect until explained; ask the core (gdb through probe-rs), not a
   polled console stuck behind the fault.
-- **A firmware in WFI cannot be attached** unless DBGMCU_CR.DBG_SLEEP
-  keeps HCLK on (only the NMI-button build sets it); and to act on a
-  board mid-run, time it from the console as it arrives (`board-run.py`
-  `BOARD_AT`) -- its capture is printed only once the run is over.
+- **A register only a power-on reset clears is set by whoever wrote it
+  last -- the probe included.** Without DBGMCU_CR.DBG_SLEEP a WFI on the
+  F746 stops CYCCNT (43,558 cycles in 250 ms) and shuts the probe out;
+  probe-rs sets it (0x7) whenever it attaches, so a firmware that never
+  touched it passed the check that should have failed. Every F746 build
+  sets it now; measure such a bit from inside the firmware, with no
+  probe in the loop (`-DEMU_WFI_CHECK=ON`, `check-wfi-attach.sh`). And to act on a board mid-run,
+  time it from the console as it arrives (`board-run.py` `BOARD_AT`) --
+  its capture is printed only once the run is over.
 - **Read a control register back after a barrier**: straight after
   the write, the F746 returned LSPACT's old value beside every other
   bit's new one, which read as "LSPACT cannot be cleared"
@@ -751,7 +764,8 @@ The design is in [docs/network.md](docs/network.md).
   announced, and an upload test needs a guest with a non-empty `.rw`
   (`coremark`), or it never exercises the half that was zeroed.
 - **`__WFI` stops CYCCNT**, which lwIP tells the time by (29 s parked
-  was 1.74 s to lwIP).
+  was 1.74 s to lwIP) -- unless DBG_SLEEP is set, as every F746 build
+  now does: 53,999,852 cycles in 250 ms of WFI.
 - **The host end has silent settings**: `slattach` leaves `CSIZE` at cs5;
   `scripts/slip-up.sh` sets the line and prints it.
 - **At 921600 the UART must be interrupt-driven**, and an overrun left

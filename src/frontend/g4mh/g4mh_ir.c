@@ -1862,6 +1862,16 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     while (count < G4MH_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint16_t w0;
 
+        /*
+         * Before a pc a block already begins at, or did: exit to it, which
+         * chains, rather than translate a second copy of the code there
+         * (emu_jit_entry_known).
+         */
+        if (count != 0u && emu_jit_entry_known(cur)) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, cur, 0u);
+            break;
+        }
 #if G4MH_EXT_MPU
         /*
          * Execute permission, checked as the interpreter checks it -- on

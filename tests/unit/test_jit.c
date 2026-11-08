@@ -732,7 +732,7 @@ static void test_invalidate_range_reopens_only_its_declines(void)
 static uint32_t g_ch_built[7]; /* A, B, C, BIG, other, MID, TRIG */
 static uint8_t *g_ch_a_code;
 static uint32_t g_ch_a_site;
-static uint32_t g_ch_a_tail;
+static uint32_t g_ch_a_unlinked;
 static uint32_t g_ch_end_visits;
 static uint32_t g_ch_big_at; /* the END visit after which BIG runs; 0 = never */
 static uint32_t g_ch_mid_at; /* ...MID, and TRIG, likewise */
@@ -797,7 +797,7 @@ static uint32_t stub_translate_chain(emu_cpu_t *cpu, uint32_t pc)
     emu_jit_emit8(0xC7u); /* mov dword [rax], next */
     emu_jit_emit8(0x00u);
     emu_jit_emit32(next);
-    emu_jit_emit8(0xE9u); /* jmp tail -- the chained exit, unlinked */
+    emu_jit_emit8(0xE9u); /* jmp unlinked -- the chained exit, unlinked */
 
     const uint32_t site = (uint32_t)(emu_jit_here() - start);
 
@@ -809,8 +809,17 @@ static uint32_t stub_translate_chain(emu_cpu_t *cpu, uint32_t pc)
     emu_jit_emit32(1u);
     emu_jit_emit8(0xC3u); /* ret */
 
+    /* One retired, and the exit taken still unlinked: as the hosts' do. */
+    const uint32_t unlinked = (uint32_t)(emu_jit_here() - start);
+
+    emu_jit_emit8(0xB8u); /* mov eax, 1 | EMU_JIT_RET_UNLINKED */
+    emu_jit_emit32(1u | EMU_JIT_RET_UNLINKED);
+    emu_jit_emit8(0xC3u); /* ret */
+    x86_patch_rel32(start + site, start + unlinked);
+
     emu_jit_layout.chain_entry = 0u;
     emu_jit_layout.tail = tail;
+    emu_jit_layout.unlinked = (uint16_t)(unlinked - tail);
     emu_jit_layout.link[0].target_pc = next;
     emu_jit_layout.link[0].site = site;
     emu_jit_layout.link[0].linked = false;
@@ -820,7 +829,7 @@ static uint32_t stub_translate_chain(emu_cpu_t *cpu, uint32_t pc)
     if (pc == CH_A) {
         g_ch_a_code = start;
         g_ch_a_site = site;
-        g_ch_a_tail = tail;
+        g_ch_a_unlinked = unlinked;
     }
     return 1u;
 }
@@ -939,8 +948,8 @@ static void test_overflow_compaction_unlinks(void)
     if (g_ch_a_code == NULL) {
         return;
     }
-    /* Linked: A's exit no longer reaches its own tail. */
-    CHECK(ch_a_rel32() != (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
+    /* Linked: A's exit no longer reaches its own unlinked return. */
+    CHECK(ch_a_rel32() != (int32_t)(g_ch_a_unlinked - (g_ch_a_site + 4u)));
 
     emu_jit_get_stats(&before);
 
@@ -1042,6 +1051,258 @@ static void test_chain_heat_keeps_chained_blocks(void)
  * says how far a call went; the retired count cannot, because each
  * block reports its own and only the last one's comes back.
  */
+/*
+ * A chain's later exit is linked too. The dispatcher knows the block it
+ * entered, not the one that returned: when A chains into B and B's exit
+ * to C2 is taken for the first time after A -> B was linked, the exit to
+ * link is B's -- and looking at A alone linked nothing, so B -> C2 went
+ * through the dispatcher every time. A G4MH loop cut into three blocks
+ * did that 92,000 times a block.
+ *
+ * A always goes to B; B goes to C1 or, once the test says so, to C2;
+ * both end in DM_END, which the stub interpreter answers by going back
+ * to A. Linked, each round enters the dispatcher's blocks once: A.
+ */
+#define DM_A 0xA000u
+#define DM_B 0xA004u
+#define DM_C1 0xA008u
+#define DM_C2 0xA00Cu
+#define DM_END 0xA100u
+
+static uint32_t g_dm_path; /* B's exit: 0 to C1, 1 to C2 */
+static uint32_t g_dm_rounds;
+
+/* mov rax, &g_pc; mov dword [rax], next */
+static void dm_set_pc(uint32_t next)
+{
+    const uint64_t a = (uint64_t)(uintptr_t)&g_pc;
+
+    emu_jit_emit8(0x48u);
+    emu_jit_emit8(0xB8u);
+    emu_jit_emit32((uint32_t)a);
+    emu_jit_emit32((uint32_t)(a >> 32));
+    emu_jit_emit8(0xC7u);
+    emu_jit_emit8(0x00u);
+    emu_jit_emit32(next);
+}
+
+/* jmp rel32, to be pointed at the tail: returns the field */
+static uint8_t *dm_jmp(void)
+{
+    uint8_t *site;
+
+    emu_jit_emit8(0xE9u);
+    site = emu_jit_here();
+    emu_jit_emit32(0u);
+    return site;
+}
+
+static uint32_t stub_translate_diamond(emu_cpu_t *cpu, uint32_t pc)
+{
+    uint8_t *const start = emu_jit_here();
+    uint8_t *s0 = NULL;
+    uint8_t *s1 = NULL;
+    uint32_t t0 = 0u;
+    uint32_t t1 = 0u;
+
+    (void)cpu;
+    if (pc == DM_B) {
+        const uint64_t a = (uint64_t)(uintptr_t)&g_dm_path;
+        uint8_t *jne;
+
+        emu_jit_emit8(0x48u); /* mov rax, &g_dm_path */
+        emu_jit_emit8(0xB8u);
+        emu_jit_emit32((uint32_t)a);
+        emu_jit_emit32((uint32_t)(a >> 32));
+        emu_jit_emit8(0x83u); /* cmp dword [rax], 0 */
+        emu_jit_emit8(0x38u);
+        emu_jit_emit8(0x00u);
+        emu_jit_emit8(0x0Fu); /* jne rel32 */
+        emu_jit_emit8(0x85u);
+        jne = emu_jit_here();
+        emu_jit_emit32(0u);
+        dm_set_pc(DM_C1);
+        s0 = dm_jmp();
+        t0 = DM_C1;
+        x86_patch_rel32(jne, emu_jit_here());
+        dm_set_pc(DM_C2);
+        s1 = dm_jmp();
+        t1 = DM_C2;
+    } else if (pc == DM_A || pc == DM_C1 || pc == DM_C2) {
+        t0 = (pc == DM_A) ? DM_B : DM_END;
+        dm_set_pc(t0);
+        s0 = dm_jmp();
+    } else {
+        return 0u; /* DM_END: the interpreter's */
+    }
+
+    uint8_t *const tail = emu_jit_here();
+
+    emu_jit_emit8(0xB8u); /* mov eax, 1; ret */
+    emu_jit_emit32(1u);
+    emu_jit_emit8(0xC3u);
+
+    uint8_t *const unlinked = emu_jit_here();
+
+    emu_jit_emit8(0xB8u); /* mov eax, 1 | EMU_JIT_RET_UNLINKED; ret */
+    emu_jit_emit32(1u | EMU_JIT_RET_UNLINKED);
+    emu_jit_emit8(0xC3u);
+    x86_patch_rel32(s0, unlinked);
+    emu_jit_layout.chain_entry = 0u;
+    emu_jit_layout.tail = (uint32_t)(tail - start);
+    emu_jit_layout.unlinked = (uint16_t)(unlinked - tail);
+    emu_jit_layout.link[0].target_pc = t0;
+    emu_jit_layout.link[0].site = (uint32_t)(s0 - start);
+    emu_jit_layout.link[0].linked = false;
+    emu_jit_layout.nlink = 1u;
+    if (s1 != NULL) {
+        x86_patch_rel32(s1, unlinked);
+        emu_jit_layout.link[1].target_pc = t1;
+        emu_jit_layout.link[1].site = (uint32_t)(s1 - start);
+        emu_jit_layout.link[1].linked = false;
+        emu_jit_layout.nlink = 2u;
+    }
+    emu_jit_layout.chainable = true;
+    return 1u;
+}
+
+static emu_run_reason_t stub_interp_diamond(emu_cpu_t *cpu, uint32_t budget,
+                                            uint32_t *retired)
+{
+    (void)cpu;
+    (void)budget;
+    g_dm_rounds++;
+    g_pc = DM_A;
+    if (retired != NULL) {
+        *retired = 1u;
+    }
+    return EMU_RUN_BUDGET;
+}
+
+static const emu_backend_t k_stub_interp_diamond = {
+    .name = "stub-interp-diamond",
+    .run = stub_interp_diamond,
+};
+
+static const emu_jit_ops_t k_stub_diamond_ops = {
+    .name = "stub-diamond",
+    .bind = stub_bind,
+    .translate = stub_translate_diamond,
+    .interp = &k_stub_interp_diamond,
+    .patch_link = stub_patch_link,
+    .relocatable = true,
+};
+
+static void test_chain_links_a_later_exit(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+    uint32_t retired = 0u;
+    uint32_t rounds;
+
+    emu_jit_flush();
+    g_dm_path = 0u;
+    g_dm_rounds = 0u;
+    g_pc = DM_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_diamond_ops);
+
+    /* B now takes its other exit, with A -> B already linked. */
+    g_dm_path = 1u;
+    emu_jit_get_stats(&before);
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_diamond_ops);
+    emu_jit_get_stats(&after);
+    CHECK_EQ(after.links - before.links, 1u); /* B -> C2 */
+
+    /* And from then on a round enters one block. */
+    emu_jit_get_stats(&before);
+    rounds = g_dm_rounds;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_diamond_ops);
+    emu_jit_get_stats(&after);
+    rounds = g_dm_rounds - rounds;
+    CHECK(rounds > 4u);
+    CHECK_EQ(after.block_entries - before.block_entries, rounds);
+}
+
+/*
+ * An interrupt between a return through an unlinked exit and the next
+ * block: the dispatcher must not link that exit, or any in its chain, to
+ * the handler's block -- and above all not when the handler runs in
+ * another context, where the link would send a later jump in the first
+ * one into a block made for the second.
+ *
+ * C1's exit to DM_END is never linked (DM_END is the interpreter's), so
+ * every round returns through it. Here the interrupt then moves pc to
+ * C2 in context 1, where a block already exists; B, in A's chain, has an
+ * unlinked exit to C2. Two guards stand in the way -- the interrupt
+ * forgets the block that returned, and link_exit links only within one
+ * context -- and only the two removed together make the link: each
+ * mutant alone passes, the pair fails here.
+ */
+static uint64_t g_irq_ctx;
+static bool g_irq_armed;
+
+static void stub_bind_irq(emu_cpu_t *cpu, emu_jit_hot_t *out)
+{
+    stub_bind(cpu, out);
+    out->context = &g_irq_ctx;
+}
+
+static bool stub_take_irq(emu_cpu_t *cpu)
+{
+    (void)cpu;
+    if (!g_irq_armed || g_pc != DM_END) {
+        return false;
+    }
+    g_irq_armed = false;
+    g_pc = DM_C2;
+    g_irq_ctx = 1u;
+    return true;
+}
+
+static const emu_jit_ops_t k_stub_diamond_irq_ops = {
+    .name = "stub-diamond-irq",
+    .bind = stub_bind_irq,
+    .translate = stub_translate_diamond,
+    .interp = &k_stub_interp_diamond,
+    .patch_link = stub_patch_link,
+    .take_irq = stub_take_irq,
+    .relocatable = true,
+};
+
+static void test_chain_no_link_across_an_interrupt(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+    uint32_t retired = 0u;
+
+    emu_jit_flush();
+    g_irq_armed = false;
+
+    /* Context 1: C2's block, for the interrupt to land on. */
+    g_irq_ctx = 1u;
+    g_dm_path = 1u;
+    g_pc = DM_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_diamond_irq_ops);
+
+    /* Context 0: A -> B -> C1 linked, B's exit to C2 not. */
+    g_irq_ctx = 0u;
+    g_dm_path = 0u;
+    g_pc = DM_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_diamond_irq_ops);
+
+    /* A round, then the interrupt, then C2 in context 1. */
+    g_irq_ctx = 0u;
+    g_pc = DM_A;
+    g_irq_armed = true;
+    emu_jit_get_stats(&before);
+    (void)emu_jit_run(k_cpu, 3u, &retired, &k_stub_diamond_irq_ops);
+    emu_jit_get_stats(&after);
+    CHECK(!g_irq_armed); /* it was taken */
+    CHECK_EQ(g_irq_ctx, 1u);
+    CHECK_EQ(after.links - before.links, 0u);
+    g_irq_ctx = 0u;
+}
+
 static void test_unchain_runs_one_block(void)
 {
     uint32_t retired = 0u;
@@ -1061,19 +1322,19 @@ static void test_unchain_runs_one_block(void)
         return;
     }
     CHECK(ch_a_rel32() !=
-          (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u))); /* linked */
+          (int32_t)(g_ch_a_unlinked - (g_ch_a_site + 4u))); /* linked */
 
     /* Linked: one call from A runs the chain to its end. */
     g_pc = CH_A;
     (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
     CHECK_EQ(g_pc, CH_END);
 
-    /* Unchained: A alone, and its exit is its own tail again. */
+    /* Unchained: A alone, and its exit is its own unlinked one again. */
     emu_jit_unchain();
     g_pc = CH_A;
     (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
     CHECK_EQ(g_pc, CH_B);
-    CHECK_EQ(ch_a_rel32(), (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
+    CHECK_EQ(ch_a_rel32(), (int32_t)(g_ch_a_unlinked - (g_ch_a_site + 4u)));
 
     /* Calls of one block link nothing, so it stays that way... */
     (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
@@ -1085,7 +1346,7 @@ static void test_unchain_runs_one_block(void)
     /* ...until whole budgets link the edges again. */
     g_pc = CH_A;
     (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_chain_ops);
-    CHECK(ch_a_rel32() != (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
+    CHECK(ch_a_rel32() != (int32_t)(g_ch_a_unlinked - (g_ch_a_site + 4u)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1328,6 +1589,8 @@ void test_jit(void)
     test_overflow_compaction_unlinks();
     test_chain_heat_keeps_chained_blocks();
     test_unchain_runs_one_block();
+    test_chain_links_a_later_exit();
+    test_chain_no_link_across_an_interrupt();
     test_thrash_gives_up_on_evicted_pcs();
 #endif
     test_step_is_interpreted_and_followed();

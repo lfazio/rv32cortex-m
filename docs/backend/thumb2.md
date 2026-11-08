@@ -511,11 +511,48 @@ the same in every pair:
 | ...and never before a pc given up on | -0.4% | -38% | -34% | +13.7% |
 
 RV32's and G4MH's CoreMarks fit their buffers, and the gate cost G4MH
-35% more block entries for a reason not found ([TODO.md](../TODO.md)).
-**So ARMv7-M's and PowerPC's translators stop, always, and RV32's and
-G4MH's do not** -- the best of what was measured, and a choice made on
-CoreMark: a guest that overflows RV32's or G4MH's buffer would want the
-stop too.
+35% more block entries. **The reason was the dispatcher's linking**, not
+the stop: it linked only the exits of the block it had called, and when
+that block chained into others the exit taken was a later one's, which
+then went through the dispatcher on every pass -- the gate's split put a
+G4MH loop in three blocks, each dispatched 92,000 times. Searching the
+chain for the exit after every return found them, and doubled RV32's
+and ARMv7-M's CoreMark times (about 550 cycles a dispatch); searching
+only after a return through an unlinked exit, which the block now says
+(`EMU_JIT_RET_UNLINKED`), made every frontend faster, the stop rules
+unchanged, at both offsets and with the retired count and CRC the same:
+
+| CoreMark under the JIT, F746 | before | the linking fixed | and the stop in all four |
+|---|---|---|---|
+| RV32 x120 | 13.90 | 12.79 (**-8.0%**) | 13.30 (-4.3%) |
+| ARMv7-M x200 | 17.53 | 16.49 (**-5.9%**) | 16.49 |
+| PowerPC x40 | 20.72 | 19.88 (**-4.1%**) | 19.88 |
+| G4MH (CC-RH) | 21.91 | 21.13 (**-3.6%**) | 21.92 (+0.1%) |
+
+Host cycles per guest instruction; block entries fell 5-12%. With the
+linking right, the stop in RV32 and G4MH still costs about 4% on these
+CoreMarks, which fit their 64 KB: G4MH's translations halved and its
+entries stayed level, so what is lost is inside the split -- a chained
+hop, and the register traffic the passes can no longer remove across
+it. **Where the buffer does not hold the working set the stop is what
+counts**, and the linking fix alone is worse than none -- wall clock on
+the F746, the retired count and CRC the same across each row:
+
+| at a smaller buffer | before | the linking fixed | and the stop in all four |
+|---|---|---|---|
+| RV32 CoreMark x650, 32 KB | 41.48 s | 46.66 s (+12.5%) | **33.70 s (-18.8%)** |
+| G4MH CoreMark, 32 KB | 6.44 s | 6.81 s (+5.7%) | **5.87 s (-8.9%)** |
+| RV32 Whetstone, 32 KB | 3.80 s | 4.47 s (+18%) | **2.08 s (-45%)** |
+| RV32 Whetstone, 16 KB | 8.11 s | 8.15 s | 7.93 s (-2.2%) |
+| RV32 Whetstone, 8 KB | 16.92 s | 12.88 s | 13.24 s (-22%) |
+
+**So all four translators stop, always**: the one rule never slower
+than no stop on any row measured, at the price of RV32's and G4MH's
+4% on a CoreMark that fits. Why the linking alone costs RV32 and G4MH
+under pressure -- more links (894 against 548 in Whetstone at 32 KB),
+twice the evictions, twice the pcs given up on -- is open
+([TODO.md](../TODO.md)); with the stop, compactions fall instead
+(1,335 to 606 on RV32 CoreMark x650, 253 to 178 on G4MH's).
 
 The scan adds a field to each block entry, which the 72-byte assertion
 allows in a stats build only: the build measures bytes, not time.

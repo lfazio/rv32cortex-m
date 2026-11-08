@@ -119,11 +119,13 @@ bool emu_print_jit_stats(void)
      */
     emu_console_printf("  interp   %u instructions fell back (cold %u)\n"
                        "  declined %u (cached %u) overflow %u\n"
-                       "  blk entr %u  links %u  entry stops %u\n",
+                       "  blk entr %u  links %u (missed %u, no slot %u)  "
+                       "entry stops %u\n",
                        (unsigned)js.interp_fallbacks, (unsigned)js.cold,
                        (unsigned)js.declined, (unsigned)js.declined_cached,
                        (unsigned)js.overflowed, (unsigned)js.block_entries,
-                       (unsigned)js.links, (unsigned)js.entry_stops);
+                       (unsigned)js.links, (unsigned)js.link_missed,
+                       (unsigned)js.no_chain_slot, (unsigned)js.entry_stops);
     /*
      * The thrash fallback, beside the same counts for a declined pc: a
      * hot set larger than the buffer shows as pcs given up on and their

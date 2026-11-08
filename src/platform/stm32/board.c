@@ -458,6 +458,13 @@ bool board_parks_after_run(void)
  * lwIP's timers. A free-running peripheral timer would be the better
  * answer if this ever needs to sleep again -- one keeps its clock through
  * sleep where a cycle counter does not.
+ *
+ * Or DBGMCU_CR.DBG_SLEEP, which every F746 build now sets: with it the
+ * clocks run in Sleep and CYCCNT counted 53,999,852 cycles in a quarter
+ * of a second of WFI; without it, 43,558 across the same 250 SysTick
+ * wake-ups -- only the time awake, as lwIP's 6% was. Sleeping with the
+ * link up is untried over SLIP on that part, and the F446 and N6 do not
+ * set the bit.
  */
 void board_idle(void)
 {

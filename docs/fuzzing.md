@@ -887,6 +887,40 @@ and two clients at once on the gdb stub, which the transport does not
 allow. Found writing it, and fixed since: a reload rebuilt the bus
 without the virtio devices ([host/README.md](host/README.md)).
 
+## The corpus on the board
+
+A differential fuzzer cannot see what both of its sides share, and
+fuzz-armv7m-jit's two sides are this frontend's. Its corpus is replayed
+on the M7 instead: `tests/armv7m-diff/run.py --suite raw --from-fuzz
+build/fuzz/corpus/armv7m-jit --resume` collects every distinct 32-bit
+encoding the inputs spell, after their four-byte configuration word and
+following instruction lengths as the core would (rawgen.py's
+`fuzz_corpus`), keeps those its filter can run safely -- register-only
+operations, loads and stores rebased onto a buffer, and anything the
+disassembler does not decode, capped at half -- and runs each on the
+F746 and on the emulator in the same harness.
+
+12,322 encodings, 4,000 asked (224 memory, 1,776 register, 2,000
+undecoded): **3,998 the same, two different, and both one instruction**
+-- `ADD.W`/`SUB.W sp, sp, Rm` with a shift other than `LSL #0`-`#3`,
+which the manual calls UNPREDICTABLE and the frontend raises
+UNDEFINSTR for. The M7 executes them. One, `eb0d0db3` (`ror #2`),
+moved sp where the harness could not come back from, and the board
+printed nothing after case 1,557: **a case after which the board says
+nothing more is an answer too**, so `--resume` records it and runs the
+rest from a new image (rawgen.py `--skip`), until every case has run or
+stopped the board. The other, `eb0d5da3` (`asr #22`), moved sp a little
+and only CFSR differed.
+
+Asked then on purpose, sp saved and put back around each (`--enc`
+halfword sequences): every shift asked -- ROR, LSR, ASR, LSL #4, RRX --
+and SUB execute as written (`ror #2` of 0x41 moved sp by 0x40000010),
+and **every instruction that writes sp drops its low two bits on the
+M7** -- `mov sp, r3`, `add sp, r3`, `add.w sp, sp, #1`, `addw`, `sub.w`
+and `mov.w` alike -- where the frontend keeps them (its MSR path masks;
+nothing else does). Neither is modelled yet; the encodings asked are in
+[TODO.md](TODO.md).
+
 ## What it found
 
 Each fix was confirmed by reverting it with its regression in place.
@@ -899,7 +933,7 @@ Each fix was confirmed by reverting it with its regression in place.
 | a block that only moved a float and left by a chained exit skipped the call that marks FS dirty | both JIT backends' `ir_lower.c` | `isatest` `fs-dirty-flw-chained`, `rv32-jit/flw-chained-fs-clean` |
 | SMMLA and SMMLS summed `(Ra << 32) +/- Rn * Rm` in `int64_t`, which overflows | the ARMv7-M **interpreter** | `armv7m-jit/smmls-signed-overflow` (UBSan) |
 | an instruction the translator steps through the interpreter, and which writes back to the pc, was followed by the rest of its block | `armv7m_ir.c`, `helper_falls_through` | `armv7m-jit/ldrd-pc-writeback-stepped` |
-| **sp or pc where the manual says UNPREDICTABLE executed**: `bfi pc, lr, #0, #13` wrote an odd pc, and the next fetch read the host buffer at an odd address. A Cortex-M7 raises UNDEFINSTR for all of them -- see below | the ARMv7-M **interpreter** and decoder | `test_sp_pc_board_answers`, `armv7m-jit/bfi-pc-odd-fetch` |
+| **sp or pc where the manual says UNPREDICTABLE executed**: `bfi pc, lr, #0, #13` wrote an odd pc, and the next fetch read the host buffer at an odd address. A Cortex-M7 raises UNDEFINSTR for all of them -- see below -- except the shifted `ADD.W`/`SUB.W sp, sp, Rm`, which the corpus on the board found it executes (above) | the ARMv7-M **interpreter** and decoder | `test_sp_pc_board_answers`, `armv7m-jit/bfi-pc-odd-fetch` |
 | MAC summed a 64-bit product and accumulator in `int64_t` | the G4MH **interpreter** | `g4mh-jit/mac-signed-overflow` (UBSan) |
 | an interrupt a block raised or took cost the interpreter a cycle and the JIT none, so the time base -- which counts cycles once HID0[TBEN] is set -- drifted between them | `ppc_ir.c`, every raise path | `ppc-jit/interrupt-cycle-uncharged` |
 | a vector holding a value shaped like EXC_RETURN was read as an exception return; the return failed, the UsageFault went back into the same vector, nothing retired, and the slice **never ended** -- a hang, under both backends | the ARMv7-M **interpreter**, `armv7m_exc_return` | `test_vector_shaped_like_exc_return`, `armv7m-jit/vector-exc-return-shape` |

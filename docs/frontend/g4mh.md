@@ -203,6 +203,13 @@ emulator runs them, 8 checks and 0 failures on both backends.
 
 ## Guest RAM in the JIT
 
+**A block stops before a known entry** (`emu_jit_entry_known`), as in
+every frontend, ahead of the MPU's fetch check. CoreMark at 64 KB fits,
+and there the stop costs 3.6%; at 32 KB it is 8.9% faster with it. The
+13.7% a gated stop once seemed to cost was the dispatcher's linking,
+which left a later block's exit unlinked
+([../backend/thumb2.md](../backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
+
 Every G4MH load and store under the JIT was a helper call until the IR
 backends were given a RAM window for this frontend too: `g4mh_fast_mem`
 offers the region the stack is in, as ARMv7-M's does, and a block then

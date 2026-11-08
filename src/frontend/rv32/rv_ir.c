@@ -1789,6 +1789,16 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         uint16_t lo, hi;
         uint32_t len;
 
+        /*
+         * Before a pc a block already begins at, or did: exit to it, which
+         * chains, rather than translate a second copy of the code there
+         * (emu_jit_entry_known).
+         */
+        if (count != 0u && emu_jit_entry_known(cur)) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, cur, 0u);
+            break;
+        }
         if (!ir_fetch16(h, cur, &lo)) {
             break;
         }

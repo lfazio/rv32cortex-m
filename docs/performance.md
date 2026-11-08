@@ -489,8 +489,10 @@ tree's 158.24. G4MH's interpreter, +2.1% and +0.3% at the two offsets,
 moves with the layout as much.
 
 The F446's firmware fits, 191,692 bytes of its 512 KB. **The N6 keeps
-the size variant**: its image had 672 bytes left of the 207 KB the boot
-ROM loads, and the speed variant is 5,568 over. Its link line names
+the size variant**: its image had 672 bytes left of the 207 KB its
+linker script then gave the boot ROM's load (212 KB since, for the
+JIT's chain search and RV32's stop), and the speed variant was 5,568
+over. Its link line names
 `-Os` and then RelWithDebInfo's `-O2` again, because under LTO the last
 level on the link line still sets something -- alone, the `-Os` gave the
 same code in every function and a layout 256 bytes shorter

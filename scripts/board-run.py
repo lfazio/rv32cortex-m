@@ -141,8 +141,16 @@ def main():
             at_proc = subprocess.Popen(at_cmd, shell=True,
                                        stdout=sys.stderr, stderr=sys.stderr)
         if d:
-            # The run is over: a second's grace for whatever follows.
-            if b"emu-result" in buf[-4096:] and time.time() + 1.0 < end:
+            # The run is over: a second's grace for whatever follows --
+            # once *this* run's banner has come and its result after it.
+            # The flash target starts the firmware before the reset above
+            # starts it again, and a guest shorter than the reset takes
+            # finishes that first run meanwhile: its result, with its
+            # banner cleared from the line, ended a capture one second
+            # after the real run's banner (RV32 CoreMark, 1.75 s).
+            last = buf.rfind(b"\nemu: ")
+            if (last >= 0 and buf.find(b"emu-result", last) >= 0 and
+                    time.time() + 1.0 < end):
                 end = time.time() + 1.0
 
     def when(off):
@@ -156,6 +164,12 @@ def main():
 
     start = buf.rfind(b"backend ")
     done = buf.find(b"-- done --", start if start >= 0 else 0)
+    # What came before the last banner was a run the flash started, not
+    # this one: dropped, so its figures are not read as this run's.
+    head = buf.rfind(b"\nemu: ")
+    if head > 0 and buf[:head].strip():
+        print("EARLIER %d bytes before the banner dropped: a run the flash "
+              "target started" % head)
     if buf.count(b"\nemu: ") != 1:
         print("BANNERS %d -- expected exactly one run in the capture" %
               buf.count(b"\nemu: "))
@@ -170,7 +184,7 @@ def main():
             print("AT %s never ran: no banner inside the capture" % at_secs)
         else:
             print("AT %s rc=%d" % (at_secs, at_proc.wait()))
-    sys.stdout.write(buf.decode("latin-1", "replace"))
+    sys.stdout.write(buf[max(head, 0):].decode("latin-1", "replace"))
     return 0
 
 
