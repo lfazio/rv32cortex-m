@@ -312,6 +312,24 @@ typedef struct emu_jit_hot {
      * means ask every time.
      */
     const volatile bool *irq_pending;
+
+    /*
+     * Units of the budget a block's helpers spent that the count the
+     * block returns does not include, kept by the frontend; NULL for none.
+     *
+     * A block returns what it retired, and its interpreter charges more
+     * in two cases. RV32's, PowerPC's and G4MH's charge an exception one
+     * unit -- it is how a fault that faults again still ends a slice --
+     * so a block that trapped partway was charged one less: G4MH's
+     * mmiobench retired 16 fewer under the JIT, one for each store its
+     * handler stepped over, and RV32 and PowerPC guests stepping over 100
+     * faulting loads 98 and 100 fewer. And ARMv7-M's store with an
+     * imprecise bus error retires, counted by the helper that finishes it
+     * after its block has stopped before it: the same 16 in ARMv7-M's
+     * mmiobench. So a block is charged its retired count plus this
+     * count's change, and one when that is nothing.
+     */
+    const uint32_t *charged;
 } emu_jit_hot_t;
 
 /*

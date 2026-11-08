@@ -77,6 +77,8 @@ if(EMU_GUEST_ARCH_ARMV7M)
         add_armv7m_guest(nvic  SOURCES start.S nvic.c frame.S)
         # The driver-shaped workload: the peripheral window, against RAM.
         add_armv7m_guest(mmiobench SOURCES start.S mmiobench.c)
+        # An imprecise store's BusFault, 100 times: same-on-both-backends.py.
+        add_armv7m_guest(stepover SOURCES stepover.S)
 
         #
         # **The Thumb-2 encoder, as a guest, executing what it emits.**
@@ -444,6 +446,22 @@ add_guest_image(fptest   SOURCES start.S fptest.c)
 # window with plain memory, so both halves of each comparison take the same
 # path and the ratio is 1 by construction.
 add_guest_image(mmiobench SOURCES start.S mmiobench.c)
+
+# A fault stepped over a hundred times, for same-on-both-backends.py:
+# assembly with no start-up, its own trap handler, linked where the
+# runner loads a flat image.
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/guest/stepover.bin"
+    COMMAND ${RISCV_GCC} -march=rv32i_zicsr -mabi=ilp32 -nostdlib
+            -Wl,-Ttext=0x80000000 -o "${CMAKE_BINARY_DIR}/guest/stepover.elf"
+            "${CMAKE_CURRENT_SOURCE_DIR}/stepover.S"
+    COMMAND ${RISCV_OBJCOPY} -O binary "${CMAKE_BINARY_DIR}/guest/stepover.elf"
+            "${CMAKE_BINARY_DIR}/guest/stepover.bin"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/stepover.S"
+    COMMENT "Assembling RV32 guest stepover.bin"
+    VERBATIM)
+add_custom_target(guest-stepover ALL
+                  DEPENDS "${CMAKE_BINARY_DIR}/guest/stepover.bin")
 
 # ---------------------------------------------------------------------
 # CoreMark

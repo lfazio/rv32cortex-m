@@ -98,10 +98,15 @@ measured at.
       [performance.md](performance.md#driver-performance-the-passthrough-window)),
       ARMv7-M (5.5-13x) and G4MH (2.5-4.2x,
       [frontend/g4mh.md](frontend/g4mh.md#the-peripheral-window)).
-- [ ] **G4MH's mmiobench does not ask a refused store.** The shared
-      crt0 halts on any trap, so the hole and out-of-window checks the
-      ARMv7-M guest makes need a guest-specific vector for SYSERR that
-      records the cause and MEA and steps over the store.
+- [ ] **ARMv7-M's JIT charges a block that faults on its first
+      instruction one unit, its interpreter nothing.** The rest of what
+      a block's helpers spend is charged as the interpreters charge it
+      ([jit/README.md](jit/README.md#chaining-compaction-and-committed-code));
+      this is the dispatcher's floor, which keeps a fault that faults
+      again from spinning the loop. A loop whose head is a faulting load
+      retired 804 interpreted and 806 under the JIT. ARMv7-M could do
+      without the floor, since such a fault ends in lockup there, but no
+      frontend can yet say so.
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **ARMv7-M's and PowerPC's CoreMark do not fit their 96 KB
       buffers.** At 200 iterations ARMv7-M compacts 32 times, translates

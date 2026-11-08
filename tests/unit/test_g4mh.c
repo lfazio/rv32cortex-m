@@ -10419,6 +10419,123 @@ static const struct {
 
 static unsigned g_perm_i;
 
+/*
+ * A store refused partway through a block, after one that was not, and a
+ * handler that steps over it and returns into the block's tail -- the
+ * shape of mmiobench's refused stores: stsr FEPC; add 4; ldsr FEPC;
+ * feret. MDP is resumable, so the first store is done, the second is not,
+ * and the program goes on to add 1 to r9 and halt.
+ *
+ * The same retired count on both backends, and the same charge to the
+ * budget: the interpreter charges the exception one unit, and a block
+ * that trapped partway was charged only what it retired -- 7 against 8
+ * here, and mmiobench's run total 16 short under the JIT, one for each
+ * store it stepped over (emu_jit_hot_t::traps). ir_traps says the JIT
+ * pass took the trap in a translated block, not in its interpreter.
+ */
+static void refused_mid_block_setup(g4mh_cpu_t *c)
+{
+    c->r[6] = UNMAPPED;
+    c->r[7] = 0x12345678u;
+    c->r[8] = EMU_GUEST_RAM_BASE + 0x400u;
+}
+
+static bool refused_run(const uint16_t *code, unsigned n,
+                        const uint16_t *handler, unsigned hn, unsigned pass,
+                        emu_run_reason_t *why, uint32_t *ran)
+{
+    static const unsigned halts[5] = {0x40u, 0x60u, 0x80u, 0xA0u, 0xC0u};
+    uint16_t prog[0x70];
+
+    memset(prog, 0, sizeof(prog));
+    memcpy(prog, code, n * sizeof(code[0]));
+    for (unsigned i = 0; i < 5u; i++) {
+        prog[halts[i] / 2u] = 0x07E0u;
+        prog[halts[i] / 2u + 1u] = SUB_HALT;
+    }
+    memcpy(&prog[0x90u / 2u], handler, hn * sizeof(handler[0]));
+    g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+    g_priv_setup = refused_mid_block_setup;
+    g_pre_run = priv_pre_run;
+    const bool ok = load_and_run(prog, 0x70u, 64u, why, ran);
+    g_pre_run = NULL;
+    g_priv_setup = NULL;
+    g_force_backend = NULL;
+    CHECK(ok);
+    return ok;
+}
+
+static void test_refused_store_stepped_over(void)
+{
+    static const uint16_t code[] = {
+        0x3F68u, 0x0011u, /* st.w r7, 0x10[r8]           */
+        0x3F66u, 0x0011u, /* st.w r7, 0x10[r6]: MDP      */
+        0x4A41u, /* add 1, r9                   */
+        0x07E0u, SUB_HALT,
+    };
+    static const uint16_t handler[] = {
+        0x57E2u, SUB_STSR, /* stsr 2, r10, 0 (FEPC) */
+        0x5244u, /* add 4, r10            */
+        0x17EAu, SUB_LDSR, /* ldsr r10, 2, 0        */
+        0x07E0u, SUB_FERET,
+    };
+    uint64_t want_retired = 0u;
+    uint32_t want_ran = 0u;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t ran = 0u;
+        uint32_t traps0;
+
+        /* The core is opened inside the run: its count, read after. */
+        if (!refused_run(code, 7u, handler, 7u, pass, &why, &ran)) {
+            return;
+        }
+        const g4mh_cpu_t *c = (const g4mh_cpu_t *)(void *)g_core.cpu;
+
+        traps0 = 0u; /* a fresh core counts from zero */
+        CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+        CHECK_EQ(reg(9), 1u);
+        CHECK_EQ(ram32(0x410u), 0x12345678u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC) & 0xFFFFu, 0x91u);
+        CHECK_EQ(sreg(2, G4MH_SR_MEA), UNMAPPED + 0x10u);
+        CHECK_EQ(c->ir_traps - traps0, pass);
+        if (pass == 0u) {
+            want_retired = c->retired;
+            want_ran = ran;
+        } else {
+            CHECK_EQ64(c->retired, want_retired);
+            CHECK_EQ(ran, want_ran);
+        }
+    }
+}
+
+/*
+ * And the charge's floor: an MDP handler that is itself a refused store
+ * faults for ever, retiring nothing, and must still use up the budget on
+ * both backends, or nothing ends the slice.
+ */
+static void test_refused_store_fault_loop(void)
+{
+    static const uint16_t code[] = {0x3F66u, 0x0011u, 0x07E0u, SUB_HALT};
+    static const uint16_t handler[] = {0x3F66u, 0x0011u, 0x07E0u, SUB_HALT};
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t ran = 0u;
+
+        if (!refused_run(code, 4u, handler, 4u, pass, &why, &ran)) {
+            return;
+        }
+        const g4mh_cpu_t *c = (const g4mh_cpu_t *)(void *)g_core.cpu;
+
+        CHECK_EQ(why, EMU_RUN_BUDGET);
+        CHECK_EQ(ran, 64u);
+        CHECK_EQ64(c->retired, 0u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE + 0x90u);
+    }
+}
+
 static void perm_setup(g4mh_cpu_t *c)
 {
     c->psw = (c->psw & ~(G4MH_PSW_CU0 | G4MH_PSW_CU1)) | k_sr_perm[g_perm_i].psw;
@@ -11774,6 +11891,8 @@ void test_g4mh(void)
     test_table_reads_as_supervisor();
 #endif
     test_mei();
+    test_refused_store_stepped_over();
+    test_refused_store_fault_loop();
     test_sr_permissions();
     test_ldsr_user_effects();
     test_privileged_instructions();

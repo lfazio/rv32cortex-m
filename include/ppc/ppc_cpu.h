@@ -160,6 +160,13 @@ typedef struct ppc_cpu {
     /* --- counters --- */
     uint64_t cycles;
     uint64_t retired;
+    /*
+     * Interrupts raised from inside a translated block (ppc_ir.c's
+     * raised()): the dispatcher charges each as the interpreter does,
+     * one unit of the budget (emu_jit_hot_t::charged). Past msr, which is
+     * as far as the differential checker compares.
+     */
+    uint32_t ir_traps;
 
     /* --- run control --- */
     emu_state_t state;

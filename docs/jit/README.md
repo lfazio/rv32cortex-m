@@ -169,6 +169,33 @@ do, ARMv7-M's and G4MH's do not (`emu_ir_frontend_t::irq_not_retired`).
 It was counted for all four, and ARMv7-M CoreMark retired 1,114 more
 under the JIT than interpreted, a SysTick each.
 
+**A block is charged what its interpreter would have charged**: what it
+retired, plus what its helpers spent beside that
+(`emu_jit_hot_t::charged`), and one when both are nothing. The budget's
+units are the run's total -- `emu-result retired=`, the instruction cap,
+a guest clock that counts instructions -- and the interpreters charge
+more than a block returns in two places. RV32's, PowerPC's and G4MH's
+charge an exception one unit, which is how a fault that faults again
+still ends a slice; a block that trapped partway returned only the
+instructions before the trap. And ARMv7-M's store with an imprecise bus
+error retires, counted by the helper that re-runs it after its block
+stopped before it. The architectural counts (`retired` in each core)
+always agreed, which is why nothing compared these: G4MH's mmiobench,
+once its refused stores were stepped over instead of halting, retired
+1,344,477 interpreted and 1,344,461 under the JIT, one short for each,
+and ARMv7-M's the same 16; RV32 and PowerPC guests stepping over 100
+faulting loads 98 and 100 short (`test_block_charged_its_helpers`,
+`test_refused_store_stepped_over`). Each frontend bumps its counter
+where its helpers enter an exception, or finish an imprecise store;
+interrupts are not counted there.
+
+What is left is ARMv7-M's floor: its interpreter charges a precise
+fault nothing, and a block that faults on its first instruction is
+charged one. A loop whose head is a faulting load retired 804
+interpreted and 806 under the JIT, once for each time the dispatcher,
+not a chain, entered that block. Charging nothing would end the loop
+only because a fault that faults again on ARMv7-M ends in lockup.
+
 When the buffer fills, `compact()` keeps the blocks that have been
 looked up more than once, slides them down, and drops the rest. **A
 block entered through a chain is never looked up**, so it first gives

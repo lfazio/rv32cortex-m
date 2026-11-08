@@ -4489,6 +4489,24 @@ session, and every one of them recurred:
   G4MH's FENMI did not wake a HALT. **Put the event where the
   behaviours differ, and time it from the thing that sees the run.**
 
+- **A run's total counts the budget, not the instructions.** Asking
+  G4MH's mmiobench for its refused stores meant a handler that steps
+  over them instead of halting, and the first host run retired
+  1,344,477 interpreted and 1,344,461 under the JIT: 16, the stores
+  stepped over. Every core's `retired` agreed -- the counters the
+  fuzzers compare -- because the difference was in what `run` reports:
+  RV32's, PowerPC's and G4MH's interpreters charge an exception one
+  unit, so a fault that faults again still ends a slice, and a block
+  that trapped partway returned only what it had retired. RV32 and
+  PowerPC guests written to step over 100 loads were 98 and 100 short;
+  ARMv7-M's mmiobench the same 16, through a different door -- an
+  imprecise store retires, counted by the helper that finishes it after
+  the block has stopped. Nothing had compared those totals across a
+  resumed trap, because every guest's handler halted. **Two backends
+  agree on a number only where a test has made the event they could
+  disagree about; a handler that halts is a test that never asks what
+  comes after.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

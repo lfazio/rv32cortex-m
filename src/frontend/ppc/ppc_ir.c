@@ -154,11 +154,14 @@ static uint32_t swap(uint32_t v, uint32_t size)
  * it the cycle every pass of its loop costs, and the time base counts
  * cycles once HID0[TBEN] is set. So the cycle is charged here, on the
  * path only a fault takes. fuzz-ppc-jit found the two a cycle apart for
- * every interrupt a block raised.
+ * every interrupt a block raised. And the budget unit the interpreter's
+ * loop charges with it, through ir_traps: the run's total was one short
+ * for each (emu_jit_hot_t::charged).
  */
 static uint32_t raised(ppc_cpu_t *c)
 {
     c->cycles++;
+    c->ir_traps++;
     return 1u;
 }
 
@@ -1662,6 +1665,7 @@ static void ppc_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->generation = &ppc_jit_gen;
     out->context = &c->jit_ctx;
     out->irq_pending = &c->irq_dirty;
+    out->charged = &c->ir_traps;
     /*
      * Nothing blocks. Under a programmed TLB the translator fetches
      * through it, accesses go through a page window or the helper, and

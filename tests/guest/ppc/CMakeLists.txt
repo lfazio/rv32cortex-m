@@ -72,3 +72,17 @@ add_custom_command(
     VERBATIM)
 
 add_custom_target(guest-ppc-isatest ALL DEPENDS "${_out}/isatest.bin")
+
+# A data storage interrupt stepped over 100 times, VLE, for
+# same-on-both-backends.py.
+add_custom_command(
+    OUTPUT "${_out}/stepover.bin"
+    COMMAND "${PPC_AS}" -a32 -mbig -mvle -mregnames -o "${_out}/stepover.o"
+            "${CMAKE_CURRENT_SOURCE_DIR}/stepover.S"
+    COMMAND "${PPC_LD}" -m elf32ppc -T "${_ld}" -o "${_out}/stepover.elf"
+            "${_out}/stepover.o"
+    COMMAND "${PPC_OBJCOPY}" -O binary "${_out}/stepover.elf" "${_out}/stepover.bin"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/stepover.S" "${_ld}"
+    COMMENT "Assembling the e200z7 guest stepover (VLE)"
+    VERBATIM)
+add_custom_target(guest-ppc-stepover ALL DEPENDS "${_out}/stepover.bin")

@@ -97,12 +97,25 @@ static const uint8_t k_g4mh_cond[16] = {
 /* ------------------------------------------------------------------ */
 
 /*
+ * Every exception a helper enters goes through here, and is counted:
+ * the interpreter charges an exception one unit of the budget, and the
+ * dispatcher charges a block what it retired plus this count's change
+ * (emu_jit_hot_t::charged), so a run's total does not depend on which
+ * backend took it, or where a block began.
+ */
+static void ir_raise(g4mh_cpu_t *c, g4mh_exc_t e)
+{
+    c->ir_traps++;
+    g4mh_cpu_exception(c, e, c->pc);
+}
+
+/*
  * The generic accessors the shared lowering calls, going to the same
  * g4mh_load/g4mh_store the interpreter uses so alignment checks and the
  * bus policy are had for free.
  *
- * g4mh_cpu_exception takes the return address, and for a data abort that
- * is the faulting instruction itself. pc already holds it: the frontend
+ * ir_raise passes g4mh_cpu_exception the return address, and for a data
+ * abort that is the faulting instruction itself. pc already holds it: the frontend
  * emits EMU_IR_SETPC before every memory operation for exactly this.
  */
 static uint32_t g4mh_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
@@ -113,7 +126,7 @@ static uint32_t g4mh_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
                                    (spec & EMU_IR_MEM_SIGNED) != 0u, out);
 
     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-        g4mh_cpu_exception(c, e, c->pc);
+        ir_raise(c, e);
         return 1u;
     }
     return 0u;
@@ -126,7 +139,7 @@ static uint32_t g4mh_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     const g4mh_exc_t e = g4mh_store(c, addr, EMU_IR_MEM_SIZE(spec), val);
 
     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-        g4mh_cpu_exception(c, e, c->pc);
+        ir_raise(c, e);
         return 1u;
     }
     return 0u;
@@ -245,7 +258,7 @@ static uint32_t g4mh_ir_prepare_helper(emu_cpu_t *cpu, uint32_t insn,
     if (e == G4MH_EXC_NONE) {
         return 0u;
     }
-    g4mh_cpu_exception(c, e, c->pc);
+    ir_raise(c, e);
     return 1u;
 }
 
@@ -283,13 +296,13 @@ static uint32_t g4mh_ir_fpu_helper(emu_cpu_t *cpu, uint32_t insn,
         if (e == G4MH_EXC_NONE) {
             return 0u;
         }
-        g4mh_cpu_exception(c, e, c->pc);
+        ir_raise(c, e);
         return 1u;
     }
 #else
     /* Unreachable: the translator declines the group without an FPU. */
     (void)insn;
-    g4mh_cpu_exception(c, G4MH_EXC_RIE, c->pc);
+    ir_raise(c, G4MH_EXC_RIE);
     return 1u;
 #endif
 }
@@ -324,7 +337,7 @@ static uint32_t g4mh_ir_dispose_helper(emu_cpu_t *cpu, uint32_t insn,
 
     (void)unused;
     if (e != G4MH_EXC_NONE) {
-        g4mh_cpu_exception(c, e, c->pc);
+        ir_raise(c, e);
         return 1u;
     }
     (void)rt;
@@ -358,7 +371,7 @@ static uint32_t g4mh_ir_bitop_helper(emu_cpu_t *cpu, uint32_t adr,
     if (e == G4MH_EXC_NONE) {
         return 0u;
     }
-    g4mh_cpu_exception(c, e, c->pc);
+    ir_raise(c, e);
     return 1u;
 }
 
@@ -395,7 +408,7 @@ static uint32_t g4mh_ir_dw_helper(emu_cpu_t *cpu, uint32_t addr,
     if (e == G4MH_EXC_NONE) {
         return 0u;
     }
-    g4mh_cpu_exception(c, e, c->pc);
+    ir_raise(c, e);
     return 1u;
 }
 
@@ -416,11 +429,11 @@ static uint32_t g4mh_ir_fxu48_helper(emu_cpu_t *cpu, uint32_t insn,
     if (e == G4MH_EXC_NONE) {
         return 0u;
     }
-    g4mh_cpu_exception(c, e, c->pc);
+    ir_raise(c, e);
 #else
     (void)insn;
     (void)w2;
-    g4mh_cpu_exception(c, G4MH_EXC_RIE, c->pc);
+    ir_raise(c, G4MH_EXC_RIE);
 #endif
     return 1u;
 }
@@ -441,7 +454,7 @@ static uint32_t g4mh_ir_diei_helper(emu_cpu_t *cpu, uint32_t ei,
     (void)unused;
     if ((c->sr[1][G4MH_SR_MCTL] & G4MH_MCTL_UIC) == 0u &&
         (c->psw & G4MH_PSW_UM) != 0u) {
-        g4mh_cpu_exception(c, G4MH_EXC_PIE, c->pc);
+        ir_raise(c, G4MH_EXC_PIE);
         return 1u;
     }
     if (ei != 0u) {
@@ -2075,6 +2088,7 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->context = &c->jit_ctx;
     out->generation = &g4mh_jit_gen;
     out->irq_pending = &c->irq_dirty;
+    out->charged = &c->ir_traps;
 }
 
 /*

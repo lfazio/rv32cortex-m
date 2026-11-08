@@ -220,6 +220,54 @@ if(TARGET guest-armv7m-itblock)
         PASS_REGULAR_EXPRESSION "ARMV7M-IT-OK")
 endif()
 
+#
+# A fault a handler resumes from, interpreted and translated: the same
+# output and the same run total (same-on-both-backends.py). Every core's
+# own count agreed while the total -- the budget's units, which the cap
+# and an instruction clock read -- was one short under the JIT for each
+# exception taken partway through a block, on all four frontends
+# (emu_jit_hot_t::charged). G4MH's mmiobench is the guest that found it;
+# on the host its window checks fail by design, the same way on both.
+#
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(EMU_JIT AND Python3_EXECUTABLE)
+    set(_both "${CMAKE_SOURCE_DIR}/tests/guest/same-on-both-backends.py")
+    if(TARGET guest-stepover AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-stepover-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/stepover.bin" STEPOVER-OK
+                         --frontend rv32 --load 0x80000000 --max-insn 100000)
+        set_tests_properties(guest-stepover-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
+    if(TARGET guest-ppc-stepover AND EMU_GUEST_ARCH_PPC)
+        add_test(NAME guest-ppc-stepover-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/tests/guest/ppc/stepover.bin"
+                         STEPOVER-OK
+                         --frontend ppc --load 0x80000000 --max-insn 100000)
+        set_tests_properties(guest-ppc-stepover-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
+    if(TARGET guest-armv7m-stepover)
+        add_test(NAME guest-armv7m-stepover-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-stepover.bin"
+                         STEPOVER-OK --frontend armv7m --max-insn 100000)
+        set_tests_properties(guest-armv7m-stepover-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
+    if(EMU_GUEST_ARCH_G4MH)
+        add_test(NAME guest-g4mh-mmiobench-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/mmiobench.bin"
+                         "MMIOBENCH-"
+                         --frontend g4mh --load 0x80000000 --max-insn 4000000)
+        set_tests_properties(guest-g4mh-mmiobench-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
+endif()
+
 if(TARGET guest-armv7m-hello)
     add_test(NAME guest-armv7m-hello
              COMMAND emu-host --frontend armv7m --max-insn 1000

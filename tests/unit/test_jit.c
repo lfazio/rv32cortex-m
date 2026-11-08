@@ -430,6 +430,101 @@ static void test_blocks_are_per_context(void)
     CHECK_EQ(after.blocks, 2u);
 }
 
+/*
+ * A block is charged what it returns plus what its helpers spent beside
+ * it (emu_jit_hot_t::charged), and one when that is nothing.
+ *
+ * The block is `add dword [&g_spent], SPEND; mov eax, RET; ret` -- a
+ * helper that entered an exception, and the instructions retired before
+ * it. Exact counts: with the counter bound, a block returning 2 and
+ * spending 1 is charged 3, so a budget of 9 is three entries; unbound,
+ * 2, so five (the fifth overshoots to 10); and a block that retires and
+ * spends nothing is still charged one, or the loop would never end.
+ * The interpreters of RV32, PowerPC and G4MH charge an exception one,
+ * and ARMv7-M's an imprecise store it retired -- without this, a JIT
+ * run's total was short by one for each taken inside a block.
+ */
+static uint32_t g_spent;
+static uint32_t g_spend, g_ret;
+static bool g_bind_spent;
+
+static void stub_bind_spent(emu_cpu_t *cpu, emu_jit_hot_t *out)
+{
+    stub_bind(cpu, out);
+    out->charged = g_bind_spent ? &g_spent : NULL;
+}
+
+static uint32_t stub_translate_spend(emu_cpu_t *cpu, uint32_t pc)
+{
+    (void)cpu;
+    (void)pc;
+    emu_jit_emit8(0x48u); /* mov rax, imm64 */
+    emu_jit_emit8(0xB8u);
+    emu_jit_emit64((uint64_t)(uintptr_t)&g_spent);
+    emu_jit_emit8(0x83u); /* add dword [rax], imm8 */
+    emu_jit_emit8(0x00u);
+    emu_jit_emit8((uint8_t)g_spend);
+    emu_jit_emit8(0xB8u); /* mov eax, imm32 */
+    emu_jit_emit32(g_ret);
+    emu_jit_emit8(0xC3u);
+    return 1u;
+}
+
+static const emu_jit_ops_t k_stub_spend_ops = {
+    .name = "stub-spend",
+    .bind = stub_bind_spent,
+    .translate = stub_translate_spend,
+    .interp = &k_stub_interp,
+    .relocatable = false,
+};
+
+/* Entries made and units charged, for one configuration of the block. */
+static void run_spend(bool bound, uint32_t ret, uint32_t spend, uint32_t budget,
+                      uint32_t *entries, uint32_t *charged)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_flush();
+    g_bind_spent = bound;
+    g_ret = ret;
+    g_spend = spend;
+    emu_jit_get_stats(&before);
+    *charged = run_ctx(budget, &k_stub_spend_ops);
+    emu_jit_get_stats(&after);
+    *entries = (uint32_t)(after.block_entries - before.block_entries);
+}
+
+static void test_block_charged_its_helpers(void)
+{
+    uint32_t entries;
+    uint32_t charged;
+    uint32_t spent0;
+
+    emu_jit_set_hot_threshold(1u);
+
+    spent0 = g_spent;
+    run_spend(true, 2u, 1u, 9u, &entries, &charged);
+    CHECK_EQ(entries, 3u);
+    CHECK_EQ(charged, 9u);
+    CHECK_EQ(g_spent - spent0, 3u);
+
+    run_spend(false, 2u, 1u, 9u, &entries, &charged);
+    CHECK_EQ(entries, 5u);
+    CHECK_EQ(charged, 10u);
+
+    run_spend(true, 0u, 0u, 4u, &entries, &charged);
+    CHECK_EQ(entries, 4u);
+    CHECK_EQ(charged, 4u);
+
+    run_spend(true, 0u, 1u, 4u, &entries, &charged);
+    CHECK_EQ(entries, 4u);
+    CHECK_EQ(charged, 4u);
+
+    emu_jit_set_hot_threshold(EMU_JIT_HOT_THRESHOLD);
+    g_bind_spent = false;
+}
+
 #if defined(EMU_JIT_DIFF)
 /*
  * The check compares the retired count as well as the state: a reference
@@ -1224,6 +1319,7 @@ void test_jit(void)
     test_declines_are_per_context();
 #if defined(EMU_HOST_JIT_X86_64)
     test_blocks_are_per_context();
+    test_block_charged_its_helpers();
 #if defined(EMU_JIT_DIFF)
     test_diff_compares_retired();
 #endif

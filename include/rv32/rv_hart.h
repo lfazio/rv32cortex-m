@@ -348,6 +348,14 @@ typedef struct rv_hart {
     bool rom_armed;
     uint32_t rom_reads;
 
+    /*
+     * Traps entered from inside a translated block, by its helpers
+     * (rv_ir.c): the dispatcher charges each as the interpreter does, one
+     * unit of the budget (emu_jit_hot_t::charged). Cold, and past pc, which
+     * is as far as the differential checker compares.
+     */
+    uint32_t ir_traps;
+
 #if RV_EXT_SV32
     /*
      * A bit per 4 MiB region -- per VPN[1] -- that has had a translation

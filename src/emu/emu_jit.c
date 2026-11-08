@@ -1862,6 +1862,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         link_exit(prev, b, ops);
         prev = b;
 
+        const uint32_t charged0 = (hot.charged != NULL) ? *hot.charged : 0u;
 #ifdef EMU_JIT_DIFF
         const uint32_t n = run_block_checked(cpu, b, ops, fresh);
 #else
@@ -1871,13 +1872,21 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         g_stats.block_entries++;
 
         /*
-         * A block that trapped on its first instruction retires nothing,
-         * yet it made progress -- the trap moved pc into a handler.
-         * Charging the budget nothing for that spins this loop forever
-         * while the guest runs on underneath, which no instruction cap can
-         * break because the cap is the caller's.
+         * Charged as the interpreter would have charged it: what retired,
+         * and what the block's helpers spent beside it
+         * (emu_jit_hot_t::charged).
+         *
+         * And never nothing. A block that trapped on its first
+         * instruction retires nothing, yet it made progress -- the trap
+         * moved pc into a handler. Charging the budget nothing for that
+         * spins this loop forever while the guest runs on underneath,
+         * which no instruction cap can break because the cap is the
+         * caller's.
          */
-        done += (n != 0u) ? n : 1u;
+        const uint32_t charge =
+            n + ((hot.charged != NULL) ? *hot.charged - charged0 : 0u);
+
+        done += (charge != 0u) ? charge : 1u;
 
         if (n != 0u && ops->count != NULL) {
             ops->count(cpu, n);

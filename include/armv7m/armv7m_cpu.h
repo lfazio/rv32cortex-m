@@ -394,6 +394,13 @@ typedef struct armv7m_cpu {
      * each store it makes. Cold, and at the end.
      */
     bool imprecise;
+    /*
+     * Instructions a JIT helper retired after its block stopped before
+     * them -- a store whose bus error was imprecise (armv7m_ir.c's
+     * finish_imprecise, a7_ir_step) -- which the dispatcher charges to
+     * the budget as the interpreter does (emu_jit_hot_t::charged).
+     */
+    uint32_t ir_charged;
 } armv7m_cpu_t;
 
 /* ------------------------------------------------------------------ */

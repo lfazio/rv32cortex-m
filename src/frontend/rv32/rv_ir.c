@@ -65,6 +65,21 @@ extern const emu_backend_t rv_backend_interp;
 /* ------------------------------------------------------------------ */
 
 /*
+ * Every trap a helper enters goes through here, and is counted: the
+ * interpreter charges a trap one unit of the budget, and the dispatcher
+ * charges a block what it retired plus this count's change
+ * (emu_jit_hot_t::charged). Without it a block that trapped partway was
+ * charged one less, and a guest stepping over 100 faulting loads
+ * retired 1,211 interpreted and 1,113 under the JIT. Interrupts are not
+ * counted here: neither backend charges their entry.
+ */
+static void ir_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
+{
+    h->ir_traps++;
+    rv_hart_trap(h, cause, tval);
+}
+
+/*
  * The generic accessors the shared lowering calls.
  *
  * The guest pc already points at the faulting instruction when either is
@@ -79,7 +94,7 @@ EMU_HOT_TEXT static uint32_t rv_ir_load(emu_cpu_t *cpu, uint32_t addr,
                                       (spec & EMU_IR_MEM_SIGNED) != 0u, out);
 
     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-        rv_hart_trap(h, exc, addr);
+        ir_trap(h, exc, addr);
         return 1u;
     }
 #if EMU_JIT_HAS_ROM_WINDOW
@@ -98,7 +113,7 @@ EMU_HOT_TEXT static uint32_t rv_ir_store(emu_cpu_t *cpu, uint32_t addr,
     const rv_exc_t exc = rv_hart_store(h, addr, EMU_IR_MEM_SIZE(spec), val);
 
     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-        rv_hart_trap(h, exc, addr);
+        ir_trap(h, exc, addr);
         return 1u;
     }
     return 0u;
@@ -328,7 +343,7 @@ static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
     if (e == RV_EXC_NONE) {
         return 0u;
     }
-    rv_hart_trap(h, e, tval);
+    ir_trap(h, e, tval);
     return 1u;
 }
 
@@ -367,7 +382,7 @@ static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
     const rv_exc_t exc = rv_hart_atomic(h, insn, &tval);
 
     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-        rv_hart_trap(h, exc, tval);
+        ir_trap(h, exc, tval);
         return 1u;
     }
     return 0u;
@@ -627,7 +642,7 @@ static uint32_t rv_ir_csr_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
 
     (void)unused;
     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-        rv_hart_trap(h, exc, insn);
+        ir_trap(h, exc, insn);
         return 1u;
     }
     if (rv_rd(insn) != 0u) {
@@ -651,7 +666,7 @@ static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
                                     uint32_t unused)
 {
     (void)unused;
-    rv_hart_trap((rv_hart_t *)cpu, RV_EXC_ILLEGAL_INSN, insn);
+    ir_trap((rv_hart_t *)cpu, RV_EXC_ILLEGAL_INSN, insn);
     return 1u;
 }
 #endif
@@ -1983,6 +1998,7 @@ static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->generation = &h->jit_gen;
 #if RV_LAZY_IRQ_CHECK
     out->irq_pending = &h->irq_dirty;
+    out->charged = &h->ir_traps;
 #endif
 }
 

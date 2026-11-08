@@ -21,15 +21,19 @@
  *
  * BSRR's set and clear are checked through ODR before the kernels and
  * after them, when the JIT has inlined the window: the same accesses on
- * the helper's path and on the inlined one. **Not asked here**: a store
- * the window refuses -- a read-only hole, an address past it -- which
- * the ARMv7-M guest checks for its cause and address. The crt0 every
- * G4MH guest shares reports a trap and halts, so the check would stop
- * the guest; the inlined lowering that has to send those stores to the
- * helper is the Thumb-2 backend's, shared with the other two.
+ * the helper's path and on the inlined one. So are the stores the
+ * window refuses, as the ARMv7-M guest asks them: the read-only
+ * clock-tree hole, its last word, the word above it, and an address
+ * past the window. Each is MDP 91H, resumable, with MEA the address.
+ * The crt0 every G4MH guest shares reports a trap and halts, so this
+ * guest has a table of its own (mmiobench.handlers.asm), which steps
+ * over the one store refused_store makes and forwards everything else
+ * to crt0's. On the host the window is memory and the hole is not
+ * refused, so those checks fail there by design, as the ARMv7-M
+ * guest's do.
  *
- * Built by CC-RH (scripts/g4mh-build-guest.sh); the .bin beside this is
- * the committed build.
+ * Built by CC-RH (scripts/g4mh-build-guest.sh, which links the
+ * .handlers.asm); the .bin beside this is the committed build.
  */
 
 #define UART_THR (*(volatile unsigned char *)0x10000000u)
@@ -51,10 +55,33 @@
 #define GPIOB_ODR (*(volatile unsigned *)(GPIOB_BASE + 0x14u))
 #define GPIOB_BSRR (*(volatile unsigned *)(GPIOB_BASE + 0x18u))
 
+/* The read-only clock-tree hole, its last word, and the word above it. */
+#define RCC_CR_ADDR 0x40023800u
+#define RCC_CIR_ADDR 0x4002380Cu
+#define RCC_CR (*(volatile unsigned *)RCC_CR_ADDR)
+#define RCC_CIR (*(volatile unsigned *)RCC_CIR_ADDR)
+#define ABOVE_HOLE (*(volatile unsigned *)0x40023810u) /* AHB1RSTR */
+/* Past the window: no region covers it, so it faults before the bus. */
+#define OUTSIDE_ADDR 0x60000000u
+#define OUTSIDE (*(volatile unsigned *)OUTSIDE_ADDR)
+
+/* MDP for an access the bus refuses: no MPU, so no detail bits. */
+#define CAUSE_MDP 0x91u
+
 #define ITER 50000u
 
 static volatile unsigned g_ram_reg;
 static volatile unsigned g_sink;
+
+/* mmiobench.handlers.asm: the table, and the store it steps over. */
+extern void mdp_install(void);
+extern unsigned refused_store(volatile unsigned *ok, unsigned v,
+                              volatile unsigned *addr);
+
+/* Written by the MDP handler: how many, and the last one's FEIC and MEA. */
+volatile unsigned g_mdp_count;
+volatile unsigned g_mdp_feic;
+volatile unsigned g_mdp_mea;
 
 static void pc_(char c)
 {
@@ -171,12 +198,31 @@ static void check(const char *name, unsigned got, unsigned want)
     }
 }
 
+/*
+ * refused_store(&g_ram_reg, v, addr) has run: one MDP, cause 91H, at
+ * this address; the store before it made and the add after it run.
+ */
+static void check_refused(const char *name, unsigned before, unsigned addr,
+                          unsigned v, unsigned ret)
+{
+    check(name, g_mdp_count - before, 1u);
+    check(name, g_mdp_feic, CAUSE_MDP);
+    check(name, g_mdp_mea, addr);
+    check(name, g_ram_reg, v);
+    check(name, ret, v + 1u);
+}
+
 static void verify(void)
 {
     unsigned pass;
 
     /* Repeated: the first pass may run interpreted. */
     for (pass = 0u; pass < 8u; pass++) {
+        unsigned before;
+        unsigned cr;
+        unsigned v;
+        unsigned ret;
+
         GPIOB_BSRR = (1u << 3);
         check("bsrr-set", (GPIOB_ODR >> 3) & 1u, 1u);
         GPIOB_BSRR = (1u << (3 + 16));
@@ -187,6 +233,31 @@ static void verify(void)
         check("odr-rmw", GPIOB_ODR & 0xA0u, 0xA0u);
         GPIOB_BSRR = (1u << (5 + 16)) | (1u << (7 + 16));
         check("odr-clear", GPIOB_ODR & 0xA0u, 0u);
+
+        /* A hole is readable... */
+        before = g_mdp_count;
+        cr = RCC_CR;
+        check("hole-load-ok", g_mdp_count - before, 0u);
+
+        /* ...and not writable; the value written back is the one read. */
+        before = g_mdp_count;
+        ret = refused_store(&g_ram_reg, cr, &RCC_CR);
+        check_refused("hole-store", before, RCC_CR_ADDR, cr, ret);
+
+        before = g_mdp_count;
+        ret = refused_store(&g_ram_reg, 0u, &RCC_CIR);
+        check_refused("hole-end", before, RCC_CIR_ADDR, 0u, ret);
+
+        /* Immediately above it: permitted (AHB1RSTR, written its reset 0). */
+        before = g_mdp_count;
+        ABOVE_HOLE = 0u;
+        check("above-hole-ok", g_mdp_count - before, 0u);
+
+        /* Outside the window: a fault, not a wild store. */
+        before = g_mdp_count;
+        v = 0x100u + pass;
+        ret = refused_store(&g_ram_reg, v, &OUTSIDE);
+        check_refused("outside", before, OUTSIDE_ADDR, v, ret);
     }
 }
 
@@ -202,6 +273,7 @@ int main(void)
     TIM2_EGR = 1u; /* load the prescaler */
     TIM2_CR1 = 1u; /* count */
 
+    mdp_install();
     ps_("MMIOBENCH-START\n");
 
     verify();

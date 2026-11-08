@@ -80,6 +80,15 @@ typedef struct g4mh_cpu {
     uint64_t retired;
 
     /*
+     * Exceptions entered from inside a translated block, by its helpers
+     * (g4mh_ir.c): the dispatcher charges each as the interpreter does,
+     * one unit of the budget (emu_jit_hot_t::charged). Past psw, so the
+     * differential checker, which compares up to psw, does not see a
+     * count only one backend keeps.
+     */
+    uint32_t ir_traps;
+
+    /*
      * The LL/SC reservation, per core.
      *
      * LDL.W sets it, STC.W consumes it, CLL and any exception drop it, and

@@ -954,6 +954,13 @@ no target compared it, and ARMv7-M CoreMark had been retiring 1,114
 more under the JIT -- a SysTick each -- on every summary line. A G4MH
 unit test that asserts the retired count of an EI followed by an
 interrupt found it (`irq_not_retired`, [jit/README.md](jit/README.md)).
+Nor did any target see the same kind of difference for an exception
+taken partway through a block: the harness compares each core's
+`retired` when both sides finish, and those agreed, while what `run`
+reports -- the budget's units, the run's total -- was one short under
+the JIT for each such exception, on all four frontends. A guest whose
+handler stepped over its refused stores found it
+(`emu_jit_hot_t::charged`).
 The same day fuzz-g4mh-jit stopped comparing `sr[0][PSW]`, the system
 register array's copy of PSW: every read of it goes through
 `g4mh_sr_read`, which returns `psw`, compared already, and the copy is

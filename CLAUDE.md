@@ -434,6 +434,12 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   (`irq_not_retired`), and counted one for all four until a test asked
   (ARMv7-M CoreMark: 1,114 more under the JIT, a SysTick each). Compare
   a JIT run's retired count with the interpreter's, not only its output.
+- **A block is charged what its interpreter would have charged**, not
+  what it retired: three interpreters charge an exception one unit, and
+  a block that trapped partway was one short -- G4MH's mmiobench, its
+  refused stores stepped over, 16 fewer under the JIT, and RV32,
+  PowerPC and ARMv7-M the same, while every core's `retired` agreed
+  (`emu_jit_hot_t::charged`, `test_block_charged_its_helpers`).
 - **A link is made the second time an exit is followed**: a test of
   what a chained exit would skip follows the edge three times first.
 - **A device counting instructions reads a chain's start** under the JIT

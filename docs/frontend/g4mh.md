@@ -363,13 +363,30 @@ so only loads use the window there.
 the RV32 and ARMv7-M guests' four kernels, each against GPIOB and
 against a RAM word with the same code, timed by TIM2, which the guest
 ungates and runs; BSRR's set and clear checked through ODR before the
-kernels and after, on the helper's path and on the inlined one. **Not
-asked here**: a store the window refuses. The crt0 every G4MH guest
-shares reports a trap and halts, so the check would stop the guest;
-the inlined path that sends those stores to the helper is the Thumb-2
-backend's, which the ARMv7-M guest checks for cause and address. On
-the host the window is memory, so the hardware checks fail there by
-design, as the ARMv7-M guest's do.
+kernels and after, on the helper's path and on the inlined one. **And
+the stores the window refuses**, as the ARMv7-M guest asks them: the
+read-only clock-tree hole (`rcc-clock`), its last word, the word above
+it, and an address past the window. Each must be MDP 91H, MEA the
+address, once; the store before it in its block made, and the add after
+it run -- the refused store is second in its block, where a translator's
+mistake about the middle would show. The crt0 every G4MH guest shares
+reports a trap and halts, so this guest points EBASE at a table of its
+own and sets PSW.EBV (`mmiobench.handlers.asm`, which
+`g4mh-build-guest.sh` links when one sits beside the `.c`): every slot
+forwards to crt0's, except MDP's, which steps over the one store
+`refused_store` makes and sends any other MDP to crt0's report. On the
+host the window is memory, so the hole and BSRR checks fail there by
+design, as the ARMv7-M guest's do; the store past the window is refused
+there too, and passes on both backends.
+
+**Asking it found the JIT charging a block one unit short** for an
+exception taken partway: 1,344,477 retired interpreted, 1,344,461 under
+the JIT, one for each store stepped over -- the same in RV32, PowerPC
+and ARMv7-M ([jit/README.md](../jit/README.md#chaining-compaction-and-committed-code)).
+`ir_raise` counts each exception a helper enters (`ir_traps`), and the
+dispatcher adds it; `test_refused_store_stepped_over` runs the shape on
+both backends, and `test_refused_store_fault_loop` an MDP handler that
+is itself a refused store, which must still use up the budget.
 
 On the F746, TIM2 ticks per thousand accesses, both builds with LOOP
 lowered -- without it the RAM controls were 280,000 and the window

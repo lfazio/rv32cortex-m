@@ -80,15 +80,28 @@ cp "$src" "$work/in.c"
 cp "$ROOT/tests/guest/g4mh/crt0.asm" "$work/entry.asm"
 
 #
+# A guest that needs handlers of its own -- mmiobench, which steps over
+# the stores it expects refused -- keeps them in <guest>.handlers.asm,
+# linked after the C. crt0's table stays first and unchanged.
+#
+extra_asm=
+extra_obj=
+if [ -f "${src%.c}.handlers.asm" ]; then
+    cp "${src%.c}.handlers.asm" "$work/handlers.asm"
+    extra_asm="asrh -Xcommon=rh850 -Xcpu=g4mh handlers.asm &&"
+    extra_obj=handlers.obj
+fi
+
+#
 # -Xcpu=g4mh picks the core; -Osize keeps the image small. The section
 # order in -start is what puts the stub at 0x80000000, which is the host
 # runner's default --load address.
 #
 docker run --rm -v "$work":/w -w /w "$IMAGE" sh -c \
     "PATH=$CCRH_BIN:\$PATH; \
-     asrh -Xcommon=rh850 -Xcpu=g4mh entry.asm && \
+     asrh -Xcommon=rh850 -Xcpu=g4mh entry.asm && $extra_asm \
      ccrh -Xcommon=rh850 -Xcpu=g4mh -Osize -c in.c -oin.obj && \
-     rlink entry.obj in.obj -entry=_entry -form=binary -output=out.bin \
+     rlink entry.obj in.obj $extra_obj -entry=_entry -form=binary -output=out.bin \
         -start=.text_entry,.text,.const,.data/80000000" \
     >"$work/log" 2>&1 || {
     echo "g4mh-build-guest: CC-RH failed:" >&2

@@ -226,6 +226,7 @@ static EMU_NOINLINE uint32_t finish_imprecise(armv7m_cpu_t *c)
     c->irq_maybe = true;
     if (ok) {
         a7_count((emu_cpu_t *)c, 1u);
+        c->ir_charged++; /* and the budget: emu_jit_hot_t::charged */
     }
     return 1u;
 }
@@ -279,6 +280,7 @@ static uint32_t a7_ir_step(emu_cpu_t *cpu, uint32_t insn, uint32_t pc)
          * next instruction -- see finish_imprecise. */
         c->imprecise = false;
         a7_count(cpu, 1u);
+        c->ir_charged++;
         return 1u;
     }
     return ok ? 0u : 1u;
@@ -2406,6 +2408,7 @@ static void a7_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     c->jit_ctx = armv7m_jit_ctx(c);
     c->irq_maybe = true;
     out->irq_pending = &c->irq_maybe;
+    out->charged = &c->ir_charged;
     out->pc = &c->r[R_PC];
     out->state = (const uint8_t *)&c->state;
     out->generation = &c->jit_gen;
