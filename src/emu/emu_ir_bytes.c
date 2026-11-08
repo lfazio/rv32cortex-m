@@ -116,6 +116,33 @@ static uint64_t g_count[EMU_IR_OP_COUNT];
 static uint64_t g_bytes[EMU_IR_OP_COUNT];
 static emu_ir_bytes_totals_t g_totals;
 
+static EMU_PER_CORE uint32_t g_last_end;
+
+void emu_ir_bytes_note_end(uint32_t end)
+{
+    g_last_end = end;
+}
+
+uint32_t emu_ir_bytes_last_end(void)
+{
+    return g_last_end;
+}
+
+void emu_ir_bytes_overlap(uint32_t guest, uint32_t dup, uint32_t code,
+                          int partway)
+{
+    g_totals.spanned++;
+    g_totals.span += guest;
+    g_totals.dup += dup;
+    g_totals.dup_code += code;
+    if (dup != 0u) {
+        g_totals.overlapped++;
+    }
+    if (partway) {
+        g_totals.partway++;
+    }
+}
+
 void emu_ir_bytes_begin(void)
 {
     memset(g_pending, 0, sizeof(g_pending));

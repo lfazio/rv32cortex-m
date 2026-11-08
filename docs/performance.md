@@ -437,7 +437,11 @@ the translator (`pass_*`, `emu_ir_lower`, `lower_one`, the register
 allocator) and the interpreter running what the JIT gave up on (`step`,
 `dp_op`, `exec32`). PowerPC, plain rather than profiled, compacted 40
 times at 200 iterations and ran at 37.66 host cycles an instruction
-against 34.43 at 40 ([TODO.md](TODO.md)).
+against 34.43 at 40 ([TODO.md](TODO.md)). **Most of what does not fit is
+copies**: 66% of the bytes ARMv7-M translates there, and 34% of
+PowerPC's, are guest code already in a resident block, mostly blocks
+entered part-way through another
+([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
 
 **And a profiled run is not the plain one.** The profile's 32 KB of
 samples come out of the guest's RAM (118 KiB against 150 for PowerPC),
@@ -445,6 +449,52 @@ and PowerPC CoreMark under the JIT went from 37.66 to 65.32 with it --
 68 compactions against 40 -- for a reason not yet known. The split above
 is from the profiled runs; the ratios quoted beside it are the plain
 builds'.
+
+### The C library's speed variant
+
+**Every firmware linked picolibc's size variant**, whose `memset` and
+`memcpy` copy a byte at a time. The toolchain file put `-Os` in the
+flags every compile and every link gets; RelWithDebInfo's `-O2` comes
+after it and decides the compile, but the multilib is chosen from the
+whole link line, and `-Os -O2` still selects
+`thumb/v7e-m+fp/hard/space`. GCC calls those two for any struct cleared
+or copied past a few words: the JIT's optimiser clears 17 tables a
+translation, and PowerPC's decode was 25% of its interpreter until it
+cleared its record by words. Without the `-Os` (Debug keeps it,
+MinSizeRel brings its own), every emulator function is the same size
+and only the library changes: `memset` 16 bytes to 154, `memcpy` 28 to
+308, 6.8 KB of text in all.
+
+CoreMark on the F746, host cycles an instruction, each pair against a
+worktree at 187bce6 (`scripts/board-ab.sh`), at two `.text` offsets;
+the retired count, `crcfinal` and CoreMark's validation identical in
+every pair:
+
+| F746 | JIT, pad 0 | JIT, pad 64 | interpreted, pad 0 | interpreted, pad 64 |
+|---|---|---|---|---|
+| RV32 (x120) | 13.76 to 13.62, **-1.0%** | 13.77 to 13.62, **-1.1%** | 100.31 to 100.42 | 100.33 to 100.32 |
+| ARMv7-M (x200 JIT, x40) | 30.63 to 30.09, **-1.8%** | 30.61 to 29.92, **-2.3%** | 153.59 to 153.98 | 153.69 to 154.04 |
+| PowerPC (x40) | 33.24 to 31.47, **-5.3%** | 33.26 to 31.46, **-5.4%** | 152.20 to 158.24 | 152.21 to 158.10 |
+| G4MH (CC-RH's) | 21.91 to 21.63, **-1.3%** | 21.96 to 21.58, **-1.7%** | 90.55 to 92.41 | 90.57 to 90.84 |
+
+**Every JIT is faster, by what it translates**: PowerPC, which
+retranslates most at 96 KB, gains most. The interpreters call neither
+function per instruction, and RV32's and ARMv7-M's do not move. **The
+PowerPC interpreter's +3.9% is layout**: the speed `memcpy` and `memset`
+are assembly in a plain `.text`, which the link script places before
+every `.text.*`, so the whole emulator in flash moved 1,588 bytes -- and
+PowerPC's run loop is in flash ([the loops in ITCM](#the-interpreters-loops-in-itcm)).
+The old tree with `-DEMU_LAYOUT_PAD=1588` reads 158.32, against the new
+tree's 158.24. G4MH's interpreter, +2.1% and +0.3% at the two offsets,
+moves with the layout as much.
+
+The F446's firmware fits, 191,692 bytes of its 512 KB. **The N6 keeps
+the size variant**: its image had 672 bytes left of the 207 KB the boot
+ROM loads, and the speed variant is 5,568 over. Its link line names
+`-Os` and then RelWithDebInfo's `-O2` again, because under LTO the last
+level on the link line still sets something -- alone, the `-Os` gave the
+same code in every function and a layout 256 bytes shorter
+(`src/platform/stm32n6/CMakeLists.txt`).
 
 ## What a guest instruction costs, measured live
 

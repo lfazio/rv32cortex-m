@@ -23,10 +23,19 @@
  * firmware uses it. On the host the window is simulated memory and the
  * count stays at zero: the host run is a correctness check.
  *
- * A refused store raises a precise BusFault, which escalates to
- * HardFault; the handler records CFSR and BFAR and steps over the store,
- * so each check asks for the cause and the address, not only that some
- * fault arrived.
+ * A refused store raises an **imprecise** BusFault, as the M7's does
+ * (tests/armv7m-diff/sys.c `bus-*`): the store retires, and the fault,
+ * escalated to HardFault, is taken after it with IMPRECISERR and no
+ * BFAR. So each check asks for one fault and that cause, and the handler
+ * steps over an instruction only for a precise fault -- after an
+ * imprecise one the stacked pc is already past the store.
+ *
+ * It asked for a precise fault with BFAR the address until 2026-11-08:
+ * right when written (7223b08), and wrong from the next commit that
+ * modelled the M7's imprecise stores (2215c8e), after which every hole
+ * check failed and the handler skipped the instruction after each
+ * refused store. Nothing ran it again until G4MH's mmiobench was given
+ * the same checks.
  */
 
 #include <stdint.h>
@@ -36,6 +45,7 @@
 #define SCB_CFSR (*(volatile uint32_t *)0xE000ED28u)
 #define SCB_BFAR (*(volatile uint32_t *)0xE000ED38u)
 #define CFSR_PRECISERR (1u << 9)
+#define CFSR_IMPRECISERR (1u << 10)
 #define CFSR_BFARVALID (1u << 15)
 
 /* STM32F7 peripheral addresses, from RM0385. */
@@ -167,25 +177,30 @@ volatile uint32_t g_last_cfsr;
 volatile uint32_t g_last_bfar;
 
 /*
- * Record why, clear it, and step over the store: a halfword whose top
- * five bits are 0b11101 or above begins a 32-bit instruction.
+ * Record why and clear it; for a precise fault, step over the
+ * instruction that took it -- a halfword whose top five bits are 0b11101
+ * or above begins a 32-bit instruction. An imprecise one was taken after
+ * its store retired, and the stacked pc is the next instruction already.
  */
 __attribute__((naked)) void HardFault_Handler(void)
 {
     __asm__ volatile("mrs   r0, msp\n\t"
+                     "ldr   r2, =0xE000ED28\n\t"
+                     "ldr   r3, [r2]\n\t" /* CFSR */
+                     "tst   r3, #0x400\n\t" /* IMPRECISERR */
+                     "bne   1f\n\t"
                      "ldr   r1, [r0, #24]\n\t"
-                     "ldrh  r2, [r1]\n\t"
-                     "lsrs  r2, r2, #11\n\t"
-                     "cmp   r2, #0x1D\n\t"
+                     "ldrh  r12, [r1]\n\t"
+                     "lsrs  r12, r12, #11\n\t"
+                     "cmp   r12, #0x1D\n\t"
                      "ite   hs\n\t"
                      "addhs r1, r1, #4\n\t"
                      "addlo r1, r1, #2\n\t"
                      "str   r1, [r0, #24]\n\t"
-                     "ldr   r2, =0xE000ED28\n\t"
-                     "ldr   r1, [r2]\n\t"
-                     "ldr   r3, =g_last_cfsr\n\t"
-                     "str   r1, [r3]\n\t"
-                     "str   r1, [r2]\n\t" /* write-one-to-clear */
+                     "1:\n\t"
+                     "ldr   r1, =g_last_cfsr\n\t"
+                     "str   r3, [r1]\n\t"
+                     "str   r3, [r2]\n\t" /* write-one-to-clear */
                      "ldr   r2, =0xE000ED38\n\t"
                      "ldr   r1, [r2]\n\t"
                      "ldr   r3, =g_last_bfar\n\t"
@@ -215,13 +230,21 @@ static void check(const char *name, uint32_t got, uint32_t want)
     }
 }
 
-/* A store that must fault: once, precisely, at this address. */
+/*
+ * A store that must fault: once, imprecisely -- which says nothing of
+ * the address, so BFAR is not asked; `addr` names the store in a failure.
+ */
 static void check_refused(const char *name, uint32_t before, uint32_t addr)
 {
     check(name, g_traps - before, 1u);
-    check(name, g_last_cfsr & (CFSR_PRECISERR | CFSR_BFARVALID),
-          CFSR_PRECISERR | CFSR_BFARVALID);
-    check(name, g_last_bfar, addr);
+    if (g_traps - before != 1u) {
+        ps_("  at ");
+        phex(addr);
+        pc_('\n');
+    }
+    check(name,
+          g_last_cfsr & (CFSR_PRECISERR | CFSR_IMPRECISERR | CFSR_BFARVALID),
+          CFSR_IMPRECISERR);
 }
 
 static void verify(void)

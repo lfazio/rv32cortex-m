@@ -74,9 +74,22 @@ else()
     string(APPEND _arch " -mfloat-abi=${RV32_ARM_FLOAT_ABI}")
 endif()
 
-set(CMAKE_C_FLAGS_INIT   "${_arch} -Os -ffunction-sections -fdata-sections")
-set(CMAKE_CXX_FLAGS_INIT "${_arch} -Os -ffunction-sections -fdata-sections")
+#
+# No -O here: the build type says it. These flags reach the link line
+# too, and an -Os there picks picolibc's `space` multilib whatever
+# follows it -- `-Os -O2` still selects thumb/v7e-m+fp/hard/space, whose
+# memset and memcpy copy a byte at a time. Every firmware compiled at
+# -O2 (RelWithDebInfo's flags come last) and linked those, and GCC calls
+# them for any struct cleared or copied past a few words: the JIT's
+# optimiser clears 17 tables a translation. Debug keeps the -Os it had
+# from here, so a debug image still fits where it did (the N6's boot ROM
+# loads 207 KB); MinSizeRel brings its own.
+#
+set(CMAKE_C_FLAGS_INIT   "${_arch} -ffunction-sections -fdata-sections")
+set(CMAKE_CXX_FLAGS_INIT "${_arch} -ffunction-sections -fdata-sections")
 set(CMAKE_ASM_FLAGS_INIT "${_arch}")
+set(CMAKE_C_FLAGS_DEBUG_INIT   "-Os")
+set(CMAKE_CXX_FLAGS_DEBUG_INIT "-Os")
 
 #
 # picolibc, and what that costs.

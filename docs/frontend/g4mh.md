@@ -377,7 +377,8 @@ forwards to crt0's, except MDP's, which steps over the one store
 `refused_store` makes and sends any other MDP to crt0's report. On the
 host the window is memory, so the hole and BSRR checks fail there by
 design, as the ARMv7-M guest's do; the store past the window is refused
-there too, and passes on both backends.
+there too, and passes on both backends. On the F746, 336 checks and no
+failures on both backends (2026-11-08).
 
 **Asking it found the JIT charging a block one unit short** for an
 exception taken partway: 1,344,477 retired interpreted, 1,344,461 under

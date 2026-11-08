@@ -10499,7 +10499,12 @@ static void test_refused_store_stepped_over(void)
         CHECK_EQ(ram32(0x410u), 0x12345678u);
         CHECK_EQ(sreg(0, G4MH_SR_FEIC) & 0xFFFFu, 0x91u);
         CHECK_EQ(sreg(2, G4MH_SR_MEA), UNMAPPED + 0x10u);
+#if EMU_HAVE_JIT
+        /* Only a JIT build's second pass runs translated code. */
         CHECK_EQ(c->ir_traps - traps0, pass);
+#else
+        (void)traps0;
+#endif
         if (pass == 0u) {
             want_retired = c->retired;
             want_ran = ran;

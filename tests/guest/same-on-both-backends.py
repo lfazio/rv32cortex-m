@@ -31,11 +31,19 @@ def run(emu, guest, args):
                          text=True, errors="replace", timeout=120)
     text = out.stdout + out.stderr
     m = re.search(r"^emu-result .*retired=(\d+)", text, re.M)
-    # Blank lines too: the statistics are separated by them, and the JIT
-    # prints more sections than the interpreter.
-    guest_out = [l for l in text.splitlines()
-                 if l.strip() and not OWN.match(l)
-                 and not l.startswith("emu-result")]
+    # The guest's output is what comes between the runner's banner and its
+    # "-- done --": after it are statistics, and what they count differs
+    # by backend by design (the JIT's, a pair-statistics build's tables).
+    guest_out = []
+    started = False
+    for l in text.splitlines():
+        if l.startswith("backend "):
+            started = True
+            continue
+        if l.startswith("-- done --"):
+            break
+        if started and l.strip() and not OWN.match(l):
+            guest_out.append(l)
     return text, guest_out, (m.group(1) if m else None)
 
 

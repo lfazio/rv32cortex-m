@@ -454,6 +454,39 @@ CoreMark x40 at 32 KB, where the window's base is pooled as well:
 `t2exec`, `itblock`, PowerPC `alu` and `mmu` and the G4MH guest all pass
 through it on the board.
 
+### What a block shares with the blocks already there
+
+ARMv7-M's and PowerPC's CoreMark do not fit the 96 KB buffer, and the
+question after the bytes per operation was whether a block entered
+part-way through another holds a second copy of its tail. The stats
+build answers it too: each block's guest end is the largest pc its
+frontend wrote after an instruction, taken before the passes elide the
+writes, and as each block enters the cache the framework finds the
+largest stretch of its guest code already in a resident block of the
+same context (`overlap` in the `-- bytes --` report). On the F746 at
+96 KB:
+
+| CoreMark | bytes / guest insn | blocks sharing code with a resident one | of them begun inside one | guest bytes already resident | host bytes, prorated |
+|---|---|---|---|---|---|
+| ARMv7-M x200 | 31.23 | 1,739 of 2,551 (68%) | 1,455 | 83,306 of 117,008 (71%) | ~888 KB of 1.34 MB (66%) |
+| PowerPC x40 | 42.10 | 643 of 1,609 (40%) | 476 | 20,700 of 67,752 (31%) | ~239 KB of 753 KB (32%) |
+| PowerPC x200 | 41.95 | 2,022 of 4,659 (43%) | 1,452 | 63,856 of 197,776 (32%) | ~741 KB of 2.19 MB (34%) |
+
+**Two thirds of what ARMv7-M CoreMark translates is a copy of code
+already in the buffer**, and a third of PowerPC's -- mostly blocks that
+begin inside another and run through its tail. The bytes per operation
+are not the lever there: LOAD is 21% of ARMv7-M's at 39 bytes each,
+STORE 9% at 48, and no operation is a third. ARMv7-M's blocks are long
+(16.5 guest instructions on average, 516 bytes) and entered at many
+points -- loop heads, return addresses -- each entry a new block to its
+end. What would remove it is a block that stops where a known entry
+begins and exits to it, chained, which every frontend's translator
+would have to ask the framework about; it has not been tried
+([TODO.md](../TODO.md)).
+
+The scan adds a field to each block entry, which the 72-byte assertion
+allows in a stats build only: the build measures bytes, not time.
+
 ## The guest-RAM window
 
 A frontend may offer a window (`emu_ir_fastmem_t`) that a `LOAD` or

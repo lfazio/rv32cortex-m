@@ -220,6 +220,23 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
         return 0u;
     }
 
+#if EMU_JIT_BYTE_STATS
+    {
+        /* Before the passes: they elide the SETPCs that say it. */
+        uint32_t end = 0u;
+
+        for (uint32_t i = 0; i < g_ir.count; i++) {
+            const emu_ir_insn_t *in = &g_ir.insn[i];
+
+            if (in->op == (uint8_t)EMU_IR_SETPC && in->a == EMU_IR_NO_TEMP &&
+                in->imm > end) {
+                end = in->imm;
+            }
+        }
+        emu_ir_bytes_note_end(end);
+    }
+#endif
+
     emu_ir_optimise(&g_ir, fe->target, EMU_IR_F_ALL, NULL);
 
 #if EMU_JIT_BYTE_STATS

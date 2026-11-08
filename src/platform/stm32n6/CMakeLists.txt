@@ -265,7 +265,21 @@ endif()
 
 # The linker script path is passed unquoted: CMake treats each list item as
 # one argument already, and embedded quotes reach the driver literally.
+#
+# **This firmware links picolibc's size variant**, which the others no
+# longer do (cmake/arm-none-eabi.cmake): an -Os on the link line selects
+# the `space` multilib, whatever the build type compiled with. The speed
+# variant's memset, memcpy and printf are 6.2 KB more, and this image had
+# 672 bytes left of the 207 KB the boot ROM loads -- 5,568 over with it.
+#
+# The build type's level is said again after it, because under LTO the
+# last -O on the link line still decides something: alone, the -Os gave
+# the same code in every function and a layout 256 bytes shorter, which
+# on these parts is a performance change of its own. RelWithDebInfo is
+# the only type here whose level is not -Os (Release is refused above).
+#
 target_link_options(emu-stm32n6 PRIVATE
+    -Os $<$<CONFIG:RelWithDebInfo>:-O2>
     -T${CMAKE_CURRENT_SOURCE_DIR}/stm32n657xx_lrun.ld
     -Wl,-Map=${CMAKE_BINARY_DIR}/emu-stm32n6.map
     -Wl,--print-memory-usage

@@ -526,12 +526,19 @@ never arms, read 30.60-30.70 before and 29.89-30.01 after -- inside the
 29.64-30.86 that the code offset alone gives it at aff384e.
 
 Its checks run before arming and after: a store into a read-only hole
-(the RCC clock tree) and one past the window must each raise a precise
-BusFault with BFAR the address stored to; the hole's readable, and the
-word above it writable. 208 checks, 0 failures, both builds. With the
-backend's hole tests removed, the second round alone fails, on exactly
-the two hole checks, eight times each -- and BFAR is what showed it,
-holding the address of the previous round's fault.
+(the RCC clock tree) and one past the window must each raise one
+**imprecise** BusFault -- IMPRECISERR, no BFAR, as the M7's store does
+([what the board corrected](#what-the-board-corrected)); the hole's
+readable, and the word above it writable. 160 checks, 0 failures, both
+backends on the F746 (2026-11-08). They asked for a precise fault with
+BFAR the address when written, and that was right then: 208 checks, 0
+failures at 7223b08, and with the backend's hole tests removed the
+second round alone failed, on exactly the two hole checks, eight times
+each. The next commit made stores imprecise and nothing ran the guest
+again: from then on it failed 96 checks on the board, on both
+backends, and its handler stepped over the instruction after each
+refused store, since an imprecise fault's stacked pc is past the store
+already. It steps over a precise fault only now.
 
 How it is checked: every stored board run again under `--jit`
 (`--rerun --emu-args=--jit`), the `armv7m-jit-vs-interp` ctest, which

@@ -13,7 +13,9 @@
  * anyway.
  *
  * Prints STEPOVER-OK if the loop ran all 100 passes and the last store
- * before the last fault landed, STEPOVER-BAD otherwise.
+ * before the last fault landed, STEPOVER-BAD otherwise. The word is at a
+ * fixed address in RAM: on a board the image is served read-only, and a
+ * store into it faults too.
  */
     .section .text
     .globl _start
@@ -23,7 +25,7 @@ _start:
     li      a0, 0x70000000      /* no region: an access fault */
     li      s1, 0
     li      s2, 100
-    la      s3, word
+    li      s3, 0x80001000      /* a RAM word: on a board the image is ROM */
 loop:
     sw      s1, 0(s3)           /* permitted */
     lw      a2, 0(a0)           /* faults, stepped over */
@@ -54,9 +56,7 @@ handler:
     csrw    mepc, t4
     mret
 
-    /* In .text, which the flat image puts in RAM: the default link
-     * script would give .data an address the image does not load. */
-    .align  2
-word:   .word 0
+    /* Read only, so in .text: the default link script would give .data
+     * an address the flat image does not load. */
 okmsg:  .string "STEPOVER-OK\n"
 badmsg: .string "STEPOVER-BAD\n"

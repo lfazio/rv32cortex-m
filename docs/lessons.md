@@ -4507,6 +4507,27 @@ session, and every one of them recurred:
   disagree about; a handler that halts is a test that never asks what
   comes after.**
 
+- **A library change is a layout change.** Linking picolibc's speed
+  variant made every JIT faster and PowerPC's interpreter 3.9% slower
+  at both `.text` offsets tried -- which looked like the library until
+  the map showed the new `memcpy` and `memset` are assembly in a plain
+  `.text`, placed before every `.text.*`, so the whole emulator moved
+  1,588 bytes and PowerPC's run loop lives in flash. The old tree moved
+  by `EMU_LAYOUT_PAD=1588` read 158.32 against 158.24. Two offsets 64
+  bytes apart test a small shift, not the one the change made. **Find
+  how far a change moved the code, and move the "before" by as much.**
+
+- **A guest's figure is about the commit that ran it.** ARMv7-M's
+  mmiobench was recorded as 208 checks, 0 failures, at 7223b08; the
+  next commit made a store's bus error imprecise, as the M7's is, and
+  from then on the guest's hole checks -- a precise BusFault, BFAR the
+  address -- failed 96 times on the board on both backends, and its
+  handler skipped the instruction after each refused store. Nothing ran
+  it until G4MH's mmiobench was given the same checks and its
+  ARMv7-M sibling was run beside it. **When a frontend's behaviour
+  changes, rerun every guest that asserts it, not only the suite that
+  prompted the change.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

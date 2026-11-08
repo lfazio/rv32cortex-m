@@ -109,27 +109,18 @@ measured at.
       frontend can yet say so.
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **ARMv7-M's and PowerPC's CoreMark do not fit their 96 KB
-      buffers.** At 200 iterations ARMv7-M compacts 32 times, translates
-      2,596 blocks for 198 resident, and interprets 1,467,796
-      instructions at the 100 pcs it gave up on; PowerPC compacts 40
-      times and runs at 37.66 host cycles an instruction against 34.43
-      at 40 iterations. Blocks average about 490 bytes, and RV32's
-      CoreMark fitted only once its encodings shrank 27% (1.71x,
-      [lessons.md](lessons.md)). Where the bytes go comes first:
-      `-DEMU_JIT_BYTE_STATS=ON` on the board, by IR operation, and
-      whether blocks entered part-way duplicate their neighbours' tails
-      ([performance.md](performance.md#which-blocks-get-the-dtcm-and-why-promoting-them-was-not-built)).
-- [ ] **The firmware links picolibc's size variant.** Every firmware
-      compiles at `-O2` -- RelWithDebInfo's flags come after the
-      toolchain's `-Os` -- but the `-Os` reaches the link line too, and
-      picks the `space` multilib, whose `memset` and `memcpy` are byte
-      loops. GCC calls them for any struct cleared or copied past a few
-      words: `emu_ir_optimise` clears 17 tables of 64-512 bytes per
-      translation, ARMv7-M's VLDM and VSTM copy through `memcpy`, and
-      PowerPC's decode, one call per decode-cache miss, was 25% of its
-      interpreter (now cleared by words). Dropping `-Os` from
-      `CMAKE_C_FLAGS_INIT` selects the speed variant; it wants every
-      frontend measured at two layouts, and the F446's flash checked.
+      buffers, and most of the overflow is copies.** At 200 iterations
+      ARMv7-M compacts 32 times, translates 2,596 blocks for 198
+      resident, and interprets 1,467,796 instructions at the 100 pcs it
+      gave up on; PowerPC compacts 40 times. Measured on the F746
+      ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)):
+      66% of ARMv7-M's translated bytes and 34% of PowerPC's are guest
+      code already in a resident block, mostly blocks that begin inside
+      another and run through its tail; no single IR operation is more
+      than 21%. The next thing to try is a block that stops before a pc
+      already known as an entry and exits to it, chained -- a question
+      every frontend's translator would ask the framework -- measured by
+      the same `overlap` line, the translation count and the time.
 - [ ] **A firmware in WFI cannot be attached.** HCLK is gated in
       Sleep unless DBGMCU_CR.DBG_SLEEP is set, and then neither probe-rs
       nor OpenOCD reaches the core, so every live question is asked

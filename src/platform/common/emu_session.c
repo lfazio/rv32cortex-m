@@ -445,6 +445,16 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
                                (unsigned)tot.frame,
                                (unsigned)(tot.frame * 100u / tot.bytes));
         }
+        /* What a new block shared with the resident ones, in guest bytes. */
+        if (tot.span != 0u) {
+            emu_console_printf(
+                "  overlap      %u of %u blocks share guest code with a "
+                "resident one, %u began inside one;\n"
+                "               %u of %u guest bytes, about %u host bytes\n",
+                (unsigned)tot.overlapped, (unsigned)tot.spanned,
+                (unsigned)tot.partway, (unsigned)tot.dup, (unsigned)tot.span,
+                (unsigned)tot.dup_code);
+        }
     }
 #endif
 

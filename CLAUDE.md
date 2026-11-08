@@ -228,6 +228,10 @@ Each has cost more than one session, and every one recurred.
   same output and retired count across slicings.
 - **A property no output can show is asserted where it is made** (the
   FreeRTOS round order, which two mutants left output byte-identical).
+- **A guest's figure is about the commit that ran it**: ARMv7-M's
+  mmiobench read 0 failures at 7223b08 and 96 from the next commit, which
+  made stores' bus errors imprecise, until a sibling guest was run
+  beside it. Rerun every guest that asserts a behaviour you change.
 - **A suite result is about the binary and the configuration that made
   it.** Suites that bring their own start-up never saw `start.S` break;
   a test written in one configuration failed 20 times in `host-all`; a
@@ -278,8 +282,10 @@ Each has cost more than one session, and every one recurred.
 - **On the board, the counter is exact and layout is worth up to 21%.**
   Rerun the same binary before calling a difference noise; move the
   layout (`EMU_LAYOUT_PAD`, `-falign-functions`) and see whether the
-  figure follows; for translated code move the buffer
-  (`EMU_LAYOUT_PAD_BSS`). On the host, callgrind is exact; under ~10%,
+  figure follows -- by as much as the change moved the code: the speed
+  libc moved the emulator 1,588 bytes, and PowerPC's interpreter's
+  +3.9% was the old tree at `EMU_LAYOUT_PAD=1588`; for translated code
+  move the buffer (`EMU_LAYOUT_PAD_BSS`). On the host, callgrind is exact; under ~10%,
   best-of-five wall clock is not a measurement.
 - **Callgrind cannot see what an M7 charges for a loop's shape.** An
   interpreter change is measured on the board (PowerPC's `stretch()`:
@@ -874,10 +880,12 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   measure every variant, on the machine whose cost it is (of six forms
   of ARMv7-M's sp/pc rules, the cheapest on x86-64 was not the cheapest
   on the board).
-- **The firmware links picolibc's size variant**, whose `memset` and
-  `memcpy` are byte loops, and GCC calls them for a struct assignment
-  too: PowerPC's decode clear was 25% of its interpreter. Grep a hot
-  path's disassembly for `bl memset`.
+- **An `-Os` anywhere on the link line links picolibc's size variant**,
+  whose `memset` and `memcpy` are byte loops, whatever the compile used;
+  GCC calls them for a struct assignment too (PowerPC's decode clear was
+  25% of its interpreter). The firmware links the speed variant now --
+  every JIT 1.0-5.4% faster -- except the N6, which has no room for it.
+  Grep a hot path's disassembly for `bl memset`.
 - **Compressed guest code is slower to interpret** (Zcb in the guest's
   march, 9%); `-Os` is 33% smaller and 8.8% slower; a last-block cache in
   front of the hash was 1.2% slower.

@@ -47,6 +47,25 @@ void emu_ir_bytes_op(uint32_t op, uint32_t bytes);
 /* The block lowered whole: `guest` instructions in `bytes` of code. */
 void emu_ir_bytes_commit(uint32_t guest, uint32_t bytes);
 
+/*
+ * Where the block about to be lowered ends in guest code, exclusive: the
+ * largest pc its frontend wrote after an instruction (EMU_IR_SETPC with
+ * a constant), taken before the passes elide any. Every frontend writes
+ * one after each instruction. 0 when it wrote none.
+ */
+void emu_ir_bytes_note_end(uint32_t end);
+uint32_t emu_ir_bytes_last_end(void);
+
+/*
+ * A block entered the cache spanning `guest` bytes of guest code, `dup`
+ * of them also in a resident block of the same context -- this one
+ * begins inside it (`partway`), or it begins inside this one -- and
+ * `code` host bytes is its own code prorated to `dup`. From emu_jit.c,
+ * which knows what is resident.
+ */
+void emu_ir_bytes_overlap(uint32_t guest, uint32_t dup, uint32_t code,
+                          int partway);
+
 typedef struct emu_ir_bytes_row {
     const char *name;
     uint64_t count;
@@ -58,6 +77,13 @@ typedef struct emu_ir_bytes_totals {
     uint64_t guest; /* guest instructions translated */
     uint64_t bytes; /* everything emitted for them */
     uint64_t frame; /* bytes no single operation emitted */
+    /* What a new block shared with the resident ones (emu_ir_bytes_overlap). */
+    uint64_t spanned; /* blocks whose guest span was known */
+    uint64_t span; /* their guest bytes */
+    uint64_t dup; /* of which already in a resident block */
+    uint64_t dup_code; /* host bytes, prorated */
+    uint64_t overlapped; /* blocks with any guest byte shared */
+    uint64_t partway; /* blocks that began inside a resident one */
 } emu_ir_bytes_totals_t;
 
 /*

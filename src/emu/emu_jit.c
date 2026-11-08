@@ -7,6 +7,7 @@
  * mistakes.
  */
 
+#include "emu/emu_ir_bytes.h" /* EMU_JIT_BYTE_STATS: what blocks share */
 #include "emu/emu_jit.h"
 #include "emu/emu_lock.h"
 
@@ -123,10 +124,17 @@ typedef struct {
     uint16_t hits; /* entries since the last ageing pass, saturating */
     int32_t next; /* hash chain, -1 terminates             */
     int32_t pnext; /* page index chain, -1 terminates       */
+#if EMU_JIT_BYTE_STATS
+    uint32_t guest_end; /* exclusive; 0 unknown: emu_ir_bytes_note_end */
+#endif
 } jit_block_t;
 
+/* Not in a stats build, which holds guest_end as well: it measures
+ * bytes, and is no build to time. */
+#if !EMU_JIT_BYTE_STATS
 _Static_assert(sizeof(jit_block_t) <= 72u,
                "a block entry outgrew its 72 bytes");
+#endif
 
 /*
  * Hit counts are bucketed rather than compared directly, so choosing what
@@ -1267,6 +1275,48 @@ static bool space_low(void)
  * moved with their jumps still aimed at blocks that had been evicted.
  * The attempt is over when this returns, so its flag is too.
  */
+#if EMU_JIT_BYTE_STATS
+/*
+ * What the block just entered shares with those already resident in the
+ * same context: whether a block entered part-way through another holds a
+ * second copy of its tail, which is the question when a buffer does not
+ * hold its working set. The largest single overlap, so a run of three
+ * counts once; a scan of every block, which a stats build can afford.
+ */
+static void note_overlap(const jit_block_t *nb, uint32_t self)
+{
+    const uint32_t p = nb->guest_pc;
+    const uint32_t e = nb->guest_end;
+    uint32_t dup = 0u;
+    int partway = 0;
+
+    if (e <= p) {
+        return;
+    }
+    for (uint32_t i = 0; i < self; i++) {
+        const jit_block_t *b = &g_blocks[i];
+
+        if (b->code == NULL || b->context != nb->context ||
+            b->guest_end <= b->guest_pc) {
+            continue;
+        }
+        const uint32_t lo = (b->guest_pc > p) ? b->guest_pc : p;
+        const uint32_t hi = (b->guest_end < e) ? b->guest_end : e;
+
+        if (hi > lo) {
+            if (hi - lo > dup) {
+                dup = hi - lo;
+            }
+            if (b->guest_pc < p) {
+                partway = 1;
+            }
+        }
+    }
+    emu_ir_bytes_overlap(
+        e - p, dup, (uint32_t)((uint64_t)nb->len * dup / (e - p)), partway);
+}
+#endif
+
 static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
                                    const emu_jit_ops_t *ops, uint64_t context,
                                    bool *overflowed)
@@ -1318,6 +1368,10 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
     b->len = (uint32_t)(g_emit - start);
     b->insns = (uint16_t)insns;
     b->hits = 0u;
+#if EMU_JIT_BYTE_STATS
+    b->guest_end = emu_ir_bytes_last_end();
+    note_overlap(b, g_block_count - 1u);
+#endif
     g_code_used = (uint32_t)(g_emit - g_code);
     chain_insert(g_block_count - 1u);
     page_insert(g_block_count - 1u);
