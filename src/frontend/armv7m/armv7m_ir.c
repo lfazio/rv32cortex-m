@@ -98,6 +98,7 @@
 #define A7_TEMP_HEADROOM 120u
 
 /* Guest "registers" beyond r0-r15. */
+#define R_SP 13u
 #define R_PC 15u
 #define R_XPSR 16u
 #define R_CTX 17u /* the low word of jit_ctx */
@@ -548,12 +549,39 @@ static uint16_t sel(T *t, uint16_t nv, uint16_t ov)
               OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, nv, ov), t->cmask));
 }
 
-static void wreg(T *t, uint32_t n, uint16_t v)
+/* A register write that cannot be sp, or is sp plus a multiple of four. */
+static void wreg_aligned(T *t, uint32_t n, uint16_t v)
 {
     if (t->in_it) {
         v = sel(t, v, G(t->b, n));
     }
     emu_ir_put(t->b, n, v);
+}
+
+/*
+ * **sp's bits [1:0] are always zero on the M7**, whatever instruction
+ * writes it (the interpreter's sp_write): masked here, at translation,
+ * so a block pays one AND where it writes sp and nothing elsewhere.
+ * Push, pop, LDM/STM and LDRD/STRD writebacks, and sp plus or minus a
+ * multiple of four, go through wreg_aligned instead.
+ */
+static void wreg(T *t, uint32_t n, uint16_t v)
+{
+    if (n == R_SP) {
+        v = OP(t->b, EMU_IR_AND, v, K(t->b, ~3u));
+    }
+    wreg_aligned(t, n, v);
+}
+
+/* rd = rn +/- operand: sp plus a multiple of four needs no mask. */
+static void wreg_addsub(T *t, const I *d, uint16_t res)
+{
+    if (d->rd == R_SP && d->rn == R_SP && d->opnd == ARMV7M_OPND_IMM &&
+        (d->imm & 3u) == 0u) {
+        wreg_aligned(t, d->rd, res);
+    } else {
+        wreg(t, d->rd, res);
+    }
 }
 
 /*
@@ -1009,7 +1037,7 @@ static bool lower_dp(T *t, const I *d)
         m = operand2(t, d, false, &cy);
         res = adder(t, a, m, false, NOT, sf);
         if (d->op == ARMV7M_OP_ADD) {
-            wreg(t, d->rd, res);
+            wreg_addsub(t, d, res);
         }
         return true;
 
@@ -1019,7 +1047,7 @@ static bool lower_dp(T *t, const I *d)
         m = operand2(t, d, false, &cy);
         res = adder(t, a, m, true, NOT, sf);
         if (d->op == ARMV7M_OP_SUB) {
-            wreg(t, d->rd, res);
+            wreg_addsub(t, d, res);
         }
         return true;
 
@@ -1615,7 +1643,7 @@ static bool lower_dual(T *t, const I *d)
 
         it_access_done(t);
         if (d->wback) {
-            wreg(t, d->rn, ADDK(b, addr, off));
+            wreg_aligned(t, d->rn, ADDK(b, addr, off)); /* imm8 x 4 */
         }
         wreg(t, d->rd, v1);
         wreg(t, d->ra, v2);
@@ -1628,7 +1656,7 @@ static bool lower_dual(T *t, const I *d)
         (void)emu_ir_mem_if(b, EMU_IR_STORE, spec, acc, hi, disp + 4u, p);
         it_access_done(t);
         if (d->wback) {
-            wreg(t, d->rn, ADDK(b, addr, off));
+            wreg_aligned(t, d->rn, ADDK(b, addr, off)); /* imm8 x 4 */
         }
     }
     return true;
@@ -1694,7 +1722,7 @@ static bool lower_multi(T *t, const I *d)
     }
     it_access_done(t);
     if (d->wback) {
-        wreg(t, d->rn, ADDK(b, base, final));
+        wreg_aligned(t, d->rn, ADDK(b, base, final)); /* 4 x registers */
     }
     if (load) {
         for (uint32_t i = 0u; i < 15u; i++) {

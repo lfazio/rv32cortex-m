@@ -97,6 +97,10 @@ SECTIONS
     {
         . = ALIGN(8);
         __itcm_start = .;
+        /* The instrument for this section: -DEMU_LAYOUT_PAD_ITCM=N moves
+           everything in it N bytes up -- the interpreters' loops, which
+           EMU_LAYOUT_PAD does not move. */
+        . = . + (DEFINED(EMU_LAYOUT_PAD_ITCM) ? EMU_LAYOUT_PAD_ITCM : 0);
         *(.itcm)
         *(.itcm*)
 

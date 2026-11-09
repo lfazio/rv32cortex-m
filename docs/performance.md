@@ -172,6 +172,13 @@ CoreMark x120 at 96 KB 14.41 to 14.40, G4MH 53.22 to 52.74. ITCM left
 after the move: 5.6 KB in the RV32 firmware with the network stack's
 flash driver, 2.7 KB in a G4MH one, which is the tightest.
 
+`EMU_LAYOUT_PAD` moves flash and so does not move these loops; their
+instrument is `-DEMU_LAYOUT_PAD_ITCM=N`, which shifts everything in the
+ITCM N bytes up. Multiples of 32 keep the loop's alignment in the M7's
+fetch; 4, 8 and 12 change it. ARMv7-M's interpreted CoreMark at 7fb55c2
+read 152.76 to 154.05 across those six offsets
+([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
+
 There was an older table here — native ARM against the JIT at five cache
 sizes on a 180 MHz M4, quoting 15.3× to 32.3× slower than native. It
 described the hand-written Thumb-2 translator, which no longer exists,

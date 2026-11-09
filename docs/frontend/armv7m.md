@@ -128,6 +128,8 @@ generated suites:
 | **sp or pc where the manual says UNPREDICTABLE**: Rd, Rn or Rm of the 32-bit data-processing, shift, extend, multiply, divide, saturate and bit-field forms; Rt of a narrow load or any store; LDRD/STRD through pc or onto sp; the exclusives; TBB/TBH; VMOV, VMRS, VMSR, MSR | **UNDEFINSTR**: 557 of 557 in one sweep and every named encoding after. The frontend executed them all (2026-10-26) |
 | ...and a write-back onto the transfer register, LDRD with W through pc, STM writing back over a base it stores, VSTR through pc | UNDEFINSTR |
 | except the forms that may name sp: ADD, SUB, CMP and CMN of sp, MOV to or from it, `str sp` | execute |
+| ...and `ADD.W`/`SUB.W sp, sp, Rm` with a shift other than LSL #0-#3 -- ROR, LSR, ASR, RRX, LSL #4, flags or not | **execute as written**: `ror #2` of 0x41 moves sp by 0x40000010. The frontend raised UNDEFINSTR; fuzz-armv7m-jit's corpus on the board found it (2026-11-08) |
+| **any write to sp of a value that is not a multiple of four** -- MOV, ADD (16- and 32-bit), ADDW, SUB, MOV.W, `ldr.w sp`, and a load's or store's writeback through sp | **bits [1:0] dropped**: sp + 1 is sp, sp - 1 and sp - 5 are sp - 4 and sp - 8. Flags are the whole result's. The frontend kept them everywhere but MSR; now `sp_write` in the interpreter and `wreg` in the translator, which spares writes that are sp plus a multiple of four (`spwrite.S`, `test_sp_write_board_answers`) |
 | except an LDM of one register, or one writing back over a base in its list, and REV/CLZ with their two Rm copies differing | execute -- UNPREDICTABLE, and not refused |
 | 16-bit CMP naming pc, and BLX pc | UNDEFINSTR; CMP with two low registers in the hi-register form executes, as does `add pc, pc` |
 | **IT, every encoding**: firstcond 1111, AL with an else, an IT inside an IT block | execute: 1110 and 1111 both mean always, and an inner IT replaces the block. The frontend refused all of them (2026-10-26) |
@@ -367,6 +369,29 @@ pc compared first, so that Thread mode never reads xPSR for it:
 154.21, 155.22 and 154.26 against 154.51, 154.46 and 154.35 at three
 layouts -- noise. What is left of the 7.1% is not where the code lives
 or which test comes first.
+
+**And on 2026-11-08, for sp's bits [1:0], seven variants of one fix
+read from -4.7% to +5.5%** on interpreted CoreMark (against 153.99),
+while callgrind read every one of them 1.1% *fewer* host instructions
+and the JIT 0.00-1.5%:
+
+| the sp mask, and around it | interpreted | under the JIT |
+|---|---|---|
+| inline at each writer | +1.03% (`t32_dp_reg` moved to flash) | 0.00% |
+| in out-of-line helpers reached from the sp/pc test (shipped) | **+0.94%, +1.01%** | **0.00%** |
+| ...and 32-bit compares kept off that path in the handlers | +5.5% (`t32_dp_imm`, `t32_dp_reg`, `t16_special` to flash) | +0.06% |
+| ...with those three forced inline | +1.9%, +2.6% | +0.12% |
+| ...and the eight flash helpers placed in ITCM | -4.7% | +1.5% |
+| the compare test inside the helper instead | +2.55% | +0.12% |
+| the old code with the helpers in ITCM, no fix | +1.7%, +1.8% | +1.4% |
+
+The shipped one held at six ITCM offsets (`-DEMU_LAYOUT_PAD_ITCM`, 4 to
+128 bytes), so it is not where the loop sits. Two things were learned
+on the way: **every 32-bit TST, TEQ, CMN and CMP takes the sp/pc path**,
+since their "no destination" is a d of pc -- two calls into flash each,
+before and after; and a quarter of the interpreter's samples are in
+flash helpers whose placement LTO decides anew at each change. Neither
+is fixed ([TODO](../TODO.md)).
 
 ---
 

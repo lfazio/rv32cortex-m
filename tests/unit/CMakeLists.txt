@@ -269,6 +269,16 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-armv7m-tcm-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # sp as the M7 writes it: bits [1:0] dropped, ADD/SUB sp with any
+    # shift executed (spwrite.S).
+    if(TARGET guest-armv7m-spwrite)
+        add_test(NAME guest-armv7m-spwrite-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-spwrite.bin"
+                         SPWRITE-OK --frontend armv7m --max-insn 100000)
+        set_tests_properties(guest-armv7m-spwrite-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(TARGET guest-armv7m-faulthead)
         add_test(NAME guest-armv7m-faulthead-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

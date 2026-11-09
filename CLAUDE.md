@@ -569,12 +569,14 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   ARMv7-M; both decoders are held equal over all 402,712,576.
 - **The board's table is not the manual's.** The M7 raises UNDEFINSTR for
   wrong should-be bits and for every UNPREDICTABLE sp/pc choice asked,
-  but executes an LDM of one register and REV/CLZ with Rm copies
-  differing -- and every UNPREDICTABLE IT form: a nested IT replaces the
-  block, B\<cond\> and CBZ inside one ignore its condition, and any
-  pc-writer ends it even when skipped. Ask, keep the
-  answers (`test_sp_pc_board_answers`, `test_it_board_answers`), and ask
-  dangerous encodings last.
+  but executes an LDM of one register, REV/CLZ with Rm copies
+  differing and ADD/SUB sp, sp, Rm with any shift -- and every
+  UNPREDICTABLE IT form: a nested IT replaces the block, B\<cond\> and
+  CBZ inside one ignore its condition, and any pc-writer ends it even
+  when skipped. Ask, keep the answers (`test_sp_pc_board_answers`,
+  `test_it_board_answers`), and ask dangerous encodings last -- or
+  resume past them (`run.py --resume`): a case after which the board
+  says nothing more is an answer too.
 - **A register field reused as an opcode extension will not tell you**
   (G4MH `reg2 == 0`, five instances, the last stopping every C guest);
   check every instruction sharing the opcode, and its width.
@@ -665,6 +667,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   ARMv7-M run loop took any 0xFxxxxxxx pc in Handler mode as
   EXC_RETURN; MOV pc, ADD pc and BLX branch, and the F746 faults them
   (`sys.c` `excret-*`, `pc_not_exc_return`).
+- **A property of a register holds at every writer of it**: the M7's sp
+  drops bits [1:0] whatever writes it -- MOV, ADD, ADDW, SUB, `ldr sp`,
+  a writeback through sp -- and only MSR's path masked them
+  (`sp_write`, `wreg`; `spwrite.S`). Grep for every writer before
+  modelling a register's rule at one.
 - **A refused instruction has not happened**: MDP is resumable, so a
   SET1 whose store is refused must not have moved Z (FEPSW held it), a
   doubleword refused on its second word must not have stored its first,
@@ -908,7 +915,8 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 - **At this size the compiler's choices move a row as much as the code**:
   measure every variant, on the machine whose cost it is (of six forms
   of ARMv7-M's sp/pc rules, the cheapest on x86-64 was not the cheapest
-  on the board).
+  on the board; seven forms of the sp mask read -4.7% to +5.5% on the
+  F746, callgrind -1.1% for each). Ship the binary you measured.
 - **An `-Os` anywhere on the link line links picolibc's size variant**,
   whose `memset` and `memcpy` are byte loops, whatever the compile used;
   GCC calls them for a struct assignment too (PowerPC's decode clear was

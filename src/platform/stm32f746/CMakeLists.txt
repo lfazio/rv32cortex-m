@@ -225,6 +225,13 @@ set(EMU_PC_PROFILE 0 CACHE STRING
 target_compile_definitions(emu-stm32f746 PRIVATE
     EMU_PC_PROFILE=${EMU_PC_PROFILE})
 
+set(EMU_LAYOUT_PAD_ITCM 0 CACHE STRING
+    "bytes to shift the ITCM's code by, to measure layout sensitivity (0: none)")
+if(EMU_LAYOUT_PAD_ITCM)
+    target_link_options(emu-stm32f746 PRIVATE
+        -Wl,--defsym=EMU_LAYOUT_PAD_ITCM=${EMU_LAYOUT_PAD_ITCM})
+endif()
+
 set(EMU_LAYOUT_PAD_BSS 0 CACHE STRING
     "bytes to shift .bss after .dtcm by, to measure layout sensitivity (0: none)")
 if(EMU_LAYOUT_PAD_BSS)

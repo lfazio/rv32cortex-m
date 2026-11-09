@@ -214,6 +214,26 @@ static inline bool handler_branch_to_exc_return(const armv7m_cpu_t *c)
                                          ARMV7M_EXC_RETURN_MASK;
 }
 
+/*
+ * **sp's bits [1:0] are always zero on the M7**, whatever writes it: an
+ * odd value through MOV, ADD, ADDW, SUB, a load or a writeback, asked of
+ * the board one at a time, lands with them cleared (docs/fuzzing.md).
+ * MSR's path masks in armv7m_set_sp; these are the instructions that
+ * can write sp a value that is not a multiple of four. Push, pop,
+ * ADD/SUB sp by an imm7, LDM/STM and LDRD/STRD cannot, and do not ask.
+ *
+ * **Out of the loop's way.** Every one of these is reached only once an
+ * encoding has named sp or pc, which the handlers already test for; the
+ * masks written inline beside that test grew the loop past what LTO
+ * kept in the ITCM, and t32_dp_reg went to flash behind a veneer --
+ * interpreted CoreMark 1.03% slower on the F746 at both offsets, with
+ * nothing on the common path but the bytes.
+ */
+static inline void sp_write(armv7m_cpu_t *c, uint32_t v)
+{
+    c->r[ARMV7M_SP] = v & ~3u;
+}
+
 /* ALUWritePC, for MOV pc and ADD pc. */
 static inline void alu_write_pc(armv7m_cpu_t *c, uint32_t addr)
 {
@@ -251,6 +271,28 @@ static void bx_write_pc(armv7m_cpu_t *c, uint32_t addr)
     }
     c->xpsr = (c->xpsr & ~ARMV7M_T) | ((addr & 1u) ? ARMV7M_T : 0u);
     c->r[ARMV7M_PC] = addr & ~1u;
+}
+
+/* MOV or ADD (register) into sp or pc: see sp_write. */
+static EMU_COLD_NOINLINE void alu_write_sp_pc(armv7m_cpu_t *c, uint32_t rd,
+                                              uint32_t v)
+{
+    if (rd == ARMV7M_PC) {
+        alu_write_pc(c, v);
+    } else {
+        sp_write(c, v);
+    }
+}
+
+/* A load into sp or pc: a word, since LDRB and LDRH of sp UNDEF. */
+static EMU_COLD_NOINLINE void load_write_sp_pc(armv7m_cpu_t *c, uint32_t rt,
+                                               uint32_t v)
+{
+    if (rt == ARMV7M_PC) {
+        bx_write_pc(c, v);
+    } else {
+        sp_write(c, v);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -648,8 +690,8 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
     case 0u: { /* ADD (register), any registers, no flags */
         const uint32_t v = reg_pc(c, rd, pc) + reg_pc(c, rm, pc);
 
-        if (rd == ARMV7M_PC) {
-            alu_write_pc(c, v);
+        if (EMU_UNLIKELY(armv7m_sp_or_pc(rd))) {
+            alu_write_sp_pc(c, rd, v);
         } else {
             c->r[rd] = v;
         }
@@ -664,8 +706,8 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
     case 2u: { /* MOV (register), no flags */
         const uint32_t v = reg_pc(c, rm, pc);
 
-        if (rd == ARMV7M_PC) {
-            alu_write_pc(c, v);
+        if (EMU_UNLIKELY(armv7m_sp_or_pc(rd))) {
+            alu_write_sp_pc(c, rd, v);
         } else {
             c->r[rd] = v;
         }
@@ -1046,6 +1088,27 @@ static X dp_op(armv7m_cpu_t *c, uint32_t op, uint32_t rd, uint32_t rn,
     return OK;
 }
 
+/*
+ * Data processing that names sp or pc: the rule, then the operation, then
+ * sp's bits [1:0] (sp_write). Out of line, as the rule always was.
+ */
+static EMU_COLD_NOINLINE X dp_sp_pc(armv7m_cpu_t *c, uint32_t op, uint32_t rd,
+                                    uint32_t rn, bool reg, uint32_t rm,
+                                    uint32_t t, uint32_t sh, uint32_t b,
+                                    uint32_t cy, bool s)
+{
+    if (!armv7m_dp_regs_rule(op, rd, rn, reg, rm, t, sh, s)) {
+        return ARMV7M_X_UNDEF; /* sp or pc where the M7 refuses them */
+    }
+
+    const X x = dp_op(c, op, rd, rn, b, cy, s);
+
+    if (rd == ARMV7M_SP) {
+        sp_write(c, c->r[ARMV7M_SP]); /* flags were the whole result's */
+    }
+    return x;
+}
+
 /* Data processing (modified immediate): 11110 x0 xxxxx | 0 */
 static X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
 {
@@ -1058,8 +1121,8 @@ static X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
     uint32_t cy;
     const uint32_t b = armv7m_expand_imm_c(imm12, carry(c), &cy);
 
-    if (!armv7m_dp_regs_ok(sel, rd, rn, false, 0u, 0u, 0u, s)) {
-        return ARMV7M_X_UNDEF; /* sp or pc where the M7 refuses them */
+    if (EMU_UNLIKELY(!armv7m_none_sp_pc(rd, rn, 0u))) {
+        return dp_sp_pc(c, sel, rd, rn, false, 0u, 0u, 0u, b, cy, s);
     }
     return dp_op(c, sel, rd, rn, b, cy, s);
 }
@@ -1092,12 +1155,18 @@ static EMU_ALWAYS_INLINE X t32_dp_plain(armv7m_cpu_t *c, uint16_t w0,
     switch (op) {
     case 0x00u: /* ADDW, and ADR when rn is pc */
         c->r[rd] = (rn == ARMV7M_PC) ? ((pc + 4u) & ~3u) + imm12 : c->r[rn] + imm12;
+        if (EMU_UNLIKELY(rd == ARMV7M_SP)) {
+            sp_write(c, c->r[ARMV7M_SP]);
+        }
         return OK;
     case 0x04u: /* MOVW */
         c->r[rd] = imm16;
         return OK;
     case 0x0Au: /* SUBW, and ADR (subtract) */
         c->r[rd] = (rn == ARMV7M_PC) ? ((pc + 4u) & ~3u) - imm12 : c->r[rn] - imm12;
+        if (EMU_UNLIKELY(rd == ARMV7M_SP)) {
+            sp_write(c, c->r[ARMV7M_SP]);
+        }
         return OK;
     case 0x0Cu: /* MOVT */
         c->r[rd] = (c->r[rd] & 0xFFFFu) | (imm16 << 16);
@@ -1236,14 +1305,14 @@ static X t32_dp_reg(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
         return OK;
     }
     armv7m_decode_imm_shift(type, imm5, &t, &n);
-    if (!armv7m_dp_regs_ok(op, rd, rn, true, rm, t, n,
-                           ((w0 >> 4) & 1u) != 0u)) {
-        return ARMV7M_X_UNDEF; /* sp or pc where the M7 refuses them */
-    }
     {
+        const bool s = ((w0 >> 4) & 1u) != 0u;
         const uint32_t b = armv7m_shift_c(c->r[rm], t, n, carry(c), &cy);
 
-        return dp_op(c, op, rd, rn, b, cy, ((w0 >> 4) & 1u) != 0u);
+        if (EMU_UNLIKELY(!armv7m_none_sp_pc(rd, rn, rm))) {
+            return dp_sp_pc(c, op, rd, rn, true, rm, t, n, b, cy, s);
+        }
+        return dp_op(c, op, rd, rn, b, cy, s);
     }
 }
 
@@ -1798,10 +1867,10 @@ static X t32_ldst(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
             return x;
         }
         if (wback) {
-            c->r[rn] = offaddr;
+            c->r[rn] = (rn == ARMV7M_SP) ? (offaddr & ~3u) : offaddr;
         }
-        if (rt == ARMV7M_PC) {
-            bx_write_pc(c, v);
+        if (EMU_UNLIKELY(armv7m_sp_or_pc(rt))) {
+            load_write_sp_pc(c, rt, v);
         } else {
             c->r[rt] = extend(v, size, sext);
         }
@@ -1811,7 +1880,7 @@ static X t32_ldst(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
         const X x = wr_u(c, addr, size, unpriv, c->r[rt]);
 
         if (x == OK && wback) {
-            c->r[rn] = offaddr;
+            c->r[rn] = (rn == ARMV7M_SP) ? (offaddr & ~3u) : offaddr;
         }
         return x;
     }

@@ -75,9 +75,15 @@ EMU_COLD_NOINLINE bool armv7m_dp_regs_rule(uint32_t sel, uint32_t d, uint32_t n,
         if (s && d == 15u) {
             return n != 15u && !bad_m; /* CMN and CMP may compare sp */
         }
-        if (n == 13u) { /* sp plus or minus: the one that may write sp */
-            return d != 15u && !bad_m &&
-                   !(reg && d == 13u && (t != ARMV7M_SH_LSL || sh > 3u));
+        if (n == 13u) {
+            /*
+             * sp plus or minus: the one that may write sp. With any
+             * shift: the manual makes a d of sp UNPREDICTABLE unless the
+             * shift is LSL #0-#3, and the M7 executes ROR, LSR, ASR, RRX
+             * and LSL #4, ADD and SUB, flags or not -- found by
+             * fuzz-armv7m-jit's corpus on the board (docs/fuzzing.md).
+             */
+            return d != 15u && !bad_m;
         }
         return !armv7m_sp_or_pc(d) && n != 15u && !bad_m;
     default:

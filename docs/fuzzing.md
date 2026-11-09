@@ -916,10 +916,12 @@ Asked then on purpose, sp saved and put back around each (`--enc`
 halfword sequences): every shift asked -- ROR, LSR, ASR, LSL #4, RRX --
 and SUB execute as written (`ror #2` of 0x41 moved sp by 0x40000010),
 and **every instruction that writes sp drops its low two bits on the
-M7** -- `mov sp, r3`, `add sp, r3`, `add.w sp, sp, #1`, `addw`, `sub.w`
-and `mov.w` alike -- where the frontend keeps them (its MSR path masks;
-nothing else does). Neither is modelled yet; the encodings asked are in
-[TODO.md](TODO.md).
+M7** -- `mov sp, r3`, `add sp, r3`, `add.w sp, sp, #1`, `addw`, `sub.w`,
+`mov.w`, `ldr.w sp`, and the writebacks of `ldr`, `ldrb` and `str`
+through sp alike -- where the frontend kept them (its MSR path masked;
+nothing else did). Both are modelled now, on both backends
+([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected));
+replayed, the corpus's answers and all 31 probes agree.
 
 ## What it found
 
@@ -945,6 +947,8 @@ Each fix was confirmed by reverting it with its regression in place.
 | ARMv7-M under the JIT ran a block's own later instructions stale after a store into them -- the hit discarded the translations, but the block that made the store went on | `armv7m_ir.c` (`smc_stop`) | `armv7m-jit/smc-store-ahead-in-block`, seed `smc-in-block.S` |
 | the rerun that stops such a block fetched the store again, and a store that had rewritten itself ran as what it wrote (`str r1, [r0]` as `movs r0, #0`) | `armv7m_ir.c` (`finish_imprecise`) | `armv7m-jit/smc-store-rewrites-itself` |
 | the telnet console read IAC IAC as a command with an option byte: the data byte 255 was lost, and the byte after it | `net_telnet.c` | `telnet/iac-iac-is-data` |
+| `ADD.W`/`SUB.W sp, sp, Rm` with a shift the manual calls UNPREDICTABLE raised UNDEFINSTR, where the M7 executes it. **Found by the corpus on the board**, not by a divergence: both of the fuzzer's sides shared the reading | `armv7m_dp_regs_rule` | `test_sp_pc_board_answers`, `spwrite.S` |
+| every write to sp kept bits [1:0], which the M7 drops; only MSR masked them. Found asking the board about the first | the ARMv7-M **interpreter** and translator (`sp_write`, `wreg`) | `test_sp_write_board_answers`, `guest-armv7m-spwrite-both` |
 
 And inputs held for the permitted differences above:
 `rv32-jit/flw-fault-fs-dirtier` (no longer a difference: FS is exact), `rv32-jit/trap-first-in-block-run-count`

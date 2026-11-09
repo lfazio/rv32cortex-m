@@ -146,28 +146,22 @@ measured at.
       grows each time it is undone, or that forgets only marks older
       than the last, is the next thing to try -- measured on the board,
       where a translation costs tens of thousands of cycles.
-- [ ] **ARMv7-M: sp as the M7 writes it.** Two answers the board gave
-      and the frontend does not model
-      ([fuzzing.md](fuzzing.md#the-corpus-on-the-board)): `ADD.W`/`SUB.W
-      sp, sp, Rm` with any shift executes as written, where the decoder
-      raises UNDEFINSTR (`armv7m_dp_regs_rule`, n = 13); and every
-      write to sp drops bits [1:0], where only MSR masks them. Asked as
-      `--enc` sequences that save sp, write it and put it back
-      (`4669+2341+eb0d+0db3+4668+468d` and the like: `eb0d` with
-      `0db3`, `0d93`, `0da3`, `1d03`, `0d33`; `ebad 0db3`; and for the
-      low bits `469d`, `449d`, `f10d 0d01`, `f20d 0d01`, `f1ad 0d01`,
-      `ea4f 0d03` with an odd value). The interpreter writes sp from
-      several hot paths -- the 16-bit `mov sp`/`add sp` among them --
-      so the mask is a board A/B, and both answers belong in
-      `test_sp_pc_board_answers` once modelled. Not asked: `ldr sp`.
 - [ ] **ARMv7-M's sp/pc and IT rules cost its interpreter 7.1% on the
       F746** (143.44 to 153.69 host cycles an instruction on CoreMark,
-      154.52 today;
+      154.52 on 2026-11-07, 155.43 with sp's bits [1:0] masked;
       [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
       about 2% in the predicates by a PC profile and the rest code shape.
       The JIT, the default, pays nothing. Eight variants were measured,
       the last two on 2026-11-07: the flash-resident helpers moved into
-      ITCM (154.88) and the EXC_RETURN test reordered (noise). A decode
+      ITCM (154.88) and the EXC_RETURN test reordered (noise); seven more
+      of the sp mask on 2026-11-08 read -4.7% to +5.5% with callgrind
+      1.1% lower for each, the -4.7% with the helpers in ITCM costing
+      the JIT 1.5%. Two leads from those: **every 32-bit TST, TEQ, CMN
+      and CMP takes the sp/pc path** (its d of pc), two calls into flash
+      each, and keeping them off it in the handlers pushed the handlers
+      out of the loop; and a quarter of the samples are in helpers LTO
+      places anew at each change -- the figure is that placement's
+      until something pins it without costing the JIT. A decode
       cache is the one lever not tried since the rules exist, and the
       reason it might win now where it lost by 3% before
       ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost))

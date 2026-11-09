@@ -345,6 +345,19 @@ static void test_sp_pc_board_answers(void)
         {0xe8b00003u, false}, /* ldm.w r0!, {r0, r1}            */
         {0xfab2f081u, false}, /* clz r0, r1, its two Rm copies differing */
         {0xee100b10u, false}, /* vmov.32 r0, d0[0]              */
+        /* sp plus or minus a register, d sp, any shift: the M7 executes
+         * what the manual calls UNPREDICTABLE (fuzz-armv7m-jit's corpus on
+         * the board; spwrite.S has what each writes) */
+        {0xeb0d0db3u, false}, /* add.w sp, sp, r3, ror #2       */
+        {0xeb0d0d93u, false}, /* add.w sp, sp, r3, lsr #2       */
+        {0xeb0d0da3u, false}, /* add.w sp, sp, r3, asr #2       */
+        {0xeb0d5da3u, false}, /* add.w sp, sp, r3, asr #22      */
+        {0xeb0d1d03u, false}, /* add.w sp, sp, r3, lsl #4       */
+        {0xeb0d0d33u, false}, /* add.w sp, sp, r3, rrx          */
+        {0xebad0db3u, false}, /* sub.w sp, sp, r3, ror #2       */
+        {0xeb1d0db3u, false}, /* adds.w sp, sp, r3, ror #2      */
+        {0xebbd0db3u, false}, /* subs.w sp, sp, r3, ror #2      */
+        {0xf8d2d000u, false}, /* ldr.w sp, [r2]                 */
         /* 16-bit, the second halfword ignored */
         {0x458f0000u, true}, /* cmp pc, r1                     */
         {0x45780000u, true}, /* cmp r0, pc                     */
@@ -412,6 +425,55 @@ static void run_seq(const uint16_t *hw, uint32_t n, bool z, uint32_t r0)
         g_ua_ram[0x1001u + 2u * i] = (uint8_t)(v >> 8);
     }
     (void)armv7m_run(c, 16u, &done);
+}
+
+/*
+ * **sp's bits [1:0] are always zero on a Cortex-M7**, whatever writes it:
+ * each sequence below wrote sp a value that is not a multiple of four on
+ * the F746 (rawgen's named halfwords, sp saved and put back), and the
+ * board's sp moved by what is listed -- the odd part dropped. The
+ * frontend kept it everywhere but MSR. Interpreted here; spwrite.S asks
+ * the same of both backends.
+ */
+static void test_sp_write_board_answers(void)
+{
+    static const struct {
+        uint16_t hw[6];
+        uint32_t n;
+        int32_t moved; /* what the board's sp moved by */
+        const char *what;
+    } k[] = {
+        {{0x4669, 0x1c4b, 0x469d}, 3u, 0, "mov sp, r3 of sp + 1"},
+        {{0x2301, 0x449d}, 2u, 0, "add sp, r3 with r3 1"},
+        {{0xf10d, 0x0d01}, 2u, 0, "add.w sp, sp, #1"},
+        {{0xf20d, 0x0d01}, 2u, 0, "addw sp, sp, #1"},
+        {{0xf1ad, 0x0d01}, 2u, -4, "sub.w sp, sp, #1"},
+        {{0x4669, 0x1c4b, 0xea4f, 0x0d03}, 4u, 0, "mov.w sp, r3 of sp + 1"},
+        {{0x2304, 0xeb0d, 0x0db3}, 3u, 0, "add.w sp, sp, r3, ror #2: + 1"},
+        {{0x2310, 0xebbd, 0x0db3}, 3u, -4, "subs.w sp, sp, r3, ror #2: - 4"},
+        {{0x4669, 0x1c4b, 0xf84d, 0x3c08, 0xf85d, 0xdc08},
+         6u, 0, "ldr.w sp of sp + 1"},
+        {{0xf85d, 0x3f01}, 2u, 0, "ldr r3, [sp, #1]!"},
+        {{0xf85d, 0x3b01}, 2u, 0, "ldr r3, [sp], #1"},
+        {{0xf84d, 0x3d05}, 2u, -8, "str r3, [sp, #-5]!"},
+        {{0xf81d, 0x3b01}, 2u, 0, "ldrb r3, [sp], #1"},
+        {{0x2301, 0xeb0d, 0x0d83}, 3u, 4, "add.w sp, sp, r3, lsl #2: exact"},
+    };
+    const uint32_t sp0 = UA_RAM_BASE + 0xF000u; /* run_seq's */
+
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        const uint32_t want = sp0 + (uint32_t)k[i].moved;
+
+        run_seq(k[i].hw, k[i].n, false, 0u);
+        if (g_ua_cpu.r[ARMV7M_SP] != want ||
+            g_ua_cpu.r[ARMV7M_PC] != UA_CODE + 2u * k[i].n) {
+            printf("    %s: sp %08x, want %08x, pc %08x\n", k[i].what,
+                   (unsigned)g_ua_cpu.r[ARMV7M_SP], (unsigned)want,
+                   (unsigned)g_ua_cpu.r[ARMV7M_PC]);
+        }
+        CHECK_EQ(g_ua_cpu.r[ARMV7M_SP], want);
+        CHECK_EQ(g_ua_cpu.r[ARMV7M_PC], UA_CODE + 2u * k[i].n); /* at BKPT */
+    }
 }
 
 static void test_it_board_answers(void)
@@ -1540,6 +1602,7 @@ void test_armv7m(void)
     test_decode_agrees_on_undefined();
     test_sp_pc_board_answers();
     test_it_board_answers();
+    test_sp_write_board_answers();
     test_it_pc_writers_board_answers();
     test_vector_shaped_like_exc_return();
     test_handler_pc_writers_branch();

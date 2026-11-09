@@ -117,7 +117,7 @@ function(emu_stage_guest_image out_bin)
         # ARM toolchain the firmware already needs.
         #
         set(ARMV7M_GUEST "alu"
-            CACHE STRING "ARMv7-M guest to embed in the firmware (alu, itblock, nvic, t2exec, hello, coremark, dhrystone, crypto)")
+            CACHE STRING "ARMv7-M guest to embed in the firmware (alu, itblock, nvic, t2exec, hello, coremark, dhrystone, crypto, tcm, spwrite, ...: any guest-armv7m-NAME)")
         set(_src "${CMAKE_BINARY_DIR}/guest/armv7m-${ARMV7M_GUEST}.bin")
         set(_dep "${_src}" "guest-armv7m-${ARMV7M_GUEST}")
         set(_name "armv7m-${ARMV7M_GUEST}.bin")

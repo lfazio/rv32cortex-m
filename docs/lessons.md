@@ -4642,6 +4642,42 @@ session, and every one of them recurred:
   what came before it. **A run started twice is two runs: key the end
   on the start.**
 
+- **A property of a register holds at every writer of it.** The
+  fuzz-armv7m-jit corpus on the F746 differed in two encodings, both
+  `ADD.W sp, sp, Rm` with a shift the manual calls UNPREDICTABLE, which
+  the M7 executes. Asking what they wrote to sp, sp saved and put back
+  around each, showed something no corpus case could: an odd value
+  written to sp lands with bits [1:0] clear -- through MOV, ADD, ADDW,
+  SUB, MOV.W, `ldr.w sp`, and the writeback of a load or store through
+  sp, every one asked. The frontend masked them in MSR's path, the one
+  writer the manual's register description names, and nowhere else.
+  The fix is one function in each backend (`sp_write`, and `wreg` at
+  translation, which spares sp plus a multiple of four); the three
+  mutants of the interpreter and decoder fail the unit test, and the
+  two of the translator fail the guest under the JIT, each at the case
+  it breaks.
+  **When the board answers a question about a register, ask every
+  instruction that can write it -- grep for the writers, as for the
+  readers of a flag.**
+
+- **When seven variants of one fix read from -4.7% to +5.5%, the
+  figure is not about the fix.** Masking sp's low bits in ARMv7-M's
+  interpreter cost interpreted CoreMark 1% on the F746 while callgrind
+  said 1.1% fewer host instructions. `nm` explained the first variant
+  -- `t32_dp_reg` had left the ITCM loop for flash -- and the second
+  kept the loop's shape exactly and still read 1%, at six ITCM offsets
+  (a new instrument, `-DEMU_LAYOUT_PAD_ITCM`; the 0/64 pads move flash,
+  not the loop). A PC profile then found the 32-bit compares on the
+  sp/pc slow path -- their "no destination" is pc -- and every attempt
+  to take them off it moved a handler out of the loop instead, from
+  +1.9% to +5.5%; placing the flash helpers in ITCM gave -4.7% with the
+  fix and +1.8% without, and cost the JIT 1.5% both ways. The shipped
+  variant is the best of those that leave the JIT untouched, measured
+  as the exact binary that ships, and the rest is a TODO. **Record each
+  variant's figure and its `nm`; ship on the default backend's number;
+  and when a figure follows LTO's placement, say so rather than call it
+  the change's cost.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
