@@ -550,7 +550,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   SYNCI and G4MH's CACHE discard translations; FENCE, SYNCM and the rest
   order nothing on one host thread. Self-modifying tests must patch a
   block's *start* and run the backend they name.
-- **What the JIT emits is the cost on a fixed cache.** Measure size on
+- **What the JIT emits is the cost on a fixed cache** -- and on a fixed
+  temp budget: PowerPC's efsmul in IR took 60 of Thumb-2's 256 temps a
+  block, cut Whetstone's blocks (entries +38%) and was 19% slower, where
+  the same arithmetic in the helper's C was 15.1% faster. Measure size on
   the host that pays (Thumb-2 operand-sized encodings: 27% smaller,
   1.71x); after code grows, run the workload that fills the buffer and
   read `compact` before the time. A fast path costing bytes goes out of

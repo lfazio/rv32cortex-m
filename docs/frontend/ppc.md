@@ -1014,6 +1014,41 @@ layouts (the wall clock 2.49 s to 2.40 and 2.43), interpreted 247.39 to
 246.77, and CoreMark under the JIT, which runs none of it, 33.49 to
 33.62. The call is what is left.
 
+**efsmul's common case comes first in its helper.** Two normal
+operands, round to nearest, FINXE clear and an exponent before rounding
+in 1..253 is IEEE's single-precision product, with nothing that can
+overflow or underflow and no enable that can matter; `ppc_fpu_mul`
+computes it in 32-bit integers before anything else -- the significands
+shifted up 8 with their implicit bits at 31, so the 64-bit product's
+high word holds bits 47..16 and its low word the rest; the leading bit
+shifted to 31, the significand, the guard and the sticky bit fall out,
+rounding to nearest-even adds one, and the exponent added below the
+significand takes the carry. FG, FX, FINXS and the status are written
+as `finish` writes them. Everything else -- specials, denormals, the
+edges of the exponent, another mode, an enable -- takes `op_mul` and
+`finish` as before. Only the translated path calls `ppc_fpu_mul`; the
+interpreter's efsmul is `ppc_fpu_exec`'s general path, so fuzz-ppc-jit
+holds the two against each other, and a seed of the fast case's edges
+found six mutants of it (`efsmul-edges.S`,
+[../fuzzing.md](../fuzzing.md)). On the F746 against c866eca,
+Whetstone under the JIT 59.29 to 50.33 and 59.32 to 50.35 host cycles
+an instruction at two layouts, **15.1% faster**, the wall clock 2.25 s
+to 1.92; interpreted, which does not call it, 245.76 to 245.73 and
+246.67 to 246.66; CoreMark under the JIT 19.91 to 19.91 and 19.92 to
+19.91; every retired count the same.
+
+**In the block, the same arithmetic lost.** It was first written as IR
+-- MUL and MULHU, the rounding, selects by mask since Thumb-2 has no
+SELECT -- with the helper behind a predicate (a new IR form,
+`emu_ir_helper_if`) for everything else. Correct by fuzz-ppc-jit and
+the same six mutants, and on the F746 Whetstone went from 59.22 to
+70.34 (+19%): an efsmul took about 60 IR temps, Thumb-2 gives a block
+256 and stops translating with 96 to spare, so a block held three FP
+instructions and was cut -- block entries 425,496 to 588,341, a second
+compaction -- and every temp is a stack slot besides. The branch
+`wip/ppc-efsmul-in-block` keeps it. A lowering of the call itself
+would have to be cheaper in temps than the helper is in cycles.
+
 ## The JIT
 
 `--jit` selects `ppc_backend_jit`, built from `ppc_ir.c` through the

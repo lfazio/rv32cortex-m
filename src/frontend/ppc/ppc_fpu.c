@@ -1012,13 +1012,59 @@ EMU_HOT_TEXT uint32_t ppc_fpu_sub(ppc_cpu_t *c, uint32_t a, uint32_t b,
     return finish(c, &r, dst);
 }
 
+/*
+ * efsmul's common case first: two normal operands, round to nearest,
+ * the inexact interrupt off, and an exponent before rounding in 1..253
+ * -- so nothing can overflow or underflow, and no other enable can
+ * matter. The result is IEEE's single-precision product, and FG and FX
+ * the bits round_f64 reads, from the exact 48-bit product of the two
+ * significands: each shifted up 8 with its implicit bit at 31, the high
+ * word holds the product's bits 47..16 and the low its bits 15..0. The
+ * leading bit (47 or 46) shifted to 31, the 24 bits from it are the
+ * significand, the next the guard, and everything below the sticky
+ * bit; the exponent is added in below the significand, so rounding's
+ * carry moves it up. Everything else takes op_mul and finish.
+ *
+ * Only the translated path calls this (ppc_ir.c); the interpreter's
+ * efsmul is ppc_fpu_exec's, so fuzz-ppc-jit holds one against the
+ * other (efsmul-edges.S).
+ */
 EMU_HOT_TEXT uint32_t ppc_fpu_mul(ppc_cpu_t *c, uint32_t a, uint32_t b,
                                   uint32_t *dst)
 {
-    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+    const uint32_t f = c->spefscr;
+    const uint32_t ea = (a >> 23) & 0xFFu;
+    const uint32_t eb = (b >> 23) & 0xFFu;
 
-    op_mul(&r, a, b, rmode(c));
-    return finish(c, &r, dst);
+    if (EMU_LIKELY(ea - 1u < 254u && eb - 1u < 254u &&
+                   (f & (PPC_SPEFSCR_FRMC | PPC_SPEFSCR_FINXE)) == 0u)) {
+        const uint64_t p = (uint64_t)((a << 8) | 0x80000000u) *
+                           ((b << 8) | 0x80000000u);
+        const uint32_t hi = (uint32_t)(p >> 32);
+        const uint32_t top = hi >> 31;
+        /* The biased exponent less one; wraps above 253 when too small. */
+        const uint32_t em1 = ea + eb + top - 128u;
+
+        if (EMU_LIKELY(em1 < 253u)) {
+            const uint32_t h = hi << (top ^ 1u);
+            const uint32_t sig = h >> 8;
+            const uint32_t g = (h >> 7) & 1u;
+            const uint32_t x = (((h & 0x7Fu) | (uint32_t)p) != 0u) ? 1u : 0u;
+
+            *dst = ((a ^ b) & 0x80000000u) |
+                   ((em1 << 23) + sig + (g & (x | (sig & 1u))));
+            c->spefscr = (f & ~(uint32_t)STATUS) |
+                         (g ? PPC_SPEFSCR_FG : 0u) | (x ? PPC_SPEFSCR_FX : 0u) |
+                         ((g | x) ? PPC_SPEFSCR_FINXS : 0u);
+            return PPC_EXC_NONE;
+        }
+    }
+    {
+        res_t r = {0u, 0u, false, false, false, false, false, false, false};
+
+        op_mul(&r, a, b, rmode(c));
+        return finish(c, &r, dst);
+    }
 }
 
 EMU_HOT_TEXT uint32_t ppc_fpu_div(ppc_cpu_t *c, uint32_t a, uint32_t b,

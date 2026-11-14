@@ -231,7 +231,11 @@ ppc)
             seed "$B/corpus/ppc-$g.text" "$g" "$Z" '\001\000\000\000' \
                 '\000\010\000\000'
     done
-    seeds '\001\000\000\000' '\001\010\000\000'
+    # And Book E with FINXE (bit 9): the EFPU seeds' round interrupt, and
+    # efsmul's fast case giving way to the general path (ppc_fpu_mul) --
+    # 120 s of mutating the word never set it, and a fast case that
+    # ignored FINXE went unfound.
+    seeds '\001\000\000\000' '\001\010\000\000' '\001\002\000\000'
     ;;
 virtio)
     # A driver's whole request, which random bytes seldom make.

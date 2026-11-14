@@ -974,6 +974,25 @@ the seed itself, the others in 8 and 111 s. Run alone (`FUZZ_SHOW=1`),
 it retires all 16 with no enables and takes the round interrupt at the
 first inexact result with all five.
 
+**A fast case is held against the general path by a seed of its edges.**
+efsmul's translated helper computes two normal operands under round to
+nearest before anything else ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)),
+and the interpreter's efsmul is the general path, so fuzz-ppc-jit holds
+one against the other -- but only where the inputs reach the edges.
+`seeds/ppc-jit/efsmul-edges.S` has 22 products, each in a block of its
+own and SPEFSCR read after it: ties to odd and to even, a sticky bit
+only in the product's low word with the leading bit at 46 and at 47,
+the carry out of an all-ones significand, exponents at 0, 1, 253 and
+254, 253 rounded into 254 and 254 into overflow, and the specials. Its
+cases are 32 bytes, so fuzz.sh's 256-byte cuts leave eight whole in
+each input; with a two-instruction prologue every cut had split one.
+Six mutants of the fast case -- the tie rule, the low word's sticky
+bits, the exponent bound, FINXE or FRMC ignored, FG written as FX --
+were each found, five by the seed's inputs within 13 s and FRMC by
+fuzzing in 6 s; FINXE only once fuzz.sh ran the seeds under a third
+configuration word with it set (bit 9), after 120 s of mutating the
+word had never set it.
+
 Each run below is after its target's fixes, and found nothing more:
 
 | target | time | inputs | compared | translations | block entries |

@@ -4724,6 +4724,20 @@ session, and every one of them recurred:
   ... (first op 38)`. **Make a broken promise loud on the host that
   breaks it, since only that host can.**
 
+- **Code in the block spends the block's budget, not only its bytes.**
+  PowerPC's efsmul cost a call into the FP unit on every instruction,
+  about 55 cycles on the F746 before any arithmetic, so the obvious move
+  was to compute the common case in IR and call only for the rest. It
+  was correct -- a seed of its edges, six mutants found -- and Whetstone
+  under the JIT was 19% slower: an efsmul took about 60 IR temps,
+  Thumb-2 gives a block 256 and stops with 96 to spare, so blocks were
+  cut after three FP instructions and block entries rose 38%. The same
+  arithmetic in C at the top of the helper, which the call reaches
+  anyway, was 15.1% faster: the general rounding and SPEFSCR's
+  bookkeeping were the cost, not the call. **Before inlining, measure
+  which part of the call's cost the inlining removes, on the host with
+  the smallest block.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
