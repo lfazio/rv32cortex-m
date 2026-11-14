@@ -4892,6 +4892,15 @@ session, and every one of them recurred:
   the second loop in turn. **Wait on what a run writes, its output or a
   file it creates, not on a name another waiter will carry.**
 
+- **The lever on the list is a hypothesis; the profile is the list.**
+  ARMv7-M's interpreter sat 2.4% above its old figure, and the one lever
+  not tried since was a decode cache -- three forms of which had lost
+  before. A PC profile put the decode at about 11% and the loop's own
+  per-instruction tests at about 40%, two of them a field assembled to
+  be tested for zero and a mode read before the pc it gated. Two
+  one-line changes made it 3.1% faster, past the old figure. **Profile
+  the thing before building the fix it was assumed to need.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

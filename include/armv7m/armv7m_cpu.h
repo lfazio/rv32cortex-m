@@ -87,9 +87,14 @@ static inline uint32_t armv7m_it_put(uint32_t xpsr, uint32_t it)
  * EQ is condition 0b0000, so a block led by `IT EQ` would read as no
  * block at all.
  */
+/*
+ * IT[3:0] non-zero, read where the bits sit -- IT[1:0] at xPSR[26:25],
+ * IT[3:2] at [11:10] -- rather than the field assembled and masked,
+ * which the interpreter paid on every instruction (2.7% on the F746).
+ */
 static inline bool armv7m_in_it(uint32_t xpsr)
 {
-    return (armv7m_it_get(xpsr) & 0x0Fu) != 0u;
+    return (xpsr & ((3u << 25) | (3u << 10))) != 0u;
 }
 
 /* FPSCR's bits a write may change: N Z C V, AHP DN FZ RMode, and the

@@ -420,8 +420,23 @@ every guest load and store passes through one:
 The JIT build's code is unchanged by the shipped form -- it is the
 binary measured as the base -- and the interpreter-only build takes the
 gain. Why an ITCM move costs the JIT build again is not known; this is
-the second time, at about the same size. The interpreter is about 2.4%
-above 375f9bf's 143.44 now.
+the second time, at about the same size. That left the interpreter
+about 2.4% above 375f9bf's 143.44.
+
+**Then a profile, before a fourth decode cache** (2026-11-14,
+`-DEMU_PC_PROFILE`, CoreMark x40 interpreted, 8,000 samples): the decode
+proper -- `exec16`, `exec32`, the length test -- was about 11% with the
+execution it leads into, and the run loop's own work about 40%: the
+loop 18%, the fetch 8%, and two helpers inlined into every instruction,
+the IT field assembled from xPSR only to be tested for zero
+(`armv7m_in_it`, 2.7%) and Handler mode read before the pc it gates
+could be 0xFxxxxxxx (`armv7m_handler_mode`, 2.0%). The first tests the
+bits where they sit now, `xpsr & 0x06000C00`; the second tests the pc
+first. Against 5bea05d at two layouts: **146.93 to 142.44 and 146.86 to
+142.22, 3.1% faster, below 375f9bf's 143.44**; under the JIT 13.60 to
+13.61 and 13.62, the retired counts the same. No decode cache was
+built: it could replace at most part of that 11%, and three forms
+already lost to the lookup.
 
 ---
 

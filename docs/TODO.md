@@ -139,21 +139,14 @@ measured at.
       What is left at 8 KB is mostly interpreted (8.6M of 10.7M
       instructions); the one setting that helped there, never
       forgetting the thrash marks (8.07 s), cost 16 KB 20%.
-- [ ] **ARMv7-M's interpreter is about 2.4% above 375f9bf's 143.44 on
-      the F746** (146.9 host cycles an instruction on CoreMark; the
-      sp/pc and IT rules made it 7.1%, the helpers placed in ITCM with
-      the compares off the sp/pc path took back half, and `rd_u` and
-      `wr_u` in ITCM in an interpreter-only build some more,
-      [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
-      Open: why every ITCM move so far -- the six helpers, `rd_u` and
-      `wr_u` -- costs the JIT build 1.4-1.9%, which is why the last is
-      made only where there is no JIT; and a decode cache, the one
-      lever not tried since the rules exist -- a hit would skip the
-      sp/pc predicates as well as the decode
-      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost));
-      it has to keep the interpreter's decode as the one checked against
-      the M7, and be invalidated by the stores the JIT's `smc_bits`
-      already watch.
+- [ ] **Why an ITCM move costs ARMv7-M's JIT build 1.4-1.9%**: the
+      six helpers and `rd_u`/`wr_u` each did, which is why the last are
+      placed only where there is no JIT
+      ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
+      The interpreter itself is below 375f9bf's 143.44 now (142.44),
+      from the run loop's per-instruction tests, not a decode cache.
+      What the profile leaves: the loop's own 18%, SysTick ticked per
+      instruction (about 6%), the fetch's MPU and execute-never test.
 - [ ] **PowerPC's FP unit is a call per instruction**: all four
       operations that are most of an FP program compute their common
       case inline in the helper the block calls, and Whetstone under the

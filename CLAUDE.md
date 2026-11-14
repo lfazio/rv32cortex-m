@@ -327,7 +327,10 @@ Each has cost more than one session, and every one recurred.
   not which class.** `rdtime` was 99.2% of a Linux boot's CSR accesses;
   a SysTick loop was 16% of ARMv7-M's host instructions; reads of the
   image walking the region table were 38.9% of Dhrystone's under the
-  JIT. Split by function before estimating how a total divides.
+  JIT. Split by function before estimating how a total divides. A
+  fourth decode cache for ARMv7-M was next on the list; the profile put
+  decode at 11% and two per-instruction tests at 4.7%, and fixing those
+  made the interpreter 3.1% faster.
 - **Check the instrument can represent the difference.** The
   disassembler had no FP (reported 0 of a 60% share); the pair histogram
   read one funct7 bit; `xlat`/`interp` cannot tell a helper call from a
