@@ -94,6 +94,13 @@ extern "C" {
 #define PPC_SPEFSCR_FDBZ (1u << 10)
 #define PPC_SPEFSCR_FUNF (1u << 9)
 #define PPC_SPEFSCR_FOVF (1u << 8)
+/* The per-instruction status: what a scalar instruction replaces,
+ * the vector half's "H" bits with it (ppc_fpu.c, finish). */
+#define PPC_SPEFSCR_STATUS                                                     \
+    (PPC_SPEFSCR_FGH | PPC_SPEFSCR_FXH | PPC_SPEFSCR_FINVH |                   \
+     PPC_SPEFSCR_FDBZH | PPC_SPEFSCR_FUNFH | PPC_SPEFSCR_FOVFH |               \
+     PPC_SPEFSCR_FG | PPC_SPEFSCR_FX | PPC_SPEFSCR_FINV | PPC_SPEFSCR_FDBZ |   \
+     PPC_SPEFSCR_FUNF | PPC_SPEFSCR_FOVF)
 #define PPC_SPEFSCR_FINXE (1u << 6)
 #define PPC_SPEFSCR_FINVE (1u << 5)
 #define PPC_SPEFSCR_FDBZE (1u << 4)

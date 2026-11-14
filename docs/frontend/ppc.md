@@ -1060,6 +1060,19 @@ only when the shifted operand is odd, and a carry into the guard needs
 the difference's six low bits all ones, which makes it even. The
 code's first comment said ORing could carry into the guard; it cannot.
 
+**And then the call into the unit went.** A PC profile of Whetstone
+under the JIT (1,704 samples at 39.81) put about 30% of the time in the
+FP path, and showed each FP instruction making two calls: the block's,
+to the IR wrapper (`ppc_ir_efsmul`, 2.8% of samples on its own), and
+the wrapper's, to `ppc_fpu_mul` in the other file, which LTO did not
+merge. The fast cases are in `ppc_fpu.h` now, forced inline into the
+wrappers, which call the unit only when one says no; the interpreter
+still takes the general path. On the F746 against ba8bc8a, Whetstone
+under the JIT 39.71 to 37.40 and 39.74 to 37.35, **5.8% and 6.0%
+faster**, the wall clock 1.50 s to 1.41; CoreMark under the JIT
+unchanged. The same profile put 12.9% in the dispatcher (`emu_jit_run`,
+`lookup`) and 1.7% in `__udivmoddi4`, efsdiv's 64-bit divide.
+
 **In the block, the same arithmetic lost.** It was first written as IR
 -- MUL and MULHU, the rounding, selects by mask since Thumb-2 has no
 SELECT -- with the helper behind a predicate (a new IR form,

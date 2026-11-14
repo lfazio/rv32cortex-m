@@ -161,10 +161,11 @@ measured at.
       helpers compute the common case first in integers -- normal
       operands, round to nearest, FINXE clear -- and Whetstone under
       the JIT is 59.3 to 39.7 host cycles an instruction for them on the
-      F746 ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
+      F746, and with them inlined into the IR wrappers, a call level
+      fewer, 37.4 ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
       Open: efsdiv (12 of Whetstone's translated sites) -- a 24-bit
       quotient needs a 48-by-24 divide, which an M7's UDIV is not -- and
-      the call itself, about 55 cycles. Discarded: the arithmetic in
+      the block's own call into the wrapper. Discarded: the arithmetic in
       the block, 19% slower on Thumb-2 for the temps it spent
       (`wip/ppc-efsmul-in-block`).
 
