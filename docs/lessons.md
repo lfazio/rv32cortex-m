@@ -4825,6 +4825,20 @@ session, and every one of them recurred:
   **Before writing off a knob, read the counter it was meant to move --
   here, translations -- and check it moved the right way.**
 
+- **A fallback that calls the interpreter once an instruction pays a
+  second interpreter.** Cold and given-up code was interpreted to its
+  first jump one call at a time -- the only way to see the jump -- and
+  each call paid the interpreter's entry: 103 host instructions an
+  interpreted instruction against the interpreter's own 66, on 70% of
+  Whetstone at 16 KB. The same lesson had been learnt for the declined
+  fallback (`run_interp_batch`), and came back through a new path that
+  needed to stop at a jump. Remembering how far each pc ran last time
+  made it one call and a step: 74, and Whetstone at 16 KB went from
+  slower than the interpreter (7.56 s against 6.23) to faster (5.99),
+  with the threshold armed only once a compaction says the buffer is
+  short. **Profile the fallback by host instructions per guest
+  instruction, against the interpreter's own figure.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

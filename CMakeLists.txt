@@ -440,14 +440,15 @@ set(EMU_INTERP_TEXT_SECTION "${_interp_section_default}" CACHE STRING
     "linker section for an interpreter's run loop (empty: ordinary .text)")
 
 #
-# How many times a pc must miss the block cache before it is translated;
-# until then it is interpreted. 1 translates on the first miss, which is
-# the default because nothing measured gains from more -- see
-# docs/jit/tuning.md before raising it. `--jit-hot N` sets it per run on
-# the host.
+# How many times a pc must miss the block cache before it is translated,
+# once the buffer has had to compact; until then it is interpreted to its
+# first jump. A buffer that holds its working set never compacts, so
+# this is a small buffer's setting: CoreMark at 32 KB on the F746 2.5
+# times faster at 8 (docs/jit/tuning.md). 1 translates on the first
+# miss. `--jit-hot N` sets it per run on the host.
 #
-set(EMU_JIT_HOT_THRESHOLD 1 CACHE STRING
-    "misses before a pc is translated (1: translate on the first)")
+set(EMU_JIT_HOT_THRESHOLD 8 CACHE STRING
+    "misses before a pc is translated once the buffer has compacted (1: on the first)")
 
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT

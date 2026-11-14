@@ -142,8 +142,8 @@ void emu_args_usage(void)
         "                       an SMP host otherwise runs them in parallel",
 #if EMU_JIT_SELECTABLE
         "  --jit                use the JIT backend, not the interpreter",
-        "  --jit-hot N          translate a pc only once it has missed the",
-        "                       block cache N times; until then interpret",
+        "  --jit-hot N          once the code buffer has compacted, translate",
+        "                       a pc only after N misses; until then interpret",
         "  --jit-thrash N       interpret a pc once its block has been",
         "                       evicted N times; 0 never gives up",
 #endif

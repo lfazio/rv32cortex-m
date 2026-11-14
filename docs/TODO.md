@@ -127,17 +127,14 @@ measured at.
       attached. And with the counter running in Sleep, the park loop
       could sleep with lwIP up on the F746 too (`board_idle`), untried
       over SLIP.
-- [ ] **Below 32 KB the JIT is still slower than the interpreter** on
-      Whetstone: 7.20 s at 16 KB and 10.46 at 8 KB against the
-      interpreter's 6.23, with the hot threshold at 8 -- which now
-      interprets cold code to its jump and pays where the buffer is short
-      (CoreMark at 32 KB a third faster at 4,
-      [jit/tuning.md](jit/tuning.md#emu_jit_hot_threshold--translating-only-hot-code)),
-      but is a warm-up where it fits (Whetstone at 64 KB 14% slower), so
-      the default is still 1. Next: a threshold that applies only once
-      the buffer has had to compact, which a buffer that fits never
-      does; and the thrash retries, which forget every mark each 65,536
-      interpreted dispatches.
+- [ ] **At 8 KB the JIT is still slower than the interpreter** on
+      Whetstone: 8.67 s against the interpreter's 6.23, where 16 KB is
+      ahead now (5.99) -- the hot threshold at 8, armed at the first
+      compaction, and the stretch a cold pc runs remembered
+      ([jit/tuning.md](jit/tuning.md#emu_jit_hot_threshold--translating-only-hot-code)).
+      What is left at 8 KB is mostly interpreted (8.6M of 10.7M
+      instructions); the one setting that helped there, never
+      forgetting the thrash marks (8.07 s), cost 16 KB 20%.
 - [ ] **ARMv7-M's interpreter is about 2.4% above 375f9bf's 143.44 on
       the F746** (146.9 host cycles an instruction on CoreMark; the
       sp/pc and IT rules made it 7.1%, the helpers placed in ITCM with

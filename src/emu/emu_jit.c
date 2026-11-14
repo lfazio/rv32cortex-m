@@ -654,6 +654,17 @@ static EMU_PER_CORE struct {
 } g_neg[JIT_NEG_SIZE];
 
 /*
+ * Beside each entry, how many instructions its pc ran before the first
+ * jump the last time it was interpreted to one (interp_to_jump), so the
+ * next time runs them in one call rather than one call each. 0 when not
+ * known. A hint, never trusted: a stretch whose branch goes the other way
+ * this time runs past it, which costs a block entry, never a wrong
+ * answer -- the interpreter runs whatever it is given -- and the run
+ * still ends at a jump.
+ */
+static EMU_PER_CORE uint8_t g_neg_run[JIT_NEG_SIZE];
+
+/*
  * Starts at 1 so that a zeroed table -- epoch 0 everywhere -- reads as
  * empty rather than as a valid entry for pc 0.
  */
@@ -662,9 +673,16 @@ static EMU_PER_CORE uint32_t g_neg_epoch = 1u;
 /* Shared by every core: it is configuration, set before a run. */
 static uint32_t g_hot_threshold = EMU_JIT_HOT_THRESHOLD;
 
+/*
+ * Whether this core's buffer has had to compact: the hot threshold
+ * applies only from then on (emu_jit_set_hot_threshold).
+ */
+static EMU_PER_CORE bool g_hot_armed;
+
 void emu_jit_set_hot_threshold(uint32_t misses)
 {
     g_hot_threshold = (misses < 1u) ? 1u : (misses > 127u) ? 127u : misses;
+    g_hot_armed = false; /* this core waits for a compaction again */
 }
 
 /* Shared by every core, as the hot threshold is. */
@@ -730,6 +748,9 @@ static uint32_t seen_get(uint32_t s, uint32_t pc, uint32_t context)
 
 static void seen_set(uint32_t s, uint32_t pc, uint32_t context, uint32_t v)
 {
+    if (g_neg[s].pc != pc || g_neg[s].context != context) {
+        g_neg_run[s] = 0u; /* another pc's stretch */
+    }
     g_neg[s].pc = pc;
     g_neg[s].context = context;
     g_neg[s].tag = (g_neg_epoch << 8) | v;
@@ -797,14 +818,12 @@ static void neg_note(uint32_t pc, uint64_t key)
  * A collision loses another pc's count, or its declined mark; the cost
  * is a warm-up repeated or a translation retried, never a wrong answer.
  */
-static bool heat_bump(uint32_t pc, uint64_t key)
+static bool heat_bump(uint32_t s, uint32_t pc, uint32_t context)
 {
-    if (g_hot_threshold <= 1u) {
+    if (g_hot_threshold <= 1u || !g_hot_armed) {
         return true;
     }
 
-    const uint32_t context = ctx_fold(key);
-    const uint32_t s = neg_slot(pc, context);
     const uint32_t n = seen_get(s, pc, context) + 1u;
 
     if (n >= g_hot_threshold) {
@@ -824,6 +843,7 @@ static void neg_invalidate(void)
          * enough to handle rather than document as a limit.
          */
         memset(g_neg, 0, sizeof(g_neg));
+        memset(g_neg_run, 0, sizeof(g_neg_run));
         g_neg_epoch = 1u;
     }
 }
@@ -1251,6 +1271,7 @@ static void compact(const emu_jit_ops_t *ops)
         ops->sync(g_code, g_code_used);
     }
     g_stats.compactions++;
+    g_hot_armed = true;
 #ifdef EMU_JIT_PROFILE
     g_stats.cyc_compact += prof_now() - t0;
 #endif
@@ -1742,12 +1763,29 @@ static EMU_NOINLINE emu_run_reason_t interp_to_jump(emu_cpu_t *cpu,
                                                     const emu_jit_ops_t *ops,
                                                     const uint32_t *pcp,
                                                     uint32_t *done,
-                                                    uint32_t budget)
+                                                    uint32_t budget,
+                                                    uint32_t slot)
 {
     emu_run_reason_t r = EMU_RUN_BUDGET;
     uint32_t total = 0u;
+    const uint32_t hint = g_neg_run[slot];
 
+    /*
+     * The stretch before the jump in one call, then one at a time to the
+     * jump: each call pays the interpreter's entry, which stepping paid
+     * per instruction -- RV32 Whetstone at 16 KB, 70% of it interpreted
+     * this way, cost twice the interpreter's host instructions for each.
+     */
+    if (hint != 0u) {
+        const uint32_t left = budget - *done;
+
+        r = ops->interp->run(cpu, (hint < left) ? hint : left, &total);
+    }
     for (;;) {
+        if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI ||
+            *done + total >= budget || total >= JIT_THRASH_RUN_MAX) {
+            break;
+        }
         const uint32_t before = *pcp;
         uint32_t n = 0u;
 
@@ -1758,8 +1796,11 @@ static EMU_NOINLINE emu_run_reason_t interp_to_jump(emu_cpu_t *cpu,
         }
         const uint32_t step = *pcp - before;
 
-        if (step == 0u || step > 6u || *done + total >= budget ||
-            total >= JIT_THRASH_RUN_MAX) {
+        if (step == 0u || step > 6u) {
+            /* Learnt once: what ran before the jump. */
+            if (hint == 0u && total >= 2u && total <= 256u) {
+                g_neg_run[slot] = (uint8_t)(total - 1u);
+            }
             break;
         }
     }
@@ -1774,7 +1815,7 @@ static EMU_NOINLINE emu_run_reason_t interp_to_jump(emu_cpu_t *cpu,
 static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
                                            const emu_jit_ops_t *ops,
                                            const uint32_t *pcp, uint32_t *done,
-                                           uint32_t budget)
+                                           uint32_t budget, uint32_t slot)
 {
     g_stats.thrash_cached++;
     /*
@@ -1788,7 +1829,7 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
         g_stats.thrash_retries++;
         neg_invalidate();
     }
-    return interp_to_jump(cpu, ops, pcp, done, budget);
+    return interp_to_jump(cpu, ops, pcp, done, budget, slot);
 }
 
 
@@ -1951,7 +1992,9 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
              * and that work was 99.7% of the interpreted instructions in
              * a Linux boot.
              */
-            const uint32_t seen = seen_of(pc, context);
+            const uint32_t ctx = ctx_fold(context);
+            const uint32_t slot = neg_slot(pc, ctx);
+            const uint32_t seen = seen_get(slot, pc, ctx);
 
             if (seen == JIT_SEEN_DECLINED || seen == JIT_SEEN_THRASH) {
                 if (seen == JIT_SEEN_DECLINED) {
@@ -1960,7 +2003,8 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 
                 const emu_run_reason_t r =
                     (seen == JIT_SEEN_THRASH)
-                        ? run_interp_to_jump(cpu, ops, hot.pc, &done, budget)
+                        ? run_interp_to_jump(cpu, ops, hot.pc, &done, budget,
+                                             slot)
                         : run_interp_batch(cpu, ops, &done, budget, batch);
 
                 prev = NULL;
@@ -1983,10 +2027,10 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
              * translated as a block of its own, overlapping the one from
              * the real head (docs/jit/tuning.md).
              */
-            if (!heat_bump(pc, context)) {
+            if (!heat_bump(slot, pc, ctx)) {
                 const uint32_t before = done;
                 const emu_run_reason_t r =
-                    interp_to_jump(cpu, ops, hot.pc, &done, budget);
+                    interp_to_jump(cpu, ops, hot.pc, &done, budget, slot);
 
                 g_stats.cold += done - before;
                 prev = NULL;

@@ -203,40 +203,28 @@ static void test_flush_reopens_a_declined_pc(void)
 }
 
 /*
- * Translate only what is hot: below the threshold a missing pc is
- * interpreted, one instruction at a time, and offered to the translator
- * only on the miss that reaches it.
- *
- * Exact counts, for the reason the test above gives: a bound would pass
- * against a threshold that is ignored. Three misses must reach the
- * translator zero times; the fifth exactly once; and `cold` must say
- * four, because that is what the option costs and what it has to be
- * judged by.
+ * Translate only what is hot -- once the buffer has had to compact.
+ * Before that, a threshold of 5 still translates on the first miss: a
+ * buffer that holds its working set never compacts, and the wait was a
+ * warm-up and nothing else there (RV32 Whetstone at 64 KB, 14% slower).
+ * test_hot_threshold_after_compaction, with the x86-64 tests, has the
+ * counting itself: it needs a buffer that compacts.
  */
-static void test_hot_threshold_delays_translation(void)
+static void test_hot_threshold_waits_for_compaction(void)
 {
     emu_jit_stats_t before;
     emu_jit_stats_t after;
 
     emu_jit_flush();
+    g_pc = 0x8000u;
     g_translate_calls = 0u;
     emu_jit_set_hot_threshold(5u);
     emu_jit_get_stats(&before);
 
-    (void)run_budget(3u);
-    CHECK_EQ(g_translate_calls, 0u);
-
-    (void)run_budget(4096u);
+    (void)run_budget(1u);
     CHECK_EQ(g_translate_calls, 1u);
     emu_jit_get_stats(&after);
-    CHECK_EQ(after.cold - before.cold, 4u);
-
-    /* A flush says nothing about what is still hot: count again. */
-    emu_jit_flush();
-    (void)run_budget(4u);
-    CHECK_EQ(g_translate_calls, 1u);
-    (void)run_budget(1u);
-    CHECK_EQ(g_translate_calls, 2u);
+    CHECK_EQ(after.cold - before.cold, 0u);
 
     /* Clamped to what the table can count. */
     emu_jit_set_hot_threshold(0u);
@@ -244,7 +232,7 @@ static void test_hot_threshold_delays_translation(void)
     emu_jit_set_hot_threshold(1000u);
     CHECK_EQ(emu_jit_hot_threshold(), 127u); /* below the eviction counts */
 
-    emu_jit_set_hot_threshold(EMU_JIT_HOT_THRESHOLD);
+    emu_jit_set_hot_threshold(1u); /* this file's: see test_jit */
 }
 
 /*
@@ -521,7 +509,7 @@ static void test_block_charged_its_helpers(void)
     CHECK_EQ(entries, 4u);
     CHECK_EQ(charged, 4u);
 
-    emu_jit_set_hot_threshold(EMU_JIT_HOT_THRESHOLD);
+    emu_jit_set_hot_threshold(1u); /* this file's: see test_jit */
     g_bind_spent = false;
 }
 
@@ -1501,6 +1489,135 @@ static void test_thrash_gives_up_on_evicted_pcs(void)
     emu_jit_set_thrash_evictions(EMU_JIT_THRASH_EVICTIONS);
     emu_jit_flush();
 }
+
+/*
+ * The thrash cycle overflows the buffer, so running it compacts -- which
+ * is what makes this core count misses (emu_jit_set_hot_threshold).
+ * Set the threshold first: setting it starts the wait again.
+ */
+static void arm_hot_threshold(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_flush();
+    g_pc = TH_BASE;
+    emu_jit_get_stats(&before);
+    (void)th_run(TH_N * 2u);
+    emu_jit_get_stats(&after);
+    CHECK(after.compactions > before.compactions); /* or nothing armed */
+    emu_jit_flush();
+}
+
+/*
+ * Once armed, a missing pc is interpreted to its first jump and offered
+ * to the translator only on the miss that reaches the threshold.
+ *
+ * Exact counts, for the reason the declined-pc tests give: a bound would
+ * pass against a threshold that is ignored. Three misses must reach the
+ * translator zero times; the fifth exactly once; and `cold` must say
+ * four, because that is what the option costs and what it has to be
+ * judged by.
+ */
+static void test_hot_threshold_after_compaction(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_set_hot_threshold(5u);
+    arm_hot_threshold();
+    g_pc = 0x8000u;
+    g_translate_calls = 0u;
+    emu_jit_get_stats(&before);
+
+    (void)run_budget(3u);
+    CHECK_EQ(g_translate_calls, 0u);
+
+    (void)run_budget(4096u);
+    CHECK_EQ(g_translate_calls, 1u);
+    emu_jit_get_stats(&after);
+    CHECK_EQ(after.cold - before.cold, 4u);
+
+    /* A flush says nothing about what is still hot: count again. */
+    emu_jit_flush();
+    (void)run_budget(4u);
+    CHECK_EQ(g_translate_calls, 1u);
+    (void)run_budget(1u);
+    CHECK_EQ(g_translate_calls, 2u);
+
+    emu_jit_set_hot_threshold(1u); /* this file's: see test_jit */
+    emu_jit_flush();
+}
+
+/*
+ * A stretch of ten instructions ending in a jump back to its start, run
+ * cold three times: the first time one interpreter call an instruction
+ * to find the jump, after that the nine before it in one call and the
+ * jump in a second -- 10 + 2 + 2 calls, where stepping made 30. That was
+ * the cost: each call pays the interpreter's entry, and RV32 Whetstone at
+ * 16 KB interpreted 70% of itself this way at twice the interpreter's
+ * host instructions for each (interp_to_jump).
+ */
+#define ST_BASE 0xC000u
+#define ST_LEN 10u
+
+static uint32_t g_st_calls;
+static uint32_t g_st_budgets[16];
+
+static emu_run_reason_t stub_interp_stretch(emu_cpu_t *cpu, uint32_t budget,
+                                            uint32_t *retired)
+{
+    (void)cpu;
+    if (g_st_calls < 16u) {
+        g_st_budgets[g_st_calls] = budget;
+    }
+    g_st_calls++;
+    for (uint32_t i = 0; i < budget; i++) {
+        g_pc = (g_pc == ST_BASE + 4u * (ST_LEN - 1u)) ? ST_BASE : g_pc + 4u;
+    }
+    if (retired != NULL) {
+        *retired = budget;
+    }
+    return EMU_RUN_BUDGET;
+}
+
+static const emu_backend_t k_stub_interp_stretch = {
+    .name = "stub-interp-stretch",
+    .run = stub_interp_stretch,
+};
+
+static const emu_jit_ops_t k_stub_stretch_ops = {
+    .name = "stub-stretch",
+    .bind = stub_bind,
+    .translate = stub_translate,
+    .interp = &k_stub_interp_stretch,
+};
+
+static void test_cold_run_learns_its_stretch(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+    uint32_t retired = 0u;
+
+    emu_jit_set_hot_threshold(127u); /* cold for all three passes */
+    arm_hot_threshold();
+    g_pc = ST_BASE;
+    g_st_calls = 0u;
+    g_translate_calls = 0u;
+    emu_jit_get_stats(&before);
+    (void)emu_jit_run(k_cpu, 3u * ST_LEN, &retired, &k_stub_stretch_ops);
+    emu_jit_get_stats(&after);
+
+    CHECK_EQ(retired, 3u * ST_LEN);
+    CHECK_EQ(g_pc, ST_BASE);
+    CHECK_EQ(g_translate_calls, 0u);
+    CHECK_EQ(after.cold - before.cold, 3u * ST_LEN);
+    CHECK_EQ(g_st_calls, ST_LEN + 2u + 2u);
+    CHECK_EQ(g_st_budgets[ST_LEN], ST_LEN - 1u); /* the second pass's first */
+
+    emu_jit_set_hot_threshold(1u); /* this file's: see test_jit */
+    emu_jit_flush();
+}
 #endif
 
 /*
@@ -1572,8 +1689,17 @@ void test_jit(void)
         return;
     }
 
+    /*
+     * **Every test here translates on the first miss** but those that
+     * set a threshold of their own, and they put 1 back. The default is
+     * 8 once a buffer has compacted (EMU_JIT_HOT_THRESHOLD), and these
+     * buffers compact: at 8 the chaining tests' later blocks went
+     * untranslated, and they asserted a compaction that never came.
+     */
+    emu_jit_set_hot_threshold(1u);
+
     test_declined_pc_is_not_retried();
-    test_hot_threshold_delays_translation();
+    test_hot_threshold_waits_for_compaction();
     test_flush_reopens_a_declined_pc();
     test_generation_change_reopens_a_declined_pc();
     test_cache_is_per_pc();
@@ -1592,9 +1718,12 @@ void test_jit(void)
     test_chain_links_a_later_exit();
     test_chain_no_link_across_an_interrupt();
     test_thrash_gives_up_on_evicted_pcs();
+    test_hot_threshold_after_compaction();
+    test_cold_run_learns_its_stretch();
 #endif
     test_step_is_interpreted_and_followed();
 
     /* Leave nothing behind for whatever runs next. */
+    emu_jit_set_hot_threshold(EMU_JIT_HOT_THRESHOLD);
     emu_jit_flush();
 }

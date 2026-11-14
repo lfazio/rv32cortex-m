@@ -143,53 +143,69 @@ beside the buffer size:
 
 ## `EMU_JIT_HOT_THRESHOLD` — translating only hot code
 
-`-DEMU_JIT_HOT_THRESHOLD=N`, or `--jit-hot N` on the host runner: a pc
-that misses the block cache is interpreted **to its first jump** until
-it has missed N times in the current epoch, and only then translated.
-The counts share the declined-pc table, reset on every flush, and are
-reported as `cold` beside `interp`. The default is 1, translate on the
-first miss.
+`-DEMU_JIT_HOT_THRESHOLD=N`, or `--jit-hot N` on the host runner: once
+the code buffer has had to compact, a pc that misses the block cache is
+interpreted **to its first jump** until it has missed N times in the
+current epoch, and only then translated. The counts share the
+declined-pc table, reset on every flush, and are reported as `cold`
+beside `interp`. **The default is 8**, armed at the first compaction;
+1 translates on the first miss.
 
-**Interpreted to the jump, not one instruction at a time -- which is
-what made the option worth having.** One at a time, every pc on the way
-came back to the dispatcher and was counted, so the middle of a block
-could cross the threshold first and be translated as a block of its
-own; and since the stop before a known entry, the real head's block
-then stopped at that middle. Host CoreMark's translations rose with
-the threshold instead of falling -- 279 at 1, 1,060 at 2, 1,024 at 4 --
-and on the F746 RV32 Whetstone at 16 KB took 15.18 s at 4 against 7.43
-at 1. To the jump, only a jump's target comes back, a block's head:
-279, 206, 185 and 167 translations at 1, 2, 4 and 8.
+Three things made it worth having, each measured on the F746
+(2026-11-14):
 
-On the F746 (2026-11-14), wall clock in seconds; the interpreter runs
-Whetstone in 6.23:
+**Interpreted to the jump, not one instruction at a time.** One at a
+time, every pc on the way came back to the dispatcher and was counted,
+so the middle of a block could cross the threshold first and be
+translated as a block of its own; and since the stop before a known
+entry, the real head's block then stopped at that middle. Host
+CoreMark's translations rose with the threshold instead of falling --
+279 at 1, 1,060 at 2, 1,024 at 4 -- and RV32 Whetstone at 16 KB took
+15.18 s at 4 against 7.43 at 1. To the jump, only a jump's target
+comes back, a block's head: 279, 206, 185 and 167 translations at 1, 2,
+4 and 8.
 
-| | 1 | 2 | 4 | 8 |
-|---|---|---|---|---|
-| RV32 Whetstone, 16 KB | 7.43 | 8.25 | 7.79 | **7.20** |
-| RV32 Whetstone, 8 KB | 12.48 | 11.30 | 10.76 | **10.46** |
-| RV32 CoreMark x120, 32 KB | 6.54 | 4.72 | **4.46** | |
+**The stretch in one call** (`interp_to_jump`, `g_neg_run`). Finding
+the jump meant calling the interpreter one instruction at a time, and
+each call pays its entry: on the host, with the board's tables, 103
+host instructions an interpreted instruction against the interpreter's
+66, on the 70% of Whetstone at 16 KB that cold and given-up code is. Each
+entry of the declined-pc table now remembers how many instructions its
+pc ran before the jump, and the next visit runs them in one call and
+steps only the jump: 74 host instructions an instruction, 14-19% fewer
+in all (callgrind, both thresholds, 16 and 32 KB). A hint, never
+trusted: a branch that goes the other way runs past it, and the run
+still ends at a jump. The thrash path takes it too.
 
-**Where the buffer is short it pays** -- CoreMark at 32 KB a third
-faster at 4, its translations 10,560 to 5,459; Whetstone at 8 KB 16% at
-8 -- **and where the buffer fits it is a warm-up**, host cycles an
-instruction at the default buffers:
+**Only once the buffer has compacted.** Where the working set fits the
+threshold is a warm-up and nothing else -- RV32 Whetstone at 64 KB was
+14% slower at 4, 239,149 more instructions interpreted warming up, 90
+links against 123 -- and such a buffer never compacts. So the first
+compaction arms it, on that core, and setting the threshold starts the
+wait again.
 
-| | 1 | 4 | 8 |
-|---|---|---|---|
-| RV32 CoreMark, 64 KB | 13.18 | **12.62** | 12.65 |
-| ARMv7-M CoreMark, 96 KB | 16.50 | **16.18** | 16.22 |
-| PowerPC CoreMark, 96 KB | 19.93 | **19.28** | 19.86 |
-| RV32 Whetstone, 64 KB | **27.22** | 31.05 | 35.27 |
+On the F746, wall clock in seconds; the interpreter runs Whetstone in
+6.23:
 
-Whetstone at 4 interprets 239,149 more instructions warming up, at five
-times the cost of each translated one, and chains less (90 links
-against 123). So the default stays 1, and a build with a short buffer
-is the one to set it on. On the host a Linux boot at 4 translates six
-times fewer blocks (23,837 against 150,369); its wall clock was taken
-beside a board build and says nothing yet.
+| | before (1) | armed, 4 / 8 | hint, 1 | hint + armed, 4 | hint + armed, 8 |
+|---|---|---|---|---|---|
+| RV32 Whetstone, 16 KB | 7.56 | 6.98 (8) | 6.41 | 6.18 | **5.99** |
+| RV32 Whetstone, 8 KB | 12.69 | 10.59 (8) | 10.95 | 8.90 | **8.67** |
+| RV32 CoreMark x120, 32 KB | 6.58 | 3.12 (4) | 5.26 | 3.78 | **2.62** |
 
-Before this, measured one instruction at a time, nothing gained:
+CoreMark at 32 KB moved the same at a second layout (3.13 and 3.78 at
+`EMU_LAYOUT_PAD=64`): the counters decide it, 1,529 translations at 8
+against 10,560 before. Where the buffer fits, nothing moves: RV32
+Whetstone and CoreMark at 64 KB 1.31 and 1.81 s, as before; RV32
+Dhrystone never compacts. ARMv7-M, PowerPC and G4MH CoreMark at their
+defaults compact once or twice, so the threshold arms and costs a
+warm-up: 16.50 to 16.61, 19.91 to 19.96, 21.94 to 22.01 host cycles an
+instruction -- within what the layout alone moved, since arming only at
+the fourth compaction left ARMv7-M's counters identical to the old
+tree's and read 16.76. Arming at the fourth was slower where it counts
+(CoreMark at 32 KB 2.93 s, Whetstone 6.10 and 8.83).
+
+Before any of this, one instruction at a time, nothing gained:
 
 | | 1 | 2 | 4 | 8 | 16 | 32 |
 |---|---|---|---|---|---|---|
@@ -235,6 +251,18 @@ so code that stopped thrashing is translated again; a run that never
 thrashes never gets there. `--jit-thrash N` sets the limit on the host,
 0 turning it off. The stats line reports it as `thrash N (cached N,
 retries N)`.
+
+**The retry was measured and kept** (2026-11-14, hint and threshold 8,
+see above). Forgetting every mark -- the heat counts and the declines
+with them -- looked like the cost at small buffers; never forgetting
+(`EMU_JIT_THRASH_RETRY` at 1M, no retry in these runs) translated a
+quarter as much and was slower where it mattered: Whetstone at 16 KB
+5.99 s to 7.17, CoreMark x120 at 32 KB 2.62 to 2.86, and only Whetstone
+at 8 KB faster, 8.67 to 8.07. On the host the same: with retries,
+Whetstone at the board's 32 KB translated 4,747 blocks and interpreted
+4.39M instructions; without, 1,664 and 5.81M. The cost had been the
+interpreting itself, one call an instruction, which the hint above
+removed.
 
 On the F746, against e41b775:
 

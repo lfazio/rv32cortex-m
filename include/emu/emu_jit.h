@@ -674,9 +674,9 @@ void emu_jit_note_no_chain_slot(void);
 
 /*
  * Translate only what is hot: a pc missing the block table is
- * interpreted, one instruction at a time, until it has missed this many
- * times in the current epoch, and only then translated. 1 translates on
- * the first miss.
+ * interpreted to its first jump until it has missed this many times in
+ * the current epoch, and only then translated. 1 translates on the first
+ * miss.
  *
  * Cold code then never takes a translation or a place in the buffer,
  * which on a microcontroller is the scarce thing: a translation there
@@ -684,9 +684,18 @@ void emu_jit_note_no_chain_slot(void);
  * one that has to be translated again. Counts live with the declined-pc
  * cache and reset with it on every flush. Clamped to 1..127: the counts
  * share a byte with the eviction counts below.
+ *
+ * **Only once the buffer has had to compact.** Where the working set
+ * fits, waiting is a warm-up and nothing else -- RV32 Whetstone at 64 KB
+ * was 14% slower at 4 -- and such a buffer never compacts; where it does
+ * not fit, the first compaction says so, and from then on this core
+ * counts. Setting the threshold starts the wait again. 8 by default: on
+ * the F746, CoreMark at 32 KB 6.58 s to 2.62, Whetstone at 16 KB 7.56 to
+ * 5.99 and at 8 KB 12.69 to 8.67, with the stretch each cold pc runs
+ * remembered (interp_to_jump); docs/jit/tuning.md.
  */
 #ifndef EMU_JIT_HOT_THRESHOLD
-#define EMU_JIT_HOT_THRESHOLD 1u
+#define EMU_JIT_HOT_THRESHOLD 8u
 #endif
 void emu_jit_set_hot_threshold(uint32_t misses);
 uint32_t emu_jit_hot_threshold(void);

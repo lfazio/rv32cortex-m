@@ -537,7 +537,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   is no retention problem -- no order holds it -- and cost Whetstone 20x
   until the framework gave up on pcs that keep being evicted
   (`EMU_JIT_THRASH_EVICTIONS`), a few per compaction, interpreting each
-  to its first jump. The MCU's sizes on a
+  to its first jump -- in one call once the stretch is known: stepping
+  paid the interpreter's entry each instruction, 103 host instructions
+  against its 66 (`g_neg_run`). Cold code waits for the hot threshold
+  only once the buffer has compacted; where it fits, waiting was a
+  warm-up (Whetstone at 64 KB 14% slower). The MCU's sizes on a
   host retranslate constantly and mask translator bugs, so the x86-64
   backend sets its own -- and its stats line is what proves a pass
   exercised it (`interp 7807` of 8527 on the first run).
