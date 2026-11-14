@@ -30,6 +30,7 @@
  * claims, so the two cannot both fire on one value.
  */
 
+#include "emu/emu_crypto.h" /* emu_sm4_affine */
 #include "emu/emu_ir.h"
 #include "emu/emu_ir_bytes.h"
 #include "emu/emu_x86_64.h"
@@ -1027,6 +1028,7 @@ static void emit_mem_call(const void *fn, uint32_t spec)
  */
 #define HOST_AES 1u
 #define HOST_PCLMUL 2u
+#define HOST_SSSE3 4u /* PSHUFB, for SM4's affine maps around AES's S-box */
 
 static unsigned host_crypto(void)
 {
@@ -1039,6 +1041,7 @@ static unsigned host_crypto(void)
         if (env == NULL || env[0] != '0') {
             m |= __builtin_cpu_supports("aes") ? HOST_AES : 0u;
             m |= __builtin_cpu_supports("pclmul") ? HOST_PCLMUL : 0u;
+            m |= __builtin_cpu_supports("ssse3") ? HOST_SSSE3 : 0u;
         }
         known = (int)m;
     }
@@ -1080,6 +1083,9 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         return aux <= 2u && (host_crypto() & HOST_PCLMUL) != 0u;
     case EMU_IR_AESSB:
         return aux <= 1u && (host_crypto() & HOST_AES) != 0u;
+    case EMU_IR_SM4SB:
+        return aux == 0u &&
+               (host_crypto() & (HOST_AES | HOST_SSSE3)) == (HOST_AES | HOST_SSSE3);
 
     case EMU_IR_FGET:
     case EMU_IR_FPUT:
@@ -1178,6 +1184,27 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     default:
         return false;
     }
+}
+
+/*
+ * One of SM4's affine maps on T0's low byte, into xmm0's lane 0: the low
+ * nibble and the high looked up in the two 16-byte tables at T1 + off
+ * and T1 + off + 16 with PSHUFB, and XORed. T0 and T2 are clobbered,
+ * and xmm2 to xmm4: every live value is in the frame.
+ */
+static void sm4_affine(uint8_t off)
+{
+    x86_mov_rr(T2, T0);
+    x86_alu_imm32(4u, T0, 0x0Fu);            /* and eax, 0xf  */
+    x86_shift_imm(T2, X86_SHR, 4u);          /* shr edx, 4    */
+    x86_alu_imm32(4u, T2, 0x0Fu);            /* and edx, 0xf  */
+    x86_movd_to_xmm(X86_XMM2, T0);
+    x86_movd_to_xmm(X86_XMM3, T2);
+    x86_movdqu_load(X86_XMM0, T1, off);
+    x86_movdqu_load(X86_XMM4, T1, (uint8_t)(off + 16u));
+    x86_sse_0f38(X86_PSHUFB, X86_XMM0, X86_XMM2);
+    x86_sse_0f38(X86_PSHUFB, X86_XMM4, X86_XMM3);
+    x86_pxor(X86_XMM0, X86_XMM4);
 }
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -2198,6 +2225,30 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_pxor(X86_XMM1, X86_XMM1); /* the round key */
         x86_sse_0f38((in->aux != 0u) ? X86_AESDECLAST : X86_AESENCLAST,
                      X86_XMM0, X86_XMM1);
+        x86_movd_from_xmm(T0, X86_XMM0);
+        x86_alu_imm32(4u, T0, 0xFFu);
+        st_slot(T0, in->dst);
+        break;
+
+    /*
+     * SM4's S-box: AES's between two affine maps (emu_sm4_affine,
+     * scripts/sm4-affine.py), each the byte's two nibbles looked up with
+     * PSHUFB and XORed -- a shuffle within a register, not a load at an
+     * address the byte chose, so the time is the same for every byte
+     * (Zkt). Lane 0 is all that is read: AES's ShiftRows leaves it where
+     * it is, and the other lanes' table[0] and junk go unread.
+     */
+    case EMU_IR_SM4SB:
+        if (!emu_ir_can_lower(EMU_IR_SM4SB, in->aux)) {
+            return false;
+        }
+        ld_operand(T0, in->a);
+        x86_mov_imm64(T1, (uint64_t)(uintptr_t)emu_sm4_affine);
+        sm4_affine(0u);
+        x86_pxor(X86_XMM1, X86_XMM1); /* the round key */
+        x86_sse_0f38(X86_AESENCLAST, X86_XMM0, X86_XMM1);
+        x86_movd_from_xmm(T0, X86_XMM0);
+        sm4_affine(32u);
         x86_movd_from_xmm(T0, X86_XMM0);
         x86_alu_imm32(4u, T0, 0xFFu);
         st_slot(T0, in->dst);

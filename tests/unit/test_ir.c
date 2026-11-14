@@ -18,6 +18,7 @@
 #include "tests.h"
 
 #include "emu/emu_bus.h"
+#include "emu/emu_crypto.h"
 #include "emu/emu_ir.h"
 
 #include <string.h>
@@ -729,7 +730,7 @@ static void test_only_pure_ops_are_removable(void)
         EMU_IR_SHLI,    EMU_IR_SHRI,    EMU_IR_SARI,    EMU_IR_ROTLI,
         EMU_IR_NEG,     EMU_IR_NOT,     EMU_IR_BSWAP32, EMU_IR_BSWAP16,
         EMU_IR_HSWAP,   EMU_IR_CLZ,     EMU_IR_CTZ,     EMU_IR_POPCNT,
-        EMU_IR_CLMUL,   EMU_IR_AESSB,
+        EMU_IR_CLMUL,   EMU_IR_AESSB,   EMU_IR_SM4SB,
         EMU_IR_BEXT,    EMU_IR_BSET,    EMU_IR_BCLR,    EMU_IR_BINV,
         EMU_IR_SEXT8,   EMU_IR_SEXT16,  EMU_IR_ZEXT8,   EMU_IR_ZEXT16,
         EMU_IR_GETCOND, EMU_IR_SETCC,   EMU_IR_SELECT,  EMU_IR_FGET,
@@ -1127,6 +1128,47 @@ static uint32_t ref_sbox(uint32_t x)
     return r;
 }
 
+/*
+ * SM4's S-box from its algebraic form, not its table nor the affine maps
+ * the lowering uses: A(I(A x + 0xD3)) + 0xD3, I the inverse modulo
+ * x^8+x^7+x^6+x^5+x^4+x^2+1, A the sum of left rotations by 0, 1, 3, 6
+ * and 7 -- the form scripts/sm4-affine.py finds reproduces the table.
+ */
+static uint32_t ref_sm4_rot(uint32_t b)
+{
+    uint32_t r = 0u;
+
+    for (int k = 0; k < 8; k++) {
+        if ((0xCBu >> k) & 1u) {
+            r ^= ((b << k) | (b >> (8 - k))) & 0xFFu;
+        }
+    }
+    return r;
+}
+
+static uint32_t ref_sm4_sbox(uint32_t x)
+{
+    const uint32_t y = ref_sm4_rot(x) ^ 0xD3u;
+    uint32_t inv = 0u;
+
+    for (uint32_t z = 1u; z < 256u && y != 0u; z++) {
+        uint32_t p = 0u, a = y, b = z;
+
+        for (int i = 0; i < 8; i++) {
+            if (b & 1u) {
+                p ^= a;
+            }
+            a = (a << 1) ^ ((a & 0x80u) ? 0x1F5u : 0u);
+            b >>= 1;
+        }
+        if ((p & 0xFFu) == 1u) {
+            inv = z;
+            break;
+        }
+    }
+    return ref_sm4_rot(inv) ^ 0xD3u;
+}
+
 static uint64_t ref_clmul(uint32_t a, uint32_t b)
 {
     uint64_t r = 0u;
@@ -1212,6 +1254,12 @@ static void test_lower_crypto_ops(void)
         if (run_crypto_op(EMU_IR_AESSB, 1u, x, 0u, &got)) {
             CHECK_EQ(sbox[got & 0xFFu], x); /* the inverse */
             CHECK_EQ(got >> 8, 0u);
+        }
+        /* SM4's: every byte, the upper bits set and ignored. */
+        if (run_crypto_op(EMU_IR_SM4SB, 0u, 0x5A5A5A00u | x, 0u, &got)) {
+            CHECK_EQ(got, ref_sm4_sbox(x));
+            CHECK_EQ(emu_sm4_sbox(x), ref_sm4_sbox(x)); /* the table too */
+            asked++;
         }
     }
     {

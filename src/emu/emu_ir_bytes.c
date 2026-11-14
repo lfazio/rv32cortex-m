@@ -59,6 +59,7 @@ static const char *const k_names[EMU_IR_OP_COUNT] = {
     [EMU_IR_POPCNT] = "POPCNT",
     [EMU_IR_CLMUL] = "CLMUL",
     [EMU_IR_AESSB] = "AESSB",
+    [EMU_IR_SM4SB] = "SM4SB",
     [EMU_IR_BEXT] = "BEXT",
     [EMU_IR_BSET] = "BSET",
     [EMU_IR_BCLR] = "BCLR",

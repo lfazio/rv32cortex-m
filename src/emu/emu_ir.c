@@ -808,6 +808,7 @@ static bool op_is_pure(uint8_t op)
     case EMU_IR_POPCNT:
     case EMU_IR_CLMUL:
     case EMU_IR_AESSB:
+    case EMU_IR_SM4SB:
     case EMU_IR_BEXT:
     case EMU_IR_BSET:
     case EMU_IR_BCLR:

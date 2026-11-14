@@ -225,9 +225,12 @@ typedef enum emu_ir_op {
      *          clmulh and clmulr)
      *   AESSB  the AES S-box of a's low byte, aux 0, or its inverse,
      *          aux 1; zero above
+     *   SM4SB  the SM4 S-box of a's low byte, zero above: on x86-64 AES's
+     *          between two affine maps (scripts/sm4-affine.py)
      */
     EMU_IR_CLMUL,
     EMU_IR_AESSB,
+    EMU_IR_SM4SB,
 
     /*
      * Extract or deposit one bit of a *value*. `b` holds the bit number;

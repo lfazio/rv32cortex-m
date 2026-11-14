@@ -1278,6 +1278,7 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
      */
     case EMU_IR_CLMUL:
     case EMU_IR_AESSB:
+    case EMU_IR_SM4SB:
     case EMU_IR_SELECT:
     case EMU_IR_POPCNT:
         return false;
@@ -2449,6 +2450,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_POPCNT:
     case EMU_IR_CLMUL: /* no carry-less multiply on an M7 */
     case EMU_IR_AESSB: /* nor AES */
+    case EMU_IR_SM4SB: /* nor SM4 */
     case EMU_IR_BEXT:
     case EMU_IR_BSET:
     case EMU_IR_BCLR:

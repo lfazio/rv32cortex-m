@@ -219,15 +219,11 @@ From the last measurements in [linux.md](linux.md).
 ## RV32
 
 - [ ] Implement V extensions
-- [ ] **SM4 under the JIT on a host with GFNI.** `sm4ed` and `sm4ks`
-      are the crypto helper's on every host
-      ([frontend/rv32.md](frontend/rv32.md#scalar-cryptography-zkn-and-zks));
-      GF2P8AFFINEQB with AESENCLAST computes SM4's S-box on x86-64,
-      as AES-NI computes AES's -- an `EMU_IR_SM4SB` beside
-      `EMU_IR_AESSB`, asked at run time the same way.
-
-## RV64
-
+- [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
+      under the x86-64 JIT now, AES's S-box between two maps of two
+      `pshufb` each ([backend/x86_64.md](backend/x86_64.md#aes-ni-and-pclmulqdq));
+      `gf2p8affineqb` would do each map in one instruction, but no CPU
+      here has GFNI to test it on.
 - [ ] Propose a plan to extend rv32 to handle rv64, and implement it. The plan should include a way to
       handle the 64-bit registers in the IR and the JIT, and a way to
       handle the 64-bit memory accesses in the frontend and the JIT.

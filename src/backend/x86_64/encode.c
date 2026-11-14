@@ -404,6 +404,22 @@ void x86_pxor(int dst, int src)
     sse_rr(0x66u, 0xEFu, (unsigned)dst, (unsigned)src);
 }
 
+/*
+ * movdqu xmm, [base + disp8]: F3 0F 6F /r, mod 01. Not for rsp or r12 as
+ * the base, whose rm field means a SIB byte follows; the callers pass a
+ * scratch register.
+ */
+void x86_movdqu_load(int xmm, int base, uint8_t disp)
+{
+    emu_jit_emit8(0xF3);
+    emit_rex(0u, (unsigned)xmm, (unsigned)base);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0x6F);
+    emu_jit_emit8((uint8_t)(0x40u | (((unsigned)xmm & 7u) << 3) |
+                            ((unsigned)base & 7u)));
+    emu_jit_emit8(disp);
+}
+
 /* movq r64, xmm: 66 REX.W 0F 7E /r -- the xmm in reg, the gpr in rm. */
 void x86_movq_from_xmm(int gpr, int xmm)
 {

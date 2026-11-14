@@ -613,13 +613,18 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
             /*
              * Declined by both hosts, so this slot built nothing; it
              * builds the crypto operations instead, which x86-64 lowers
-             * when its CPU has AES-NI and PCLMULQDQ. Here rather than a
-             * kind of their own so that every saved input not landing
-             * on it decodes as it did.
+             * when its CPU has AES-NI, PCLMULQDQ and (for SM4) SSSE3.
+             * Here rather than a kind of their own so that every saved
+             * input not landing on it decodes as it did; one byte picks
+             * the operation and its aux, so those landing on it keep
+             * their streams.
              */
             const uint32_t w = byte(in);
-            const emu_ir_op_t c = (w & 1u) ? EMU_IR_AESSB : EMU_IR_CLMUL;
-            const uint8_t aux = (uint8_t)((w >> 1) % ((w & 1u) ? 2u : 3u));
+            static const emu_ir_op_t k_c[3] = {EMU_IR_CLMUL, EMU_IR_AESSB,
+                                               EMU_IR_SM4SB};
+            static const uint8_t k_aux[3] = {3u, 2u, 1u};
+            const emu_ir_op_t c = k_c[w % 3u];
+            const uint8_t aux = (uint8_t)((w / 3u) % k_aux[w % 3u]);
 
             if (lowerable(c, aux)) {
                 const uint16_t a = val(in);
@@ -995,7 +1000,7 @@ static const char *op_name(uint8_t op)
         N(REMU),    N(MAC),       N(ADDI),      N(ANDI),      N(ORI),
         N(XORI),    N(SHLI),      N(SHRI),      N(SARI),      N(ROTLI),
         N(NEG),     N(NOT),       N(BSWAP32),   N(BSWAP16),   N(HSWAP),
-        N(CLZ),     N(CTZ),       N(POPCNT),    N(CLMUL),     N(AESSB),
+        N(CLZ),     N(CTZ),       N(POPCNT),    N(CLMUL),     N(AESSB),     N(SM4SB),
         N(BEXT),    N(BSET),
         N(BCLR),    N(BINV),      N(BITOP_SET), N(BITOP_CLR), N(BITOP_INV),
         N(BITOP_TST), N(SEXT8),   N(SEXT16),    N(ZEXT8),     N(ZEXT16),

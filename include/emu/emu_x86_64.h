@@ -146,6 +146,9 @@ void x86_st_rsp(int reg, uint32_t disp);
  */
 #define X86_XMM0 0
 #define X86_XMM1 1
+#define X86_XMM2 2
+#define X86_XMM3 3
+#define X86_XMM4 4
 
 /* F3 0F xx opcodes for the scalar-single group. */
 #define X86_ADDSS 0x58u
@@ -161,12 +164,14 @@ void x86_movd_from_xmm(int gpr, int xmm);
  * AES-NI and PCLMULQDQ, and what they need around them -- emitted only
  * where the CPU has them (EMU_IR_AESSB, EMU_IR_CLMUL).
  */
+#define X86_PSHUFB 0x00 /* 66 0F 38 00 */
 #define X86_AESENCLAST 0xDDu
 #define X86_AESDECLAST 0xDFu
 void x86_sse_0f38(uint8_t op, int dst, int src);
 void x86_pclmulqdq(int dst, int src, uint8_t imm);
 void x86_pshufd(int dst, int src, uint8_t imm);
 void x86_pxor(int dst, int src);
+void x86_movdqu_load(int xmm, int base, uint8_t disp);
 void x86_movq_from_xmm(int gpr, int xmm);
 void x86_imul_imm32(int r, uint32_t imm);
 void x86_shr64_imm(int r, uint8_t n);

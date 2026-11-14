@@ -850,9 +850,11 @@ static bool rv_ir_fp_fallback(emu_ir_block_t *b, uint32_t pc, uint32_t insn)
  * **aes32 is EMU_IR_AESSB and the rest around it**, where the host has the
  * S-box as an instruction -- x86-64 with AES-NI -- and the helper where it
  * does not: the byte select, the S-box, MixColumns' column by doublings in
- * GF(2^8) written without a test, the rotate back, the XOR. SM4, brev8,
- * zip, unzip and xperm stay with the helper: no host here has them, and
- * none is a short sequence.
+ * GF(2^8) written without a test, the rotate back, the XOR. **sm4ed and
+ * sm4ks are EMU_IR_SM4SB** the same way -- x86-64 with AES-NI and SSSE3,
+ * AES's S-box between two affine maps (scripts/sm4-affine.py) -- and
+ * their linear maps as shifts and XORs. brev8, zip, unzip and xperm stay
+ * with the helper: no host here has them, and none is a short sequence.
  */
 static uint16_t rv_ir_k(emu_ir_block_t *b, emu_ir_op_t op, uint16_t x,
                         uint32_t n)
@@ -1015,9 +1017,47 @@ static bool rv_ir_crypto(emu_ir_block_t *b, uint32_t insn)
                 v = emu_ir_alu(b, EMU_IR_XOR, a,
                                (sh != 0u) ? rv_ir_k(b, EMU_IR_ROTLI, u, sh) : u);
             }
+        } else if (f3 == 0u && ((f7 & 0x1Du) == 0x18u)) {
+            /*
+             * sm4ed 18, sm4ks 1A: EMU_IR_SM4SB where the host has it, then
+             * rv_crypto.c's linear map as (mask, shift) terms of the
+             * S-box's byte -- a mask of 0xFF is none -- XORed, rotated to
+             * the byte select and XORed into rs1.
+             */
+            static const uint8_t k[2][6][2] = {
+                {{0xFFu, 0u}, {0xFFu, 8u}, {0xFFu, 2u}, {0xFFu, 18u},
+                 {0x3Fu, 26u}, {0xC0u, 10u}},                    /* sm4ed */
+                {{0xFFu, 0u}, {0x07u, 29u}, {0xFEu, 7u}, {0x01u, 23u},
+                 {0xF8u, 13u}, {0u, 0u}},                        /* sm4ks */
+            };
+            const uint32_t ks = (f7 >> 1) & 1u;
+            const uint32_t sh = (insn >> 30) * 8u;
+
+            if (emu_ir_can_lower(EMU_IR_SM4SB, 0u)) {
+                const uint16_t x =
+                    (sh != 0u) ? rv_ir_k(b, EMU_IR_SHRI, bb, sh) : bb;
+                const uint16_t sv = emu_ir_emit(b, EMU_IR_SM4SB, 0u, x,
+                                                EMU_IR_NO_TEMP, 0u, 0u);
+                uint16_t u = EMU_IR_NO_TEMP;
+
+                for (unsigned i = 0u; i < 6u && k[ks][i][0] != 0u; i++) {
+                    uint16_t t = sv;
+
+                    if (k[ks][i][0] != 0xFFu) {
+                        t = rv_ir_k(b, EMU_IR_ANDI, t, k[ks][i][0]);
+                    }
+                    if (k[ks][i][1] != 0u) {
+                        t = rv_ir_k(b, EMU_IR_SHLI, t, k[ks][i][1]);
+                    }
+                    u = (u == EMU_IR_NO_TEMP) ? t
+                                              : emu_ir_alu(b, EMU_IR_XOR, u, t);
+                }
+                v = emu_ir_alu(b, EMU_IR_XOR, a,
+                               (sh != 0u) ? rv_ir_k(b, EMU_IR_ROTLI, u, sh) : u);
+            }
         }
     }
-    if (v == EMU_IR_NO_TEMP) { /* the helper: SM4, brev8, zip, xperm, ... */
+    if (v == EMU_IR_NO_TEMP) { /* the helper: brev8, zip, xperm, SM4 without SM4SB */
         (void)emu_ir_emit(b, EMU_IR_HELPER, 0u, emu_ir_const(b, insn),
                           EMU_IR_NO_TEMP, RV_IR_HELPER_CRYPTO, 0u);
         return true;

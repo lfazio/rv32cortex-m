@@ -431,6 +431,18 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 # directory for. **Skipped, not passed, when no model is present**: a
 # probe with nothing to compare against has said nothing, and a green
 # tick would read as if it had.
+# emu_crypto.c's SM4 affine tables against their derivation from the
+# definitions (scripts/sm4-affine.py): x86-64's lowering of EMU_IR_SM4SB
+# reads them, and test_ir checks that lowering only on a CPU with AES-NI
+# and SSSE3, so the tables are held here on every host.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(NAME sm4-affine
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_SOURCE_DIR}/scripts/sm4-affine.py --check)
+    set_tests_properties(sm4-affine PROPERTIES LABELS "fast")
+endif()
+
 #
 # Not without PMP: a probe that enters S-mode programs a PMP entry first,
 # because both models deny S-mode everything without one.

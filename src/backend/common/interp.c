@@ -621,6 +621,9 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_AESSB:
             r = emu_aes_sbox(a, in->aux != 0u);
             break;
+        case EMU_IR_SM4SB:
+            r = emu_sm4_sbox(a);
+            break;
 
         case EMU_IR_BEXT:
             r = (a >> (bv & 31u)) & 1u;

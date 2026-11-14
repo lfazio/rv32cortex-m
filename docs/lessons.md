@@ -4773,6 +4773,17 @@ session, and every one of them recurred:
   at once. **Before adding inputs for an unfound mutant, work out
   whether any input can tell it apart -- then find the one that does.**
 
+- **A derivation asserts it reproduces the data it came from.** SM4's
+  S-box as AES's between two affine maps was derived in a script, and
+  the first thing it checks is that SM4's algebraic form gives the
+  published table. It failed at once: a search had found the circulant
+  map, but printed its rotation direction as `<lambda>`, and the script
+  assumed left where it was right (0xA7 to the right is 0xCB to the
+  left). Every later step -- the isomorphism, the composition on all 256
+  bytes -- asserts too, and the tables the lowering reads are checked
+  against the script by ctest. **Assert each step of a derivation
+  against the data, not only its final answer.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
