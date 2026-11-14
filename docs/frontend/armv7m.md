@@ -407,6 +407,22 @@ placed too, and the JIT does not move with its own ITCM offset (16.47
 to 16.53 at six) -- and it went with the forced inlines. That leaves
 the interpreter about 3.5% above 375f9bf's 143.44, from 7.1%.
 
+**And `rd_u` and `wr_u` on 2026-11-14**, against 86c2122 (151.57 and
+148.82 interpreted, 16.46 under the JIT, at .text offsets 0 and 64);
+every guest load and store passes through one:
+
+| | interpreted | under the JIT |
+|---|---|---|
+| both in ITCM (`EMU_INTERP_HELPER`) | -3.02%, -1.31% | +1.94%, +1.88% |
+| both forced inline into their callers | +16.65%, +18.81% | +1.76%, +1.70% |
+| in ITCM only where there is no JIT (`EMU_HAVE_JIT`, **shipped**) | **-3.02%, -1.31%** | **0.00%, 0.00%** |
+
+The JIT build's code is unchanged by the shipped form -- it is the
+binary measured as the base -- and the interpreter-only build takes the
+gain. Why an ITCM move costs the JIT build again is not known; this is
+the second time, at about the same size. The interpreter is about 2.4%
+above 375f9bf's 143.44 now.
+
 ---
 
 ## The decoder, twice

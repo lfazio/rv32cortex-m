@@ -140,14 +140,15 @@ measured at.
       grows each time it is undone, or that forgets only marks older
       than the last, is the next thing to try -- measured on the board,
       where a translation costs tens of thousands of cycles.
-- [ ] **ARMv7-M's interpreter is about 3.5% above 375f9bf's 143.44 on
-      the F746** (148.5 host cycles an instruction on CoreMark; the
-      sp/pc and IT rules made it 7.1%, and the helpers placed in ITCM
-      with the compares off the sp/pc path took back half,
+- [ ] **ARMv7-M's interpreter is about 2.4% above 375f9bf's 143.44 on
+      the F746** (146.9 host cycles an instruction on CoreMark; the
+      sp/pc and IT rules made it 7.1%, the helpers placed in ITCM with
+      the compares off the sp/pc path took back half, and `rd_u` and
+      `wr_u` in ITCM in an interpreter-only build some more,
       [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
-      Open: `rd_u` and `wr_u`, still in flash because the JIT's slow
-      path shares them; why the six helpers alone cost the JIT 1.4%,
-      which the forced inlines then removed; and a decode cache, the one
+      Open: why every ITCM move so far -- the six helpers, `rd_u` and
+      `wr_u` -- costs the JIT build 1.4-1.9%, which is why the last is
+      made only where there is no JIT; and a decode cache, the one
       lever not tried since the rules exist -- a hit would skip the
       sp/pc predicates as well as the decode
       ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost));
@@ -224,6 +225,8 @@ From the last measurements in [linux.md](linux.md).
       `pshufb` each ([backend/x86_64.md](backend/x86_64.md#aes-ni-and-pclmulqdq));
       `gf2p8affineqb` would do each map in one instruction, but no CPU
       here has GFNI to test it on.
+- [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
+      into the PCIe framework.
 - [ ] Propose a plan to extend rv32 to handle rv64, and implement it. The plan should include a way to
       handle the 64-bit registers in the IR and the JIT, and a way to
       handle the 64-bit memory accesses in the frontend and the JIT.
@@ -240,8 +243,7 @@ From the last measurements in [linux.md](linux.md).
       SPE, this frontend's e200z759n3 32 and EFPU2
       ([frontend/ppc.md](frontend/ppc.md#the-mmu)). Whether to model the
       MPC5675K's core, whose peripherals are already here, is open.
-- [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
-      into the PCIe framework.
+- [ ] Use CTU and FlexPWM to implement the MPC5675K's GTM equivalent, and plug it into the PCIe framework.
 
 ## ArmvX-m
 

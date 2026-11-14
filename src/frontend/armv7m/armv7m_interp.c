@@ -21,6 +21,7 @@
 #include "armv7m/armv7m_pairstats.h"
 
 #include "emu/emu_bus.h"
+#include "emu/emu_jit.h" /* EMU_HAVE_JIT: where rd_u and wr_u go */
 
 #include <string.h>
 
@@ -316,8 +317,22 @@ static EMU_COLD_NOINLINE void load_write_sp_pc(armv7m_cpu_t *c, uint32_t rt,
  * performs it, and does so as a sequence of byte accesses -- which is
  * also what keeps an MPU check honest for an access straddling two
  * regions.
+ *
+ * **In ITCM only where there is no JIT.** There the interpreter is all
+ * that runs, and with both beside the loop -- every guest load and store
+ * passes through one -- interpreted CoreMark on the F746 was 3.02% and
+ * 1.31% faster at two layouts. In a JIT build the same placement cost
+ * the JIT 1.94% and 1.88%, and forcing both inline was worse for both
+ * (+17% interpreted), so a JIT build leaves them where LTO puts them --
+ * the code it measured -- and only the interpreter-only build moves them.
  */
-static X rd_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
+#if EMU_HAVE_JIT
+#define RD_WR_PLACE
+#else
+#define RD_WR_PLACE EMU_INTERP_HELPER
+#endif
+
+static RD_WR_PLACE X rd_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
               uint32_t *out)
 {
     if (size > 1u && (addr & (size - 1u)) != 0u) {
@@ -341,7 +356,7 @@ static X rd_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
     return armv7m_mem_read(c, addr, size, unpriv, out);
 }
 
-static X wr_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
+static RD_WR_PLACE X wr_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
               uint32_t v)
 {
     if (size > 1u && (addr & (size - 1u)) != 0u) {

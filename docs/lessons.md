@@ -4784,6 +4784,16 @@ session, and every one of them recurred:
   against the script by ctest. **Assert each step of a derivation
   against the data, not only its final answer.**
 
+- **A placement can be made per build.** Putting ARMv7-M's `rd_u` and
+  `wr_u` in ITCM made interpreted CoreMark 1.3-3.0% faster and the JIT
+  1.9% slower -- the second ITCM move to cost the JIT about that much
+  for no reason found; forcing them inline was worse for both. A build
+  without a JIT runs nothing but the interpreter, so the placement now
+  depends on `EMU_HAVE_JIT`: the interpreter-only firmware takes the
+  gain and the JIT firmware is the very code it was measured as.
+  **When a change helps one configuration and costs another, ask
+  whether it can be the first's alone before choosing.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
