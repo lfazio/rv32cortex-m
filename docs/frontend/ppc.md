@@ -612,12 +612,16 @@ translated, without a failure.
 
 ### On the F746
 
-**The interpreter stays in flash**, where the other three frontends'
-loops went to ITCM: moved there it was 2-5% slower at every alignment,
-because `ppc_run` calls `ppc_exec`, the decoder, the accessors and the
-address translation for every instruction and each call from ITCM to
-flash goes through a veneer -- 28 of them, 31 with the accessors moved
-too ([performance.md](../performance.md#the-interpreters-loops-in-itcm)).
+**The interpreter's loop is in ITCM**, with `ppc_load` and `ppc_store`
+beside it, and its decode cache is 256 entries a core indexed by
+`pc >> 1 ^ pc >> 2`: interpreted CoreMark 151.57 host cycles an
+instruction to 112.09, 26% faster
+([performance.md](../performance.md#the-interpreters-loops-in-itcm)).
+It had been measured 2-5% slower there, when `ppc_run` called
+`ppc_exec` for every instruction through a veneer; once LTO had inlined
+the execute switch, a PC profile put all of the interpreter in flash,
+and the decode a sixth of it -- 64 entries indexed by `pc >> 1` hold
+only 32 Book E instructions.
 
 `ppc-smp` passes all 41 checks on the Nucleo-F746ZG on both backends,
 the cores two tasks of the board's cooperative scheduler as under the

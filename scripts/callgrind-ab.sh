@@ -59,6 +59,7 @@ a7-dhry-jit|--frontend armv7m --jit armv7m-dhrystone.bin
 a7-cm-interp|--frontend armv7m armv7m-coremark.bin
 a7-cm-jit|--frontend armv7m --jit armv7m-coremark.bin
 ppc-dhry-jit|--jit ppc-dhrystone.elf
+ppc-cm-interp|ppc-coremark.elf
 ppc-cm-jit|--jit ppc-coremark.elf
 ppc-whet-interp|ppc-whetstone.elf
 ppc-whet-jit|--jit ppc-whetstone.elf

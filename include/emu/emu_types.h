@@ -221,8 +221,12 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
  * a quarter of ARMv7-M's interpreter samples were (add_c, cond_holds,
  * dp_op, the access helpers), and where a change to the loop's size
  * moved its figure by 1-5% as LTO chose differently what to keep out.
- * Only on a function the interpreter alone calls, so that what the JIT
- * shares with it (armv7m_interp.c's access helpers) stays as it was.
+ * On a function the interpreter alone calls, so that what the JIT
+ * shares with it stays as it was -- or on a shared one only once the
+ * JIT's row has been measured with it moved: ARMv7-M's access helpers
+ * cost its JIT 1.9% and move only without one, where RV32's
+ * rv_hart_load and rv_hart_store and G4MH's g4mh_insn_is_48 left every
+ * JIT row where it was (docs/performance.md).
  */
 #if defined(__GNUC__) && defined(EMU_INTERP_TEXT_SECTION)
 #define EMU_INTERP_HELPER __attribute__((section(EMU_INTERP_TEXT_SECTION)))

@@ -154,8 +154,8 @@ results and `crcfinal` identical:
 | ARMv7-M (x40) | 161.9 / 172.9 / 164.3 | 143.6 / 143.8 / 144.3 | **kept**, -11 to -17% |
 | RV32 (x40) | 110.25 / 110.29 / 109.88 | 103.06 / 102.96 / 102.92 | **kept**, -6.6% |
 | G4MH | 95.13 / 97.57 / 98.89 | 95.02 / 93.86 / 93.84 | **kept**, -0.1 to -5.1% |
-| PowerPC (x40) | 212.52 / 208.59 / 215.27 | 224.04 / 219.70 / 219.86 | **not**, +2 to +5% |
-| ...with `ppc_load` and `ppc_store` there too | | 214.83 / 214.83 / 216.36 | not |
+| PowerPC (x40) | 212.52 / 208.59 / 215.27 | 224.04 / 219.70 / 219.86 | not then, +2 to +5%; **kept since** (below) |
+| ...with `ppc_load` and `ppc_store` there too | | 214.83 / 214.83 / 216.36 | not then |
 
 **What decides it is how much of the loop is inlined.** ITCM is at 0x0
 and flash at 0x0800_0000, out of a branch's reach, so every call from
@@ -167,9 +167,51 @@ veneers to reach them. Moving the accessors as well needed 31, because
 their own callees then need them, and was no better than flash. G4MH's
 smaller gain fits the same reading: its loads and stores are calls too.
 
+**PowerPC's loop is in ITCM now, and the reading above is why it was
+not.** At c7b4c5a its run loop called `ppc_exec` for every instruction;
+by 235e345 LTO had inlined the execute switch into `ppc_run`, and a PC
+profile of the interpreter put 100% of its samples in flash. Moved
+then, the same placement measured the other way. The round that moved
+it took a profile of each interpreter first
+(`scripts/board-pc-profile.py`) and placed what it found in flash:
+
+| interpreted CoreMark, F746 | before | after | |
+|---|---|---|---|
+| PowerPC: `ppc_run` (`EMU_INTERP_TEXT`) | 151.57 / 151.57 / 151.58 | 140.20 / 138.74 / 138.15 | -7.5 to -8.9% |
+| ...and `ppc_load`, `ppc_store` | 140.19 / 138.74 | 133.87 / 135.47 | -2.4 to -4.5% |
+| ...and the decode cache at 256 entries, indexed by `pc >> 1 ^ pc >> 2` | 133.87 / 135.46 | 112.09 / 112.29 | -16.3%, -17.1% |
+| G4MH: `g4mh_cond`, `g4mh_insn_is_48` | 91.67 / 91.38 / 91.42 | 85.06 / 85.06 / 85.06 | -6.9 to -7.2% |
+| ...and `g4mh_load`, `g4mh_store`, without a JIT | 85.06 / 85.06 | 81.94 / 81.94 | -3.7% |
+| RV32: `rv_hart_load`, `rv_hart_store` | 100.98 / 100.84 / 101.53 | 96.69 / 96.70 / 96.69 | -4.1 to -4.8% |
+
+Three layouts where there are three: `EMU_LAYOUT_PAD` 0 and 64, which
+move flash and so what was left there, and `EMU_LAYOUT_PAD_ITCM=8`,
+which moves the ITCM and the alignment of what went into it. Retired
+counts and CRCs the same in every row. The whole round against
+c7b0202, the binary shipped: PowerPC interpreted **-26.05% and
+-25.92%**, G4MH -10.61% and -10.33%, RV32 -4.25% and -4.11%; under the
+JIT PowerPC -1.23% and -1.12%, G4MH -0.37% and -0.21%, RV32 -0.09%.
+
+**G4MH's accessors move only where there is no JIT**, as ARMv7-M's
+`rd_u` and `wr_u` do: in a JIT build the same move cost the JIT 3.16%
+and 3.06% (`G4MH_ACCESS_PLACE`). RV32's and PowerPC's left their JIT
+rows where they were, or faster.
+
+**The decode cache was the larger finding**, and the profile showed it
+only as decode functions -- `d_booke`, `d_31`, `ppc_decode`,
+`clear_insn`, a sixth of the samples. 64 entries indexed by `pc >> 1`
+held 32 Book E instructions: every odd entry was a slot no 4-byte pc
+reaches. Interpreted CoreMark at 64, 128, 256 and 512 entries with the
+full index read 130.69, 120.77, 112.09 and 111.48; 256 is the knee, 12
+KiB a core of guest RAM. On the host, where the cache stays at 1024,
+the index costs interpreted CoreMark 2.29% more host instructions (the
+shift and xor) and saves interpreted Whetstone 13.67% (callgrind).
+
 Under the JIT the interpreter is the fallback and moves with it: RV32
-CoreMark x120 at 96 KB 14.41 to 14.40, G4MH 53.22 to 52.74. ITCM left
-after the move: 5.6 KB in the RV32 firmware with the network stack's
+CoreMark x120 at 96 KB 14.41 to 14.40, G4MH 53.22 to 52.74. Of the 16
+KiB of ITCM the shipped firmwares use 11.3 KiB (PowerPC interpreted),
+10.2 (PowerPC JIT), 11.1 and 13.0 (G4MH), 9.8 and 11.9 (RV32). ITCM left
+after the first move, at c7b4c5a: 5.6 KB in the RV32 firmware with the network stack's
 flash driver, 2.7 KB in a G4MH one, which is the tightest.
 
 `EMU_LAYOUT_PAD` moves flash and so does not move these loops; their
@@ -499,7 +541,7 @@ function per instruction, and RV32's and ARMv7-M's do not move. **The
 PowerPC interpreter's +3.9% is layout**: the speed `memcpy` and `memset`
 are assembly in a plain `.text`, which the link script places before
 every `.text.*`, so the whole emulator in flash moved 1,588 bytes -- and
-PowerPC's run loop is in flash ([the loops in ITCM](#the-interpreters-loops-in-itcm)).
+PowerPC's run loop was in flash then ([the loops in ITCM](#the-interpreters-loops-in-itcm)).
 The old tree with `-DEMU_LAYOUT_PAD=1588` reads 158.32, against the new
 tree's 158.24. G4MH's interpreter, +2.1% and +0.3% at the two offsets,
 moves with the layout as much.

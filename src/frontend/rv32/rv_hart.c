@@ -873,10 +873,10 @@ done:
 /*
  * Alignment is checked here rather than in the bus so the correct
  * misaligned-vs-access-fault cause can be reported, and so the bus can
- * assume aligned accesses on its fast paths.
+ * assume aligned accesses on its fast paths. Every interpreted load
+ * comes here, so it sits beside the interpreter's loop
+ * (EMU_INTERP_HELPER), as ARMv7-M's rd_u does.
  */
-/* Every interpreted load: beside the interpreter's loop
- * (EMU_INTERP_HELPER), as ARMv7-M's rd_u is. */
 EMU_INTERP_HELPER rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr,
                                         uint32_t size, bool sign_extend,
                                         uint32_t *out)

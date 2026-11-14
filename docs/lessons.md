@@ -4901,6 +4901,23 @@ session, and every one of them recurred:
   one-line changes made it 3.1% faster, past the old figure. **Profile
   the thing before building the fix it was assumed to need.**
 
+- **A placement measured as a loss is a loss for the code that was
+  measured.** PowerPC's interpreter was the one loop left in flash on
+  the F746: moved to ITCM at c7b4c5a it read 2-5% slower, because
+  `ppc_run` called `ppc_exec`, the decoder and the accessors for every
+  instruction, each through a veneer. By 235e345 LTO had inlined the
+  execute switch, and a PC profile put 100% of the interpreter's samples
+  in flash; the same move was then 7.5-8.9% faster at three layouts.
+  Nothing had re-asked, because the docs said "not kept". The same
+  profile showed the decode functions at a sixth of the samples, which
+  read as decode being slow; it was the decode cache missing -- 64
+  entries indexed by `pc >> 1`, so Book E's 4-byte instructions used
+  every other one. 256 entries with an index that numbers consecutive
+  instructions apart, `pc >> 1 ^ pc >> 2`, was 16-17% more, and the
+  round 26%. **Re-measure a rejected change when the code it was
+  measured against has changed shape, and read a hot decoder as a cache
+  question first.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

@@ -8,6 +8,8 @@
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_memmap.h"
 
+#include "emu/emu_jit.h" /* EMU_HAVE_JIT: where the accessors go */
+
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -945,8 +947,22 @@ uint8_t *g4mh_rmw_ptr(g4mh_cpu_t *c, uint32_t addr, uint32_t size, bool write,
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
-g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
-                     bool sign_extend, uint32_t *out)
+/*
+ * Beside the interpreter's loop (EMU_INTERP_HELPER) only where there is
+ * no JIT, as ARMv7-M's rd_u and wr_u are: every interpreted load and
+ * store calls one, and in ITCM interpreted CoreMark on the F746 was
+ * 3.67% faster at two layouts -- where in a JIT build the same move cost
+ * the JIT 3.16% and 3.06%.
+ */
+#if EMU_HAVE_JIT
+#define G4MH_ACCESS_PLACE
+#else
+#define G4MH_ACCESS_PLACE EMU_INTERP_HELPER
+#endif
+
+G4MH_ACCESS_PLACE g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr,
+                                       uint32_t size, bool sign_extend,
+                                       uint32_t *out)
 {
     if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
         c->sr[2][G4MH_SR_MEA] = addr;
@@ -982,7 +998,8 @@ g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
     return G4MH_EXC_NONE;
 }
 
-g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
+G4MH_ACCESS_PLACE g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr,
+                                        uint32_t size, uint32_t val)
 {
     if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
         c->sr[2][G4MH_SR_MEA] = addr;

@@ -39,11 +39,16 @@ typedef ppc_insn_t I;
  * It is worth 35% of the interpreter on a host (CoreMark, 40
  * iterations: 397 ms without, 260 ms with) and 48 KiB of .bss at this
  * size -- which on a microcontroller is the guest's memory, so there it
- * is a sixteenth of that.
+ * is a quarter of that, 12 KiB a core. **256 is the knee on the F746**:
+ * interpreted CoreMark at 64, 128, 256 and 512 entries read 130.69,
+ * 120.77, 112.09 and 111.48 host cycles an instruction, the decode a
+ * sixth of a PC profile's samples at 64. A part that cannot spare 12 KiB
+ * a core -- the F446 has 128 KiB in all, and no PowerPC row -- passes a
+ * smaller -DPPC_DECODE_CACHE.
  */
 #ifndef PPC_DECODE_CACHE
 #if defined(__arm__)
-#define PPC_DECODE_CACHE 64u
+#define PPC_DECODE_CACHE 256u
 #else
 #define PPC_DECODE_CACHE 1024u
 #endif
@@ -1324,8 +1329,16 @@ static EMU_INTERP_TEXT emu_run_reason_t ppc_run(emu_cpu_t *cpu,
 #endif
 
         {
+            /*
+             * Indexed by pc >> 1 ^ pc >> 2, which numbers consecutive
+             * instructions apart whether they are 4 bytes (Book E) or 2
+             * (VLE): pc >> 1 alone left every odd entry unused by Book E
+             * code, and the full index was 2.4% of interpreted CoreMark
+             * at 64 entries, 4.9% at 256.
+             */
             dc_t *const e =
-                &((dc_t *)c->dcache)[(pc >> 1) & (PPC_DECODE_CACHE - 1u)];
+                &((dc_t *)c->dcache)[((pc >> 1) ^ (pc >> 2)) &
+                                     (PPC_DECODE_CACHE - 1u)];
 
             if (EMU_UNLIKELY(e->pc != pc || e->insn != insn ||
                              e->vle != (uint8_t)c->vle || e->d.len == 0u)) {

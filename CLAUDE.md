@@ -389,9 +389,12 @@ Each has cost more than one session, and every one recurred.
   other value of every flag and count, or accept it does not work
   (`PE_COUNT > 1`, VLE mode, `EMU_JIT=OFF` all broke unbuilt).
 - **When a subsystem is replaced, grep for the readers of its options and
-  re-check its measured wins.** `EMU_JIT_CODE_BYTES` reached only the
-  deleted translator (wired up: 6.55x); the new IR lost Zbb (23,339
-  interpreted instructions back to 1 once lowered).
+  re-check its measured wins -- and its losses.** `EMU_JIT_CODE_BYTES`
+  reached only the deleted translator (wired up: 6.55x); the new IR lost
+  Zbb (23,339 interpreted instructions back to 1 once lowered).
+  PowerPC's loop measured 2-5% slower in ITCM while it called
+  `ppc_exec` through a veneer, and 7.5% faster once LTO had inlined it:
+  a "not kept" is about the code that was measured.
 - **A row that builds is not a row that runs** (`board_argv` passed
   `--jit` to a JIT-less build); a board change is not done until a board
   row has linked (libatomic's `__atomic_load_8`).
@@ -537,7 +540,8 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **A hash must keep its chain and use every input bit.** A direct-mapped
   block table hid colliding hot blocks (1,977 translations against
   1,465); a declined-pc cache indexed by low bits evicted every pair
-  0x800 apart -- multiply and take the high bits.
+  0x800 apart -- multiply and take the high bits. PowerPC's decode cache,
+  indexed by `pc >> 1`, never used its odd entries for 4-byte code.
 - **A capability query is worth nothing if the backend cannot lower the
   fallback**: Thumb-2 declined `EMU_IR_HELPER_TRAP`, so every honest "no"
   cost the whole block. Two hosts disagreeing completely is the tell.
