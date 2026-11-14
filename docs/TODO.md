@@ -156,17 +156,16 @@ measured at.
       already watch.
 - [ ] **PowerPC's FP unit is a call per instruction**, from ITCM and,
       for the four operations that are most of an FP program, a helper
-      each with nothing to unpack. efsmul's helper computes the common
-      case first -- normal operands, round to nearest, FINXE clear --
-      and Whetstone under the JIT is 15.1% faster for it on the F746
-      ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
-      Open: efsadd and efssub the same way, 182 of Whetstone's
-      translated EFPU sites against efsmul's 102 -- `add_exact`'s
-      alignment, cancellation and sticky rules in 32-bit integers, with
-      a seed of their edges as efsmul has, since `efpu.py`'s relations
-      reach only the general path.
-      Discarded: the arithmetic in the block, measured 19% slower on
-      Thumb-2 for the temps it spent (`wip/ppc-efsmul-in-block`).
+      each with nothing to unpack. efsmul's, efsadd's and efssub's
+      helpers compute the common case first in integers -- normal
+      operands, round to nearest, FINXE clear -- and Whetstone under
+      the JIT is 59.3 to 39.7 host cycles an instruction for them on the
+      F746 ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
+      Open: efsdiv (12 of Whetstone's translated sites) -- a 24-bit
+      quotient needs a 48-by-24 divide, which an M7's UDIV is not -- and
+      the call itself, about 55 cycles. Discarded: the arithmetic in
+      the block, 19% slower on Thumb-2 for the temps it spent
+      (`wip/ppc-efsmul-in-block`).
 
 ## Linux
 

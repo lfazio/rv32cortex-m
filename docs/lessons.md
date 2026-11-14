@@ -4760,6 +4760,19 @@ session, and every one of them recurred:
   boundary -- permitted, and already a rule. **A whole-run difference is
   one number; a mark per test makes it a list with a name in it.**
 
+- **An unfound mutant is first asked whether it can differ.** Of eight
+  mutants of PowerPC's add fast case, one stayed unfound: the sticky
+  bit ORed into the shifted operand instead of borrowed. The code's own
+  comment said ORing could carry into the guard bit; the arithmetic
+  says it cannot -- the two differ only when the operand is odd, and a
+  carry needs the difference's six low bits all ones, which makes it
+  even -- so the mutant is equivalent and the comment was wrong.
+  Another, the exponent bound, was unfound because no case reached it:
+  the seed's exponent-254 sums carried in the integer sum or rounded to
+  2^127, where the wrong bound is right; a tie into overflow found it
+  at once. **Before adding inputs for an unfound mutant, work out
+  whether any input can tell it apart -- then find the one that does.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

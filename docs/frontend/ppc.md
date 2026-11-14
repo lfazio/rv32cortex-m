@@ -1037,6 +1037,29 @@ to 1.92; interpreted, which does not call it, 245.76 to 245.73 and
 246.67 to 246.66; CoreMark under the JIT 19.91 to 19.91 and 19.92 to
 19.91; every retired count the same.
 
+**efsadd and efssub take the same road** (`add_fast` in `ppc_fpu.c`,
+for `ppc_fpu_add` and `ppc_fpu_sub`): two normal operands, round to
+nearest, FINXE clear, and a result neither an exact zero -- whose sign
+is `finish_sum`'s -- nor outside exponents 1..253 before rounding. The
+larger magnitude's significand goes at bits 30..7, the smaller's is
+shifted right by the exponents' difference with every lost bit in a
+sticky bit; a sum's floor is exact, a difference takes the sticky bit
+as a borrow so the integer is the exact difference's floor; the leading
+zeros normalise it -- a difference loses more than one leading bit only
+where the shift was exact -- and the significand, guard and sticky bits
+and the exponent come out as the product's do. On the F746 against
+a7e50fd, Whetstone under the JIT 50.49 to 39.66 and 50.41 to 39.69,
+**21.5% faster**, the wall clock 1.92 s to 1.50; interpreted Whetstone
+and CoreMark under the JIT unchanged, the retired counts the same.
+Since efsmul's change, 59.3 to 39.7 host cycles an instruction. Held
+by `efsadd-edges.S` (31 sums and differences at the edges) and eight
+mutants: six found by the seed within 6 s, the exponent bound once the
+seed had a tie at 254 rounding into overflow, and the eighth -- the
+sticky bit ORed in rather than borrowed -- equivalent: the two differ
+only when the shifted operand is odd, and a carry into the guard needs
+the difference's six low bits all ones, which makes it even. The
+code's first comment said ORing could carry into the guard; it cannot.
+
 **In the block, the same arithmetic lost.** It was first written as IR
 -- MUL and MULHU, the rounding, selects by mask since Thumb-2 has no
 SELECT -- with the helper behind a predicate (a new IR form,

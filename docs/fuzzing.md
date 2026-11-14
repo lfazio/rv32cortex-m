@@ -974,6 +974,17 @@ the seed itself, the others in 8 and 111 s. Run alone (`FUZZ_SHOW=1`),
 it retires all 16 with no enables and takes the round interrupt at the
 first inexact result with all five.
 
+**efsadd and efssub have a seed of their own edges** too,
+`seeds/ppc-jit/efsadd-edges.S`, in the same 64-byte cases: shifts of
+0, 1, 7, 8, 23 to 25, 31, 32 and 100, a borrow, deep cancellation, ties
+both ways, the swap, the signs, 253 rounded into 254, and the general
+path's cases. Eight mutants of the fast case: six found by its inputs
+within 6 s; the exponent bound only after a tie at 254 rounding into
+overflow was added -- every 254 the seed had either carried in the
+integer sum or rounded to 2^127, which the wrong bound computes right
+too; and the sticky bit ORed in instead of borrowed is equivalent,
+which the arithmetic shows and 120 s agreed with.
+
 **An entropy source would make the two sides differ by design.** Zkr's
 `seed` reads the platform's source, and the interpreter and the JIT
 polling the host's RDSEED would read different bits and diverge on

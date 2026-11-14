@@ -994,22 +994,127 @@ EMU_HOT_TEXT uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd,
  * the sticky bits and both interrupts stay one implementation -- without
  * the switch or the register reads. In ITCM, as round_f64 says.
  */
+/*
+ * SPEFSCR after a fast case's inexact or exact result, as finish()
+ * leaves it: the status replaced, FG and FX from the guard and sticky
+ * bits, FINXS if either is set. Nothing else can happen in a fast case.
+ */
+static EMU_ALWAYS_INLINE uint32_t fast_status(uint32_t f, uint32_t g,
+                                              uint32_t x)
+{
+    return (f & ~(uint32_t)STATUS) | (g ? PPC_SPEFSCR_FG : 0u) |
+           (x ? PPC_SPEFSCR_FX : 0u) | ((g | x) ? PPC_SPEFSCR_FINXS : 0u);
+}
+
+/*
+ * efsadd's and efssub's common case first, as efsmul's below: two normal
+ * operands, round to nearest, FINXE clear, and a result that is not an
+ * exact zero and whose exponent before rounding is in 1..253. In 32-bit
+ * integers:
+ *
+ *   - the larger magnitude's significand at bits 30..7, the smaller's
+ *     shifted right by the exponents' difference d, every bit it loses
+ *     in a sticky bit s -- none for d <= 7, the low seven being zero;
+ *   - a sum is A + (B >> d), whose floor is exact; a difference is
+ *     A - (B >> d) - s, the floor of the exact difference, s taken as a
+ *     borrow. ORing s into the low bit instead would do as well -- the
+ *     two differ only when B >> d is odd, and a carry from there into
+ *     the guard needs the difference's six low bits all ones, which
+ *     makes B >> d even -- and its mutant is equivalent;
+ *   - normalised to bit 31 by its leading zeros: a difference loses more
+ *     than one leading bit only where d <= 1, which is exact, so the
+ *     shift brings in zeros only;
+ *   - then the significand, the guard and the sticky bit as for the
+ *     product, the exponent added below the significand.
+ *
+ * Everything else -- specials, denormals, a cancellation to zero (whose
+ * sign is finish_sum's) or below the normal range, an exponent at the
+ * edges, another mode or an enable -- takes op_add and finish. Only the
+ * translated path calls these; the interpreter keeps the general path,
+ * and fuzz-ppc-jit holds the two against each other (efsadd-edges.S).
+ */
+static EMU_ALWAYS_INLINE bool add_fast(ppc_cpu_t *c, uint32_t a, uint32_t b,
+                                       uint32_t *dst)
+{
+    const uint32_t f = c->spefscr;
+    uint32_t ea = (a >> 23) & 0xFFu;
+    uint32_t eb = (b >> 23) & 0xFFu;
+
+    if (!(ea - 1u < 254u && eb - 1u < 254u &&
+          (f & (PPC_SPEFSCR_FRMC | PPC_SPEFSCR_FINXE)) == 0u)) {
+        return false;
+    }
+    if ((a & 0x7FFFFFFFu) < (b & 0x7FFFFFFFu)) {
+        const uint32_t t = a, te = ea;
+
+        a = b;
+        b = t;
+        ea = eb;
+        eb = te;
+    }
+    {
+        const uint32_t d = ea - eb;
+        const uint32_t sa = ((a & 0x7FFFFFu) | 0x800000u) << 7;
+        const uint32_t sb = ((b & 0x7FFFFFu) | 0x800000u) << 7;
+        const uint32_t bs = (d < 32u) ? (sb >> d) : 0u;
+        const uint32_t st =
+            (d == 0u) ? 0u : ((d < 32u) ? ((sb << (32u - d)) != 0u) : 1u);
+        const uint32_t sum =
+            (((a ^ b) & 0x80000000u) != 0u) ? sa - bs - st : sa + bs;
+
+        if (sum == 0u) {
+            return false;
+        }
+        {
+            const uint32_t lz = (uint32_t)__builtin_clz(sum);
+            /* The biased exponent less one, ea + 1 - lz - 1; wraps above
+             * 253 when too small. */
+            const uint32_t em1 = ea - lz;
+
+            if (em1 >= 253u) {
+                return false;
+            }
+            {
+                const uint32_t n = sum << lz;
+                const uint32_t sig = n >> 8;
+                const uint32_t g = (n >> 7) & 1u;
+                const uint32_t x = (((n & 0x7Fu) | st) != 0u) ? 1u : 0u;
+
+                *dst = (a & 0x80000000u) |
+                       ((em1 << 23) + sig + (g & (x | (sig & 1u))));
+                c->spefscr = fast_status(f, g, x);
+                return true;
+            }
+        }
+    }
+}
+
 EMU_HOT_TEXT uint32_t ppc_fpu_add(ppc_cpu_t *c, uint32_t a, uint32_t b,
                                   uint32_t *dst)
 {
-    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+    if (EMU_LIKELY(add_fast(c, a, b, dst))) {
+        return PPC_EXC_NONE;
+    }
+    {
+        res_t r = {0u, 0u, false, false, false, false, false, false, false};
 
-    op_add(&r, a, b, false, rmode(c));
-    return finish(c, &r, dst);
+        op_add(&r, a, b, false, rmode(c));
+        return finish(c, &r, dst);
+    }
 }
 
 EMU_HOT_TEXT uint32_t ppc_fpu_sub(ppc_cpu_t *c, uint32_t a, uint32_t b,
                                   uint32_t *dst)
 {
-    res_t r = {0u, 0u, false, false, false, false, false, false, false};
+    if (EMU_LIKELY(add_fast(c, a, b ^ 0x80000000u, dst))) {
+        return PPC_EXC_NONE;
+    }
+    {
+        res_t r = {0u, 0u, false, false, false, false, false, false, false};
 
-    op_add(&r, a, b, true, rmode(c));
-    return finish(c, &r, dst);
+        op_add(&r, a, b, true, rmode(c));
+        return finish(c, &r, dst);
+    }
 }
 
 /*
@@ -1053,9 +1158,7 @@ EMU_HOT_TEXT uint32_t ppc_fpu_mul(ppc_cpu_t *c, uint32_t a, uint32_t b,
 
             *dst = ((a ^ b) & 0x80000000u) |
                    ((em1 << 23) + sig + (g & (x | (sig & 1u))));
-            c->spefscr = (f & ~(uint32_t)STATUS) |
-                         (g ? PPC_SPEFSCR_FG : 0u) | (x ? PPC_SPEFSCR_FX : 0u) |
-                         ((g | x) ? PPC_SPEFSCR_FINXS : 0u);
+            c->spefscr = fast_status(f, g, x);
             return PPC_EXC_NONE;
         }
     }
