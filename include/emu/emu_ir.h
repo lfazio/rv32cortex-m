@@ -984,6 +984,7 @@ typedef struct emu_ir_opt_stats {
     uint32_t macs; /* multiply+add pairs fused into an MLA   */
     uint32_t dead_removed; /* values nothing consumed               */
     uint32_t retires_merged; /* RETIREs folded into a later one       */
+    uint32_t tail_exits; /* blocks whose last pc write now exits  */
     uint32_t blocks; /* times emu_ir_optimise ran             */
 } emu_ir_opt_stats_t;
 

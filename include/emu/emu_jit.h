@@ -400,7 +400,9 @@ typedef struct emu_jit_hot {
  * A backend that fills nothing gets the dispatcher, which is always
  * correct.
  */
-#define EMU_JIT_MAX_CHAIN 2u
+#ifndef EMU_JIT_MAX_CHAIN
+#define EMU_JIT_MAX_CHAIN 4u
+#endif
 
 /*
  * Set in a block's return value when it left by a chained exit still
@@ -419,16 +421,22 @@ typedef struct emu_jit_hot {
  */
 #define EMU_JIT_RET_UNLINKED 0x80000000u
 
-typedef struct emu_jit_link {
-    uint32_t target_pc; /* guest address this exit goes to  */
-    uint32_t site; /* offset of the patchable jump     */
-    bool linked;
-} emu_jit_link_t;
+/*
+ * Each chainable exit as two arrays rather than an array of structs: the
+ * guest address it goes to, and the offset of its patchable jump with
+ * EMU_JIT_LINKED in the top bit -- six bytes an exit, so four fit where
+ * two twelve-byte ones did and a block's entry stays 72 bytes. A block
+ * is far shorter than 32 KB; a backend whose site would not fit gives
+ * the exit no slot.
+ */
+#define EMU_JIT_LINKED 0x8000u
+#define EMU_JIT_SITE_MAX 0x7FFFu
 
 typedef struct emu_jit_layout {
     uint32_t chain_entry;
     uint32_t tail;
-    emu_jit_link_t link[EMU_JIT_MAX_CHAIN];
+    uint32_t link_pc[EMU_JIT_MAX_CHAIN];
+    uint16_t link_site[EMU_JIT_MAX_CHAIN];
     uint8_t nlink;
     bool chainable;
     /*

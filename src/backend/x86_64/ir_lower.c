@@ -759,7 +759,10 @@ static bool chain_exit(uint32_t target_pc)
     if (!emu_jit_layout.chainable) {
         return false;
     }
-    if (emu_jit_layout.nlink >= EMU_JIT_MAX_CHAIN) {
+    /* A site's offset is fifteen bits (EMU_JIT_LINKED), with room for
+     * what precedes the jump. */
+    if (emu_jit_layout.nlink >= EMU_JIT_MAX_CHAIN ||
+        (uint32_t)(emu_jit_here() - g_block_start) > EMU_JIT_SITE_MAX - 64u) {
         emu_jit_note_no_chain_slot();
         return false;
     }
@@ -785,10 +788,9 @@ static bool chain_exit(uint32_t target_pc)
      */
     uint8_t *const slot = x86_jmp32();
 
-    emu_jit_layout.link[emu_jit_layout.nlink].target_pc = target_pc;
-    emu_jit_layout.link[emu_jit_layout.nlink].site =
-        (uint32_t)(slot - g_block_start);
-    emu_jit_layout.link[emu_jit_layout.nlink].linked = false;
+    emu_jit_layout.link_pc[emu_jit_layout.nlink] = target_pc;
+    emu_jit_layout.link_site[emu_jit_layout.nlink] =
+        (uint16_t)(slot - g_block_start);
     emu_jit_layout.nlink++;
     /* Aimed at the unlinked epilogue once it exists: see emu_ir_lower. */
     return true;
@@ -2800,7 +2802,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         x86_patch_rel32(x86_jmp32(), tail);
         emu_jit_layout.unlinked = (uint16_t)(unlinked - tail);
         for (uint32_t k = 0; k < emu_jit_layout.nlink; k++) {
-            x86_patch_rel32(g_block_start + emu_jit_layout.link[k].site,
+            x86_patch_rel32(g_block_start + emu_jit_layout.link_site[k],
                             unlinked);
         }
     }

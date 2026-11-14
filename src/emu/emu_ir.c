@@ -1303,6 +1303,41 @@ static void pass_merge_retire(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
     }
 }
 
+/*
+ * A block that stops without a jump -- at its length cap, before an
+ * instruction its translator declines, out of room -- ends in the pc
+ * write after its last instruction, and falls off its end to the
+ * dispatcher. That pc is a constant, so the write becomes an exit to it,
+ * which a backend can chain: PowerPC Whetstone's five 64-instruction
+ * blocks in sqrtf and logf went through the dispatcher 46,500 times, a
+ * quarter of its block entries, with every one of their successors
+ * resident.
+ *
+ * Not after an exit that always leaves: the write there is never
+ * reached, and as an exit it would take a chain slot for nothing.
+ */
+static void pass_tail_exit(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+{
+    emu_ir_insn_t *last = NULL;
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->op == (uint8_t)EMU_IR_EXIT) {
+            return;
+        }
+        last = in;
+    }
+    if (last != NULL && last->op == (uint8_t)EMU_IR_SETPC &&
+        last->a == EMU_IR_NO_TEMP) {
+        last->op = (uint8_t)EMU_IR_EXIT;
+        st->tail_exits++;
+    }
+}
+
 static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
     static EMU_PER_CORE uint8_t uses[EMU_IR_MAX_TEMPS];
@@ -1558,6 +1593,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_dead_values(b, stats);
     pass_mac(b, stats);
     pass_merge_retire(b, stats);
+    pass_tail_exit(b, stats);
     pass_count_uses(b, stats);
 
     emu_lock(&g_opt_lock);
@@ -1573,6 +1609,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.macs += stats->macs;
     g_opt_totals.dead_removed += stats->dead_removed;
     g_opt_totals.retires_merged += stats->retires_merged;
+    g_opt_totals.tail_exits += stats->tail_exits;
     emu_unlock(&g_opt_lock);
 
 #if EMU_JIT_HOT_REG_STATS

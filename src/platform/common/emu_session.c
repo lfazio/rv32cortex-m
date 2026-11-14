@@ -405,14 +405,15 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
                 "  blocks   %u optimised\n"
                 "  elided   gets %u  puts %u  setpc %u  flags %u  dead %u"
                 "  retire %u\n"
-                "  fused    const->imm %u  addr %u  identities %u  mac %u\n",
+                "  fused    const->imm %u  addr %u  identities %u  mac %u\n"
+                "  tail     %u exits\n",
                 (unsigned)o.blocks, (unsigned)o.gets_removed,
                 (unsigned)o.puts_removed, (unsigned)o.setpcs_removed,
                 (unsigned)o.flags_removed,
                 (unsigned)o.dead_removed, (unsigned)o.retires_merged,
                 (unsigned)o.folded,
                 (unsigned)o.addr_folded, (unsigned)o.identities,
-                (unsigned)o.macs);
+                (unsigned)o.macs, (unsigned)o.tail_exits);
         }
 
         uint8_t op = 0u;

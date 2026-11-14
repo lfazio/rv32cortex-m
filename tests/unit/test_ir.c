@@ -290,7 +290,9 @@ static void setpc(uint32_t pc)
 }
 
 /* The pc values the surviving SETPCs write, in order, as a bitmap of
- * which of up to 32 emitted ones are still live. */
+ * which of up to 32 emitted ones are still live. A block that ends in
+ * one ends in an exit to the same constant instead (pass_tail_exit):
+ * the tests of such blocks count that exit beside this. */
 static uint32_t live_setpcs(void)
 {
     uint32_t map = 0u;
@@ -338,7 +340,55 @@ static void test_dead_setpc_removed(void)
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.setpcs_removed, 2u);
-    CHECK_EQ(live_setpcs(), 0x4u);
+    CHECK_EQ(live_setpcs(), 0x0u);
+    CHECK_EQ(count_op(EMU_IR_EXIT), 1u); /* the third, as the exit */
+}
+
+/*
+ * A block that stops without a jump ends in its last pc write, and that
+ * write becomes an exit to the same constant, which a backend can chain:
+ * PowerPC Whetstone's capped blocks went through the dispatcher 46,500
+ * times. Not a computed write, which no backend can chain; and not
+ * after an exit that always leaves, where the write is never reached and
+ * an exit would take a chain slot for nothing.
+ */
+static void test_tail_setpc_becomes_an_exit(void)
+{
+    emu_ir_opt_stats_t st;
+    const emu_ir_insn_t *last = NULL;
+
+    emu_ir_reset(&g_b);
+    emu_ir_put(&g_b, 2u, emu_ir_get(&g_b, 1u));
+    setpc(0x3004u);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    for (uint32_t i = 0; i < g_b.count; i++) {
+        if (!g_b.insn[i].dead) {
+            last = &g_b.insn[i];
+        }
+    }
+    CHECK(last != NULL);
+    if (last != NULL) {
+        CHECK_EQ(last->op, (uint32_t)EMU_IR_EXIT);
+        CHECK_EQ(last->a, (uint32_t)EMU_IR_NO_TEMP);
+        CHECK_EQ(last->imm, 0x3004u);
+        CHECK_EQ(last->aux, 0u); /* a constant exit, not a computed jump */
+    }
+    CHECK_EQ(st.tail_exits, 1u);
+
+    /* A computed pc: left alone. */
+    emu_ir_reset(&g_b);
+    (void)emu_ir_emit(&g_b, EMU_IR_SETPC, 0u, emu_ir_get(&g_b, 1u),
+                      EMU_IR_NO_TEMP, 0u, 0u);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.tail_exits, 0u);
+
+    /* After an exit that always leaves: left alone. */
+    emu_ir_reset(&g_b);
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      0x4000u, 0u);
+    setpc(0x3008u);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.tail_exits, 0u);
 }
 
 /*
@@ -371,7 +421,8 @@ static void test_setpc_kept_before_each_observer(void)
         emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
         CHECK_EQ(st.setpcs_removed, 0u);
-        CHECK_EQ(live_setpcs(), 0x3u);
+        CHECK_EQ(live_setpcs(), 0x1u);
+        CHECK_EQ(count_op(EMU_IR_EXIT), 1u); /* the second, as the exit */
     }
 }
 
@@ -505,7 +556,8 @@ static void test_setpc_across_conditional_exit(void)
     setpc(0x5004u);
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
     CHECK_EQ(st.setpcs_removed, 1u);
-    CHECK_EQ(live_setpcs(), 0x2u);
+    CHECK_EQ(live_setpcs(), 0x0u);
+    CHECK_EQ(count_op(EMU_IR_EXIT), 1u); /* 0x5004, as the exit */
 
     emu_ir_reset(&g_b);
     a = emu_ir_get(&g_b, 1u);
@@ -519,7 +571,8 @@ static void test_setpc_across_conditional_exit(void)
     setpc(0x5004u);
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
     CHECK_EQ(st.setpcs_removed, 0u);
-    CHECK_EQ(live_setpcs(), 0x3u);
+    CHECK_EQ(live_setpcs(), 0x1u);
+    CHECK_EQ(count_op(EMU_IR_EXIT), 1u); /* 0x5004, as the exit */
 }
 
 /*
@@ -590,7 +643,8 @@ static void test_setpc_untouched_without_a_target(void)
     emu_ir_optimise(&g_b, NULL, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.setpcs_removed, 0u);
-    CHECK_EQ(live_setpcs(), 0x3u);
+    CHECK_EQ(live_setpcs(), 0x1u);
+    CHECK_EQ(count_op(EMU_IR_EXIT), 1u); /* 0x8004, as the exit */
 }
 
 #undef NOT
@@ -3005,6 +3059,7 @@ void test_ir(void)
     test_put_kept_across_helper();
     test_put_kept_across_faulting_load();
     test_dead_setpc_removed();
+    test_tail_setpc_becomes_an_exit();
     test_setpc_kept_before_each_observer();
     test_retire_merged_between_observers();
     test_pt_window_from_bus();

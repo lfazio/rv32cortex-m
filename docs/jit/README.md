@@ -161,10 +161,47 @@ A block's exit to a constant target is emitted as a jump to the block's
 own *unlinked* return -- its epilogue, with `EMU_JIT_RET_UNLINKED` set
 in the count it returns -- and patched to land in the successor once
 both exist and the edge has been taken (`EMU_JIT_MAX_CHAIN` exits per
-block). **A link is made the second time an exit is followed**: after
-translating a block the dispatcher forgets the one it came from, since
-translating may have compacted, so the first traversal of an edge
+block, four). **A link is made the second time an exit is followed**:
+after translating a block the dispatcher forgets the one it came from,
+since translating may have compacted, so the first traversal of an edge
 translates and the second links.
+
+**Four slots, and a block that stops without a jump exits to a
+constant.** With two, a block whose conditional branches took both
+left its own end unchained; and a block that stopped at its length cap,
+before an instruction its translator declines or out of room, ended in
+its last pc write and fell off its end to the dispatcher, constant
+target and all. `pass_tail_exit` turns that last write into an exit
+to the same constant, and the four slots cost nothing: an exit is a pc
+and a 16-bit offset whose top bit says it is linked (`link_pc`,
+`link_site`, `EMU_JIT_LINKED`), six bytes, so a block's entry stays
+72. PowerPC Whetstone's five 64-instruction blocks in sqrtf and logf
+had been 46,500 of its dispatches. Host block entries, before and
+after (on top of the computed jumps' stub below):
+
+| | before | after |
+|---|---|---|
+| RV32 CoreMark | 11,411 | 5,276 |
+| ARMv7-M CoreMark | 209,482 | 87,256 |
+| PowerPC CoreMark | 205,029 | 105,165 |
+| PowerPC Whetstone | 116,253 | 71,872 |
+| G4MH CoreMark | 351,541 | 177,767 |
+
+Code grows 1-6% where the exits that used to fall to the epilogue now
+carry a chained jump each (ARMv7-M CoreMark the most). On the F746,
+host cycles an instruction, both layouts alike, the retired counts and
+CRCs the same:
+
+| | before | after | |
+|---|---|---|---|
+| RV32 CoreMark x120 | 12.50 | 10.78 | -13.8% |
+| ARMv7-M CoreMark x200 | 15.52 | 13.60 | -12.4% |
+| PowerPC CoreMark | 19.97 | 17.83 | -10.7% |
+| G4MH CoreMark | 20.37 / 20.36 | 19.03 / 19.00 | -6.6%, -6.7% |
+| PowerPC Whetstone | 34.69 | 29.24 | -15.7% (entries 346,375 to 81,348) |
+| RV32 Whetstone | 26.34 | 26.08 | -1.0% |
+| RV32 Dhrystone | 14.81 | 14.73 | |
+| RV32 CoreMark x650 at 32 KB | 23.5 s | 20.9 s | valid, `crcfinal 0x25e3` |
 
 **The dispatcher links only after a return that says so**, and then
 searches the chain for the exit. It knows the block it called, not the

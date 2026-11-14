@@ -4873,6 +4873,17 @@ session, and every one of them recurred:
   mechanism; and read the counters -- `ibtc 0` said the stub had never
   run.**
 
+- **An exit the backend could have chained but was never asked to is a
+  dispatch on every pass.** The dispatcher's share of PowerPC Whetstone
+  was blamed on returns; counted by why each entry happened, half was,
+  and the rest were blocks out of their two chain slots and blocks that
+  stopped at their 64-instruction cap and fell off their end -- a
+  constant target the translator never turned into an exit, in all four
+  frontends. Four slots in the bytes two took, and the last pc write
+  made an exit: CoreMark 6.6-13.8% faster on all four, Whetstone 15.7%.
+  **Before designing for the dispatch you expected, histogram the
+  dispatches by cause.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

@@ -808,9 +808,8 @@ static uint32_t stub_translate_chain(emu_cpu_t *cpu, uint32_t pc)
     emu_jit_layout.chain_entry = 0u;
     emu_jit_layout.tail = tail;
     emu_jit_layout.unlinked = (uint16_t)(unlinked - tail);
-    emu_jit_layout.link[0].target_pc = next;
-    emu_jit_layout.link[0].site = site;
-    emu_jit_layout.link[0].linked = false;
+    emu_jit_layout.link_pc[0] = next;
+    emu_jit_layout.link_site[0] = (uint16_t)(site);
     emu_jit_layout.nlink = 1u;
     emu_jit_layout.chainable = true;
 
@@ -1139,15 +1138,13 @@ static uint32_t stub_translate_diamond(emu_cpu_t *cpu, uint32_t pc)
     emu_jit_layout.chain_entry = 0u;
     emu_jit_layout.tail = (uint32_t)(tail - start);
     emu_jit_layout.unlinked = (uint16_t)(unlinked - tail);
-    emu_jit_layout.link[0].target_pc = t0;
-    emu_jit_layout.link[0].site = (uint32_t)(s0 - start);
-    emu_jit_layout.link[0].linked = false;
+    emu_jit_layout.link_pc[0] = t0;
+    emu_jit_layout.link_site[0] = (uint16_t)((uint32_t)(s0 - start));
     emu_jit_layout.nlink = 1u;
     if (s1 != NULL) {
         x86_patch_rel32(s1, unlinked);
-        emu_jit_layout.link[1].target_pc = t1;
-        emu_jit_layout.link[1].site = (uint32_t)(s1 - start);
-        emu_jit_layout.link[1].linked = false;
+        emu_jit_layout.link_pc[1] = t1;
+        emu_jit_layout.link_site[1] = (uint16_t)((uint32_t)(s1 - start));
         emu_jit_layout.nlink = 2u;
     }
     emu_jit_layout.chainable = true;

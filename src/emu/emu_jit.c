@@ -1016,12 +1016,12 @@ static void unlink_all(const emu_jit_ops_t *ops)
             continue;
         }
         for (uint32_t k = 0; k < b->layout.nlink; k++) {
-            if (b->layout.link[k].linked) {
+            if ((b->layout.link_site[k] & EMU_JIT_LINKED) != 0u) {
                 /* Back where an unlinked exit goes, to be linked again. */
-                ops->patch_link(b->code + b->layout.link[k].site,
+                b->layout.link_site[k] &= (uint16_t)~EMU_JIT_LINKED;
+                ops->patch_link(b->code + b->layout.link_site[k],
                                 b->code + b->layout.tail +
                                     b->layout.unlinked);
-                b->layout.link[k].linked = false;
             }
         }
     }
@@ -1056,12 +1056,13 @@ static bool link_one(jit_block_t *from, const jit_block_t *to,
                      const emu_jit_ops_t *ops)
 {
     for (uint32_t k = 0; k < from->layout.nlink; k++) {
-        emu_jit_link_t *const l = &from->layout.link[k];
+        uint16_t *const site = &from->layout.link_site[k];
 
-        if (!l->linked && l->target_pc == to->guest_pc) {
-            ops->patch_link(from->code + l->site,
+        if ((*site & EMU_JIT_LINKED) == 0u &&
+            from->layout.link_pc[k] == to->guest_pc) {
+            ops->patch_link(from->code + *site,
                             to->code + to->layout.chain_entry);
-            l->linked = true;
+            *site |= EMU_JIT_LINKED;
             g_stats.links++;
             return true;
         }
@@ -1110,14 +1111,14 @@ static void link_exit(jit_block_t *from, const jit_block_t *to,
         }
         /* Breadth first along its linked exits: either may be the path. */
         for (uint32_t k = 0; k < cur->layout.nlink; k++) {
-            const emu_jit_link_t *const l = &cur->layout.link[k];
             jit_block_t *nb;
             bool seen = false;
 
-            if (!l->linked || tail == JIT_LINK_SEARCH) {
+            if ((cur->layout.link_site[k] & EMU_JIT_LINKED) == 0u ||
+                tail == JIT_LINK_SEARCH) {
                 continue;
             }
-            nb = find_block(l->target_pc, cur->context);
+            nb = find_block(cur->layout.link_pc[k], cur->context);
             for (uint32_t i = 0; i < tail && nb != NULL; i++) {
                 seen = seen || queue[i] == nb;
             }
@@ -1194,11 +1195,11 @@ static void chain_heat(void)
                 continue;
             }
             for (uint32_t k = 0; k < a->layout.nlink; k++) {
-                if (!a->layout.link[k].linked) {
+                if ((a->layout.link_site[k] & EMU_JIT_LINKED) == 0u) {
                     continue;
                 }
                 jit_block_t *const t =
-                    find_block(a->layout.link[k].target_pc, a->context);
+                    find_block(a->layout.link_pc[k], a->context);
 
                 if (t != NULL && t->code != NULL && t->hits < a->hits) {
                     t->hits = a->hits;

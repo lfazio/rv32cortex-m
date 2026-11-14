@@ -516,7 +516,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   every computed exit had meant "to the dispatcher", and EI's interrupt
   came a block late when they all did -- and the table fills only after
   a miss: filled at every dispatch, PowerPC ran 6.8% slower with
-  nothing even marked.
+  nothing even marked. And histogram the dispatches by cause first:
+  half of PowerPC Whetstone's were constant exits out of their two chain
+  slots or blocks falling off their length cap -- four slots in the same
+  bytes and a tail exit made CoreMark 6.6-13.8% faster on all four.
 - **The dispatcher knows the block it called, not the one that
   returned**: linking the called block's exits left a later block's
   unlinked for good (a G4MH loop, 92,000 dispatches a block, blamed on

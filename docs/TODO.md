@@ -158,10 +158,11 @@ measured at.
       What is left is the block's call into the helper, and beside it
       the dispatcher -- 12.9% of Whetstone's profile, where function
       returns could not chain; most go through the computed jumps' stub
-      now (block entries 425,461 to 346,375, 79,086 sent on,
-      [jit/README.md](jit/README.md#computed-jumps-the-stub-emu_jit_ibtc)),
-      and what remains is blocks out of chain slots and blocks that stop
-      at their length cap without a chainable exit. Discarded: the
+      now, and blocks that ran out of chain slots or stopped at their
+      length cap chain too (block entries 425,461 to 81,348, Whetstone
+      35.01 to 29.24 host cycles an instruction,
+      [jit/README.md](jit/README.md#chaining-compaction-and-committed-code)).
+      Discarded: the
       arithmetic in the block, 19% slower on Thumb-2 for the temps it
       spent (`wip/ppc-efsmul-in-block`).
 
