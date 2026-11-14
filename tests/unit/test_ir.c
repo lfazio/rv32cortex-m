@@ -1030,7 +1030,15 @@ static const emu_ir_target_t g_fake_target = {
  * Its own mmap rather than the framework's buffer: that one belongs to
  * the dispatch loop, and this test has no block cache behind it.
  */
+static bool lower_and_run_t(fake_cpu_t *cpu, const emu_ir_target_t *t);
+
 static bool lower_and_run(fake_cpu_t *cpu)
+{
+    return lower_and_run_t(cpu, &g_fake_target);
+}
+
+/* The same, for a target of the test's own -- one with helpers. */
+static bool lower_and_run_t(fake_cpu_t *cpu, const emu_ir_target_t *t)
 {
     static uint8_t *exec;
 
@@ -1044,7 +1052,7 @@ static bool lower_and_run(fake_cpu_t *cpu)
         exec = (uint8_t *)p;
     }
 
-    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
+    emu_ir_optimise(&g_b, t, EMU_IR_F_ALL, NULL);
 
     /*
      * No prologue or epilogue here: emu_ir_lower emits the whole block
@@ -1052,7 +1060,7 @@ static bool lower_and_run(fake_cpu_t *cpu)
      * Emitting them here as well pushed twice and popped once.
      */
     emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
-    const bool ok = emu_ir_lower(&g_b, &g_fake_target);
+    const bool ok = emu_ir_lower(&g_b, t);
     if (!ok || emu_jit_overflowed()) {
         return false;
     }
@@ -1843,6 +1851,85 @@ static void test_lower_predicated_memory(void)
     }
 }
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
+
+/*
+ * A helper under a predicate (emu_ir_helper_if), lowered and executed
+ * and through the IR interpreter: called only when the predicate is
+ * non-zero -- 0x80000000 holds as 1 does -- and a trapping helper's
+ * trap stops the block only when it was called. The helper writes r6,
+ * which nothing else does, so a call that should not have happened
+ * shows there; r4 is written after it, so a trap that should not have
+ * stopped the block, or one that should and did not, shows there.
+ */
+static uint32_t h_pred_call(emu_cpu_t *cpu, uint32_t a, uint32_t b,
+                            uint32_t aux)
+{
+    (void)aux;
+    ((fake_cpu_t *)cpu)->r[6] = a ^ b;
+    return a + b;
+}
+
+static uint32_t h_pred_trap(emu_cpu_t *cpu, uint32_t a, uint32_t b,
+                            uint32_t aux)
+{
+    (void)aux;
+    ((fake_cpu_t *)cpu)->r[6] = a ^ b;
+    return 1u; /* "trapped" */
+}
+
+static void test_lower_predicated_helper(void)
+{
+    static const void *const k_helpers[] = {(const void *)h_pred_call,
+                                            (const void *)h_pred_trap};
+    emu_ir_target_t t = g_fake_target;
+
+    t.helpers = k_helpers;
+    t.helper_count = 2u;
+
+    for (unsigned way = 0u; way < 2u; way++) {
+        for (uint32_t trap = 0u; trap < 2u; trap++) {
+            for (uint32_t p = 0u; p < 3u; p++) {
+                emu_ir_reset(&g_b);
+                const uint16_t a = emu_ir_get(&g_b, 1u);
+                const uint16_t bv = emu_ir_get(&g_b, 2u);
+                const uint16_t pred = emu_ir_get(&g_b, 5u);
+                const uint16_t d = emu_ir_helper_if(
+                    &g_b, trap ? EMU_IR_HELPER_TRAP : EMU_IR_HELPER, 0u, a, bv,
+                    trap, pred);
+
+                emu_ir_put(&g_b, 3u, d);
+                emu_ir_put(&g_b, 4u, emu_ir_const(&g_b, 0xABCDu));
+
+                fake_cpu_t cpu;
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[1] = 0x12345678u;
+                cpu.r[2] = 0x0F0F0F0Fu;
+                cpu.r[5] = (p == 0u) ? 0u : ((p == 1u) ? 1u : 0x80000000u);
+
+                bool ok;
+                if (way == 0u) {
+                    emu_ir_optimise(&g_b, &t, EMU_IR_F_ALL, NULL);
+                    ok = emu_ir_interp(&g_b, (emu_cpu_t *)&cpu, &t, NULL);
+                } else {
+                    ok = lower_and_run_t(&cpu, &t);
+                }
+                if (!ok) {
+                    printf("  predicated helper %s: not run\n",
+                           way ? "lowered" : "interp");
+                    CHECK(false);
+                    continue;
+                }
+                const bool called = p != 0u;
+
+                CHECK_EQ(cpu.r[6], called ? (0x12345678u ^ 0x0F0F0F0Fu) : 0u);
+                CHECK_EQ(cpu.r[4], (called && trap) ? 0u : 0xABCDu);
+                if (called && !trap) {
+                    CHECK_EQ(cpu.r[3], 0x12345678u + 0x0F0F0F0Fu);
+                }
+            }
+        }
+    }
+}
 
 /*
  * The image window (emu_ir_rom_window), executed: a load that misses the
@@ -2999,6 +3086,7 @@ void test_ir(void)
     test_lower_memory();
     test_lower_memory_trap();
     test_lower_predicated_memory();
+    test_lower_predicated_helper();
     test_lower_dtlb_probe();
     test_lower_rom_window();
     test_lower_bitop_memory();

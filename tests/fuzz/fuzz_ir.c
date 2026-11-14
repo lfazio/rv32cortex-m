@@ -764,9 +764,18 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
     case 14: { /* a helper, which may read and write anything */
         const uint32_t h = pick(in, 4u);
         const uint16_t a = val(in), b = val(in);
+        /*
+         * One call in four under a predicate (emu_ir_helper_if): `b`
+         * itself, a value, so any non-zero holds and a zero skips the
+         * call -- which hlog shows. Decided from what was drawn, as
+         * h_mix's aux is, so older inputs keep their streams.
+         */
+        const uint16_t p =
+            (((a * 5u + b) & 3u) == 2u) ? b : (uint16_t)EMU_IR_NO_TEMP;
 
         if (h == H_TRAP) {
-            (void)E(EMU_IR_HELPER_TRAP, 0u, a, b, H_TRAP, 0u);
+            (void)emu_ir_helper_if(&g_built, EMU_IR_HELPER_TRAP, 0u, a, b,
+                                   H_TRAP, p);
         } else {
             /*
              * h_mix's third argument, never 0, from what was drawn
@@ -776,7 +785,13 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
             const uint8_t aux =
                 (h == 0u) ? (uint8_t)(1u + ((a * 7u + b) & 0x7Fu)) : 0u;
 
-            d = E(EMU_IR_HELPER, aux, a, b, h, 0u);
+            d = emu_ir_helper_if(&g_built, EMU_IR_HELPER, aux, a, b, h, p);
+            if (p != EMU_IR_NO_TEMP) {
+                /* A skipped call's result is unspecified: select it away. */
+                d = choose(E(EMU_IR_SETCC, EMU_IR_C_NE, b,
+                             emu_ir_const(&g_built, 0u), 0u, 0u),
+                           d, a);
+            }
         }
         break;
     }

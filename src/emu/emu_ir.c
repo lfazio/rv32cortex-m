@@ -273,6 +273,14 @@ uint16_t emu_ir_mem_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
     return dst;
 }
 
+uint16_t emu_ir_helper_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
+                          uint16_t a, uint16_t bb, uint32_t helper,
+                          uint16_t pred)
+{
+    /* The same shape as emu_ir_mem_if: the predicate rides in `c`. */
+    return emu_ir_mem_if(b, op, aux, a, bb, helper, pred);
+}
+
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg)
 {
     return emu_ir_emit(b, EMU_IR_GET, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,

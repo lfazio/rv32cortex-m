@@ -420,6 +420,13 @@ typedef enum emu_ir_op {
      * one that takes a constant that can be 0 sets a bit of its own
      * (PowerPC's FP helpers set bit 7). The load is left out at 0 so that
      * a helper which takes two arguments costs not a byte more.
+     *
+     * **`c`, when set, is a predicate**, as on a LOAD or STORE: the call
+     * happens only if that temp is non-zero. When it is zero nothing is
+     * called, nothing can trap, and `dst` is unspecified. It is how a
+     * frontend computes the common case of an instruction in the block
+     * and calls for the rest -- PowerPC's efsmul -- without a branch any
+     * pass has to know about. See emu_ir_helper_if.
      */
     EMU_IR_HELPER,
 
@@ -934,6 +941,18 @@ uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
 uint16_t emu_ir_mem_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
                        uint16_t addr, uint16_t val, uint32_t disp,
                        uint16_t pred);
+
+/*
+ * An EMU_IR_HELPER or EMU_IR_HELPER_TRAP called only when `pred` is
+ * non-zero; `pred` of EMU_IR_NO_TEMP is an ordinary call. Returns what
+ * emu_ir_emit would. Whatever the fast path computed beside it is
+ * selected against the old value, as anything else under a condition is,
+ * and the call does the rest -- it must not see a guest register or a
+ * status word the fast path has already written for the case it handles.
+ */
+uint16_t emu_ir_helper_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
+                          uint16_t a, uint16_t bb, uint32_t helper,
+                          uint16_t pred);
 
 /* Shorthands for the shapes that appear most. */
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg);

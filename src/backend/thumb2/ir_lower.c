@@ -2399,6 +2399,16 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (t->helpers == NULL || in->imm >= t->helper_count) {
             return false;
         }
+        /*
+         * Round all of it under a zero predicate (emu_ir_helper_if) --
+         * and so the result must reach its slot: the skip leaves r0
+         * holding something else, as a predicated load's does.
+         */
+        if (in->c != EMU_IR_NO_TEMP) {
+            g_dead_store = EMU_IR_NO_TEMP;
+        }
+        uint8_t *const call_skip = emit_pred_skip(in);
+
         if (g_has_fp) {
             emit_fp_harvest(t, true);
         }
@@ -2432,6 +2442,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (in->dst != EMU_IR_NO_TEMP) {
             st_slot(T2_R0, in->dst);
         }
+        end_pred_skip(call_skip);
         break;
     }
 

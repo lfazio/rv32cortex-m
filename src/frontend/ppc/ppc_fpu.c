@@ -802,10 +802,7 @@ static void cvt_to_half(res_t *r, uint32_t b, uint32_t rm)
 /* SPEFSCR and the two interrupts                                      */
 /* ------------------------------------------------------------------ */
 
-#define STATUS                                                                 \
-    (PPC_SPEFSCR_FGH | PPC_SPEFSCR_FXH | PPC_SPEFSCR_FINVH | PPC_SPEFSCR_FDBZH | \
-     PPC_SPEFSCR_FUNFH | PPC_SPEFSCR_FOVFH | PPC_SPEFSCR_FG | PPC_SPEFSCR_FX |  \
-     PPC_SPEFSCR_FINV | PPC_SPEFSCR_FDBZ | PPC_SPEFSCR_FUNF | PPC_SPEFSCR_FOVF)
+#define STATUS PPC_SPEFSCR_STATUS
 
 /*
  * Record the outcome and decide: suppress (data interrupt), write

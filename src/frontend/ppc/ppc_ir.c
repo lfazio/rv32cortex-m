@@ -108,6 +108,7 @@
 #define R_XER 33u
 #define R_LR 34u
 #define R_CTR 35u
+#define R_SPEFSCR 36u /* read and written by efsmul's fast path */
 
 #define NOT EMU_IR_NO_TEMP
 
@@ -322,6 +323,8 @@ static uint32_t ppc_reg_offset(uint32_t n)
         return (uint32_t)offsetof(ppc_cpu_t, xer);
     case R_LR:
         return (uint32_t)offsetof(ppc_cpu_t, lr);
+    case R_SPEFSCR:
+        return (uint32_t)offsetof(ppc_cpu_t, spefscr);
     default:
         return (uint32_t)offsetof(ppc_cpu_t, ctr);
     }
@@ -1406,9 +1409,100 @@ static bool is_efs(const I *d)
 }
 
 /*
+ * efsmul in the block, for the case a program almost always has: two
+ * normal operands, a normal result, round to nearest and the inexact
+ * interrupt off -- and the unit's own helper, under a predicate
+ * (emu_ir_helper_if), for everything else. On the F746 a call into the
+ * unit was about 55 cycles before any arithmetic, and Whetstone's EFPU
+ * instructions are a seventh of what it executes (docs/frontend/ppc.md).
+ *
+ * The case is IEEE's single-precision product, and FG and FX are the
+ * bits round_f64 reads, from the exact 48-bit product of the two
+ * significands. Each is shifted up 8 with its implicit bit at 31, so
+ * MULHU gives the product's bits 47..16 and MUL its bits 15..0 in its
+ * top half. The leading bit is 47 or 46 (`top`); shifted to 31, the 24
+ * bits from it are the significand, the next the guard, and everything
+ * below -- the rest of the high word and all of the low -- the sticky
+ * bit. Rounding to nearest-even adds one; the exponent is added in
+ * below the significand, so a carry out of it moves the exponent up.
+ *
+ * The test, all of it at run time -- SPEFSCR included, so no block
+ * depends on its value when built:
+ *
+ *   - both operands' exponents in 1..254: normal, which also leaves out
+ *     the zeros, denormals, infinities and NaNs the unit gives defaults;
+ *   - the exponent before rounding in 1..253: rounding cannot overflow
+ *     it, and with an unbounded exponent nothing underflows -- 254 and
+ *     0 go to the helper, which decides after rounding;
+ *   - SPEFSCR's rounding mode 0 and FINXE clear: no other enable can
+ *     matter, since a normal product in range raises nothing else.
+ *
+ * Then rd and SPEFSCR are selected by mask -- the status replaced, FG,
+ * FX and FINXS from the guard and sticky bits, as finish() does -- and
+ * where the test failed both are left as they were and the helper does
+ * the instruction from the operands' values, interrupts included.
+ */
+static void lower_efsmul(T *t, const I *d, uint16_t a, uint16_t bv,
+                         uint8_t aux)
+{
+    B *const b = t->b;
+    const uint16_t ea = ANDK(b, SHR(b, a, 23u), 0xFFu);
+    const uint16_t eb = ANDK(b, SHR(b, bv, 23u), 0xFFu);
+    const uint16_t sa = OP(b, EMU_IR_OR, SHL(b, a, 8u), K(b, 0x80000000u));
+    const uint16_t sb = OP(b, EMU_IR_OR, SHL(b, bv, 8u), K(b, 0x80000000u));
+    const uint16_t hi = OP(b, EMU_IR_MULHU, sa, sb);
+    const uint16_t lo = OP(b, EMU_IR_MUL, sa, sb);
+    const uint16_t top = SHR(b, hi, 31u);
+    const uint16_t h = OP(b, EMU_IR_SHL, hi, XORK(b, top, 1u));
+    const uint16_t sig = SHR(b, h, 8u);
+    const uint16_t g = ANDK(b, SHR(b, h, 7u), 1u);
+    const uint16_t x = CC(b, EMU_IR_C_NE,
+                          OP(b, EMU_IR_OR, ANDK(b, h, 0x7Fu), lo), K(b, 0u));
+    const uint16_t up =
+        OP(b, EMU_IR_AND, g, OP(b, EMU_IR_OR, x, ANDK(b, sig, 1u)));
+    /* The biased exponent less one: ea + eb - 127 + top - 1. */
+    const uint16_t em1 =
+        ADDK(b, OP(b, EMU_IR_ADD, OP(b, EMU_IR_ADD, ea, eb), top),
+             (uint32_t)-128);
+    const uint16_t res = OP(
+        b, EMU_IR_OR,
+        OP(b, EMU_IR_ADD, OP(b, EMU_IR_ADD, SHL(b, em1, 23u), sig), up),
+        ANDK(b, OP(b, EMU_IR_XOR, a, bv), 0x80000000u));
+
+    const uint16_t f = G(b, R_SPEFSCR);
+    const uint16_t ok = OP(
+        b, EMU_IR_AND,
+        OP(b, EMU_IR_AND,
+           CC(b, EMU_IR_C_LTU, ADDK(b, ea, (uint32_t)-1), K(b, 254u)),
+           CC(b, EMU_IR_C_LTU, ADDK(b, eb, (uint32_t)-1), K(b, 254u))),
+        OP(b, EMU_IR_AND, CC(b, EMU_IR_C_LTU, em1, K(b, 253u)),
+           CC(b, EMU_IR_C_EQ,
+              ANDK(b, f, PPC_SPEFSCR_FRMC | PPC_SPEFSCR_FINXE), K(b, 0u))));
+    const uint16_t fnew = OP(
+        b, EMU_IR_OR,
+        OP(b, EMU_IR_OR, ANDK(b, f, ~(uint32_t)PPC_SPEFSCR_STATUS),
+           SHL(b, g, (uint32_t)__builtin_ctz(PPC_SPEFSCR_FG))),
+        OP(b, EMU_IR_OR, SHL(b, x, (uint32_t)__builtin_ctz(PPC_SPEFSCR_FX)),
+           SHL(b, OP(b, EMU_IR_OR, g, x),
+               (uint32_t)__builtin_ctz(PPC_SPEFSCR_FINXS))));
+    /* old ^ ((old ^ new) & -ok): no SELECT on Thumb-2. */
+    const uint16_t m = U(b, EMU_IR_NEG, ok);
+    const uint16_t rdv = G(b, d->rd);
+
+    P(b, d->rd,
+      OP(b, EMU_IR_XOR, rdv,
+         OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, rdv, res), m)));
+    P(b, R_SPEFSCR,
+      OP(b, EMU_IR_XOR, f, OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, f, fnew), m)));
+    (void)emu_ir_helper_if(b, EMU_IR_HELPER_TRAP, aux, a, bv, PPC_HELPER_EFSMUL,
+                           XORK(b, ok, 1u));
+}
+
+/*
  * A scalar EFPU instruction, through the FP unit's own helpers: one of
  * the four with an entry of its own, its operands as values, or the
- * rest through ppc_ir_efs with the fields packed.
+ * rest through ppc_ir_efs with the fields packed. efsmul computes the
+ * common case in the block first (lower_efsmul).
  */
 static void lower_efs(T *t, const I *d)
 {
@@ -1436,11 +1530,14 @@ static void lower_efs(T *t, const I *d)
     /* In this order: two calls as arguments would be in either. */
     const uint16_t a = G(b, d->ra);
     const uint16_t bv = G(b, d->rb);
+    const uint8_t aux = (uint8_t)(EFS_AUX_SET | d->rd |
+                                  ((d->len == 2u) ? EFS_AUX_LEN2 : 0u));
 
-    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP,
-                      (uint8_t)(EFS_AUX_SET | d->rd |
-                                ((d->len == 2u) ? EFS_AUX_LEN2 : 0u)),
-                      a, bv, h, 0u);
+    if (h == PPC_HELPER_EFSMUL) {
+        lower_efsmul(t, d, a, bv, aux);
+        return;
+    }
+    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, aux, a, bv, h, 0u);
 }
 
 /*

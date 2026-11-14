@@ -929,10 +929,15 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
         /*
          * Called as the lowerings call it (ir_helper_fn). A non-zero
          * return from the trapping form means the helper entered a trap,
-         * and the block stops there, its result unwritten.
+         * and the block stops there, its result unwritten. Under a zero
+         * predicate nothing is called, and the result, unspecified, is
+         * zero here as a skipped load's is.
          */
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
+            if (in->c != EMU_IR_NO_TEMP && tmp[in->c] == 0u) {
+                break;
+            }
             r = ((ir_helper_fn)(uintptr_t)t->helpers[in->imm])(cpu, a, bv,
                                                                in->aux);
             if (in->op == (uint8_t)EMU_IR_HELPER_TRAP && r != 0u) {
