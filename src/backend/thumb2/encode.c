@@ -599,6 +599,52 @@ void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm, uint32_t amount)
 #define T2_ROR 3u
 
 /* REV, REV16 and CLZ, which is why the bit group is in the IR at all. */
+/*
+ * The DSP extension's SIMD within a register, for the guest's vector
+ * registers (EMU_IR_VOP), from ARM DDI 0403E A6.3.x "Parallel addition
+ * and subtraction": FA80 | op1 << 4 | Rn, F000 | Rd << 8 | U << 6 | Rm,
+ * op1 000 ADD8, 001 ADD16, 100 SUB8, 101 SUB16; U the unsigned forms.
+ * Each sets the GE bits by lane and no other flag. Checked against
+ * arm-none-eabi-as, r12 in each position (uadd16 r12, r12, r12 is
+ * FA9C FC4C):
+ *
+ *   uadd8 r0, r0, r1     FA80 F041        usub16 r0, r1, r0   FAD1 F040
+ *   ssub8 r2, r0, r12    FAC0 F20C        sel r0, r0, r1      FAA0 F081
+ *   smulbb r2, r0, r1    FB10 F201        smultt r0, r0, r12  FB10 F03C
+ *   pkhbt r0, r2, r0, lsl #16   EAC2 4000 bic.w r1, r1, r2    EA21 0102
+ */
+void t2_par(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFA80u | (op1 << 4) | rn),
+              (uint16_t)(0xF000u | (rd << 8) | (u ? 0x40u : 0u) | rm));
+}
+
+/* SEL rd, rn, rm: each byte from rn where its GE bit is set, else rm. */
+void t2_sel(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFAA0u | rn), (uint16_t)(0xF080u | (rd << 8) | rm));
+}
+
+/* SMUL<x><y> rd, rn, rm: halfword by halfword, top (1) or bottom (0). */
+void t2_smulxy(uint32_t rd, uint32_t rn, uint32_t rm, bool nt, bool mt)
+{
+    t2_emit32((uint16_t)(0xFB10u | rn),
+              (uint16_t)(0xF000u | (rd << 8) | (nt ? 0x20u : 0u) |
+                         (mt ? 0x10u : 0u) | rm));
+}
+
+/* PKHBT rd, rn, rm, LSL #16: rn's low halfword, rm's low one above it. */
+void t2_pkhbt16(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xEAC0u | rn), (uint16_t)(0x4000u | (rd << 8) | rm));
+}
+
+/* BIC.W rd, rn, rm. */
+void t2_bic(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xEA20u | rn), (uint16_t)((rd << 8) | rm));
+}
+
 void t2_rev(uint32_t rd, uint32_t rm)
 {
     t2_emit32((uint16_t)(0xFA90u | rm), (uint16_t)(0xF080u | (rd << 8) | rm));

@@ -92,6 +92,7 @@ typedef struct {
     uint8_t guard; /* the store guard: inlined stores are illegal    */
     uint8_t pad[7];
     emu_dtlb_entry_t tlb[4];
+    uint8_t v[32][EMU_IR_VREG_BYTES]; /* EMU_IR_VOP's registers */
 } fcpu_t;
 
 static uint8_t g_ram[PAGE];
@@ -285,6 +286,11 @@ static uint32_t off_freg(uint32_t n)
     return (uint32_t)(offsetof(fcpu_t, f) + 8u * n);
 }
 
+static uint32_t off_vreg(uint32_t n)
+{
+    return (uint32_t)(offsetof(fcpu_t, v) + EMU_IR_VREG_BYTES * n);
+}
+
 /* Three flag layouts: low bits, ARM's N Z C V at the top, and none. */
 #define TGT(ro, rz, z, s, v, cy)                                               \
     {                                                                          \
@@ -293,6 +299,7 @@ static uint32_t off_freg(uint32_t n)
         .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
         .helper_count = 4u, .load = f_load, .store = f_store,                  \
         .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
+        .vreg_offset = off_vreg,                                               \
     }
 #define TGT_FLAGS(ro, rz)                                                      \
     TGT(ro, rz, 1u, 2u, 4u, 8u),                                               \
@@ -810,6 +817,32 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
     case 16: /* the pc, as a value */
         (void)E(EMU_IR_SETPC, 0u, val(in), EMU_IR_NO_TEMP, 0u, 0u);
         break;
+    case 17: { /* the guest's vector registers, within the op's contract */
+        const uint32_t vop = pick(in, EMU_IR_V_COUNT);
+        const uint32_t sew = pick(in, 3u);
+        const bool vx = (byte(in) & 1u) != 0u;
+        const uint32_t lg = pick(in, 4u);
+        const uint8_t aux = EMU_IR_VOP_AUX(vop, sew, vx);
+        /* each the first register of a group: same or disjoint */
+        const uint32_t vd = pick(in, 32u >> lg) << lg;
+        const uint32_t vs2 = pick(in, 32u >> lg) << lg;
+        const uint32_t vs1 = pick(in, 32u >> lg) << lg;
+        const uint32_t lanes = (EMU_IR_VREG_BYTES << lg) >> sew;
+
+        if (!emu_ir_can_lower(EMU_IR_VOP, aux)) {
+            break; /* a frontend would have kept its helper */
+        }
+        /* vl at most the group's elements; often a register's edge */
+        uint32_t vl = pick(in, lanes + 1u);
+
+        if (byte(in) < 64u) {
+            vl = ((EMU_IR_VREG_BYTES >> sew) * pick(in, (1u << lg) + 1u));
+        }
+        (void)E(EMU_IR_VOP, aux, vx ? val(in) : EMU_IR_NO_TEMP,
+                emu_ir_const(&g_built, vl), EMU_IR_VOP_IMM(vd, vs2, vs1, lg),
+                0u);
+        break;
+    }
     default: /* a write of the result to a register, below */
         d = val(in);
         break;
@@ -862,6 +895,10 @@ static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
         c->f[i] = interesting_f(byte(in));
     }
     c->guard = (cfg & 0x10u) ? 1u : 0u;
+    /* The vector registers from a pattern, so a lane written shows. */
+    for (uint32_t i = 0; i < sizeof(c->v); i++) {
+        ((uint8_t *)c->v)[i] = (uint8_t)(0x5Au ^ (i * 29u) ^ (i >> 4));
+    }
     for (uint32_t i = 0; i < 4u; i++) {
         c->tlb[i].read = EMU_DTLB_NONE;
         c->tlb[i].write = EMU_DTLB_NONE;
@@ -1030,7 +1067,7 @@ static const char *op_name(uint8_t op)
         N(FMUL),    N(FDIV),      N(FSQRT),     N(FMA),       N(FMIN),
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
-        N(EXIT),    N(EXIT_IF)};
+        N(EXIT),    N(EXIT_IF),   N(VOP)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }
@@ -1098,6 +1135,13 @@ static bool same(const side_t *x, const side_t *y, bool print,
     CMP("cause_pc", 0, x->cpu.cause_pc, y->cpu.cause_pc);
     CMP("helpers", 0, x->cpu.hlog, y->cpu.hlog);
     CMP("guard", 0, x->cpu.guard, y->cpu.guard);
+    for (unsigned i = 0; i < sizeof(x->cpu.v) / 4u; i++) {
+        uint32_t a, b;
+
+        memcpy(&a, (const uint8_t *)x->cpu.v + 4u * i, 4u);
+        memcpy(&b, (const uint8_t *)y->cpu.v + 4u * i, 4u);
+        CMP("v word", i, a, b);
+    }
     CMP("retired", 0, x->retired, y->retired);
     CMP("dev reads", 0, x->dev_reads, y->dev_reads);
     CMP("dev log", 0, x->dev_log, y->dev_log);

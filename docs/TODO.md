@@ -210,14 +210,14 @@ From the last measurements in [linux.md](linux.md).
       ([frontend/rv32-vector.md](frontend/rv32-vector.md)). The UDB and
       Sail configurations wait for an arch-test pin with vector suites.
 - [ ] **The vector unit's SIMD lowering, past its first set**: unmasked
-      single-width integer operations lower to SSE2/SSE4.1 on x86-64
-      after an inline vsetvli (`EMU_IR_VOP`). Next: the same set on
-      Thumb-2 with the DSP extension's 8- and 16-bit SIMD (UADD8,
-      USUB16, SEL...), measured on the F746 with vecbench and `EMU_IR_VOP`
-      in fuzz-ir so `ir-board.sh` reaches it; unit-stride loads and stores
-      inline through the RAM window; the multiply-adds; `vaaddu` and
-      `vaadd` under `rnu` as `pavgb`/`pavgw` (vxrm in the context);
-      masked forms; the N6's MVE (Helium), a 128-bit unit
+      single-width integer operations lower after an inline vsetvli
+      (`EMU_IR_VOP`), to SSE2/SSE4.1 on x86-64 and the DSP extension on
+      Thumb-2. Most of vecbench's time is now the helper's loads and
+      stores, a call each: unit-stride ones inline through the RAM
+      window next; then the multiply-adds; `vaaddu` and `vaadd` under
+      `rnu` as `pavgb`/`pavgw` (vxrm in the context); masked forms; on
+      Thumb-2 a loop over the words of an m4 or m8 operation rather than
+      a kilobyte unrolled; the N6's MVE (Helium), a 128-bit unit
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
       under the x86-64 JIT now, AES's S-box between two maps of two

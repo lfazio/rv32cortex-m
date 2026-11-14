@@ -4931,6 +4931,28 @@ session, and every one of them recurred:
   **Name the values a branch is for, and send the rest where the
   unknown goes.**
 
+- **A gate that defaults to false is a list of what may run, and a new
+  operation is not on it.** Thumb-2's lowering lets one group of
+  operations through at a time for bisection (`bisect_allows`,
+  `T2_BISECT`), answering false for anything it does not name. The new
+  `EMU_IR_VOP` had a case in `emu_ir_can_lower` -- which said yes -- and
+  in `lower_one`, and none in the gate, so the first vecbench run on the
+  F746 printed the right checksum, ran slower than the helper path, and
+  said `unkept 95`: every block holding one built, optimised and thrown
+  away. The counter that makes a broken promise visible is what named
+  it. **Grep for every switch over the enumeration when adding a
+  member, the debugging ones too.**
+
+- **A table in a quoted string ends at the first quote in its rows.**
+  build-matrix.sh keeps its configurations in one single-quoted shell
+  string, and a row's description with an apostrophe ended it: the rest
+  of the table ran as commands, "helper: not found" the only symptom,
+  and every row after it was never built. Fixed once this round
+  (host-evict's "stubs'"), it came back two commits later in a new
+  row's "JIT's". **A format that one character breaks gets a test that
+  reads it whole**: `build-matrix-table` requires --list to reach the
+  last row.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

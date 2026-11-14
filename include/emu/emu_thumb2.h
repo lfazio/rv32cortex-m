@@ -125,6 +125,16 @@ void t2_udiv(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_mls(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra);
 
 void t2_rev(uint32_t rd, uint32_t rm);
+/* The DSP extension's SIMD within a register (encode.c). */
+#define T2_PAR_ADD8 0u
+#define T2_PAR_ADD16 1u
+#define T2_PAR_SUB8 4u
+#define T2_PAR_SUB16 5u
+void t2_par(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_sel(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_smulxy(uint32_t rd, uint32_t rn, uint32_t rm, bool nt, bool mt);
+void t2_pkhbt16(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_bic(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_rev16(uint32_t rd, uint32_t rm);
 void t2_rbit(uint32_t rd, uint32_t rm);
 void t2_clz(uint32_t rd, uint32_t rm);

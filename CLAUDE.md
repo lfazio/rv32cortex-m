@@ -366,6 +366,9 @@ Each has cost more than one session, and every one recurred.
 
 ### Stale artefacts, flags and the build
 
+- **A table in a quoted string ends at the first quote in it**:
+  build-matrix.sh's rows broke twice in a round on an apostrophe, and
+  every row after ran as shell; ctest `build-matrix-table` lists it.
 - **CMake cache variables outlive the tree you set them in** (every figure
   once used an inherited 48 KB cache). Check `CMakeCache.txt` before
   quoting; `build-matrix.sh` removes each row's cache.
@@ -501,7 +504,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   what it refused, three times -- the last CLMUL, RV32 CoreMark 32%
   slower on the F746 with every host suite green; x86-64 declining what
   it lowers). Make each effect countable (`emu_ir_opt_totals`; a broken
-  promise prints as `unkept`, and `board-ab.sh` marks it).
+  promise prints as `unkept`, and `board-ab.sh` marks it). Thumb-2's
+  `bisect_allows` was a third list: `EMU_IR_VOP` promised and refused,
+  95 blocks lost on vecbench's first board run.
 - **A list of exceptions fails open**: the dead-value pass removed a
   load nothing read -- an APLIC claim. It is a list of pure operations
   now.

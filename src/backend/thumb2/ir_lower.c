@@ -1218,6 +1218,14 @@ static bool bisect_allows(uint8_t op)
      */
     case EMU_IR_GETCOND:
         return T2_BISECT >= 10;
+    /*
+     * The guest's vector registers, on their own level: a gate that
+     * defaults to false refuses an operation nobody listed, after
+     * emu_ir_can_lower promised it -- 95 blocks lost ("unkept") the first
+     * time vecbench ran with EMU_IR_VOP on this host.
+     */
+    case EMU_IR_VOP:
+        return T2_BISECT >= 11;
     default:
         return false;
     }
@@ -1243,6 +1251,48 @@ static bool bisect_allows(uint8_t op)
  * VCMPE has to be told apart from VCMP by which NaN raises invalid --
  * and none of it can be tested except by flashing a board.
  */
+/*
+ * Which EMU_IR_VOP forms this host lowers, a word of a register at a
+ * time: at 32 bits everything but nothing more than the ALU has -- the
+ * shifts by one count, the multiply, min and max through a compare --
+ * and at 8 and 16 bits what the DSP extension has lanes for: UADD8/16
+ * and USUB8/16 for the adds, USUB or SSUB setting GE then SEL for the
+ * minimum and maximum, SMULBB and SMULTT packed by PKHBT for a 16-bit
+ * multiply. No 8-bit multiply, and no shift narrower than a word: the
+ * frontend's helper. A Cortex-M without the DSP extension (M3, M0) is
+ * not a host this backend builds for.
+ */
+static bool vop_lowerable(uint8_t aux)
+{
+    const uint32_t sew = EMU_IR_VOP_SEW(aux);
+
+    if (sew > 2u) {
+        return false;
+    }
+    switch (EMU_IR_VOP_OP(aux)) {
+    case EMU_IR_V_ADD:
+    case EMU_IR_V_SUB:
+    case EMU_IR_V_RSUB:
+    case EMU_IR_V_AND:
+    case EMU_IR_V_OR:
+    case EMU_IR_V_XOR:
+    case EMU_IR_V_MV:
+    case EMU_IR_V_MINU:
+    case EMU_IR_V_MIN:
+    case EMU_IR_V_MAXU:
+    case EMU_IR_V_MAX:
+        return true;
+    case EMU_IR_V_MUL:
+        return sew != 0u;
+    case EMU_IR_V_SLL:
+    case EMU_IR_V_SRL:
+    case EMU_IR_V_SRA:
+        return sew == 2u && EMU_IR_VOP_VX(aux);
+    default:
+        return false;
+    }
+}
+
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
     switch (op) {
@@ -1364,12 +1414,12 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         return false;
 
     /*
-     * The guest's vector registers: not lowered here yet, so the RV32
-     * translator keeps its helper. Listed, because the default below
-     * would have promised it and lost every block holding one.
+     * The guest's vector registers, with the DSP extension's SIMD within
+     * a register: listed, because the default below promises whatever it
+     * is not told.
      */
     case EMU_IR_VOP:
-        return false;
+        return vop_lowerable(aux);
 
     default:
         return true;
@@ -1617,6 +1667,184 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_eor_imm(rd, rd, 1u);
     }
     st_slot(rd, in->dst);
+}
+
+/*
+ * 128 bytes of ones then 128 of zeros: the word at window + 128 - k is the
+ * mask of a word's first k bytes, none for k <= 0 and all for k >= 4, for
+ * k from -124 to 128 -- every word of a group of up to eight registers
+ * against a vl of up to the group's elements. Read unaligned, which the
+ * M7 does for normal memory.
+ */
+#define VOP_ONES16                                                             \
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,      \
+        0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu
+static const uint8_t k_vop_window[256] = {
+    VOP_ONES16, VOP_ONES16, VOP_ONES16, VOP_ONES16,
+    VOP_ONES16, VOP_ONES16, VOP_ONES16, VOP_ONES16,
+};
+
+/* Thumb-2 condition codes for the 32-bit minimum and maximum's IT. */
+#define T2_CC_HI 8u
+#define T2_CC_LO 3u
+#define T2_CC_LT 11u
+#define T2_CC_GT 12u
+
+/*
+ * One word's operation: r0 = r0 op rb, by lane. r2 is free to use: the
+ * mask goes into it after. The DSP forms set GE and nothing else; the
+ * 32-bit minimum and maximum compare and so write NZCV, which no IR
+ * instruction here carries to the next -- EXIT_IF compares for itself,
+ * SETF recomputes its result.
+ */
+static void vop_word(uint32_t op, uint32_t sew, uint32_t rb)
+{
+    const uint32_t add = (sew == 0u) ? T2_PAR_ADD8 : T2_PAR_ADD16;
+    const uint32_t subp = (sew == 0u) ? T2_PAR_SUB8 : T2_PAR_SUB16;
+
+    switch (op) {
+    case EMU_IR_V_ADD:
+        if (sew == 2u) {
+            t2_add(T2_R0, T2_R0, rb);
+        } else {
+            t2_par(add, true, T2_R0, T2_R0, rb);
+        }
+        break;
+    case EMU_IR_V_SUB:
+        if (sew == 2u) {
+            t2_sub(T2_R0, T2_R0, rb);
+        } else {
+            t2_par(subp, true, T2_R0, T2_R0, rb);
+        }
+        break;
+    case EMU_IR_V_RSUB:
+        if (sew == 2u) {
+            t2_sub(T2_R0, rb, T2_R0);
+        } else {
+            t2_par(subp, true, T2_R0, rb, T2_R0);
+        }
+        break;
+    case EMU_IR_V_AND:
+        t2_and(T2_R0, T2_R0, rb);
+        break;
+    case EMU_IR_V_OR:
+        t2_orr(T2_R0, T2_R0, rb);
+        break;
+    case EMU_IR_V_XOR:
+        t2_eor(T2_R0, T2_R0, rb);
+        break;
+    case EMU_IR_V_MV:
+        t2_mov(T2_R0, rb);
+        break;
+    case EMU_IR_V_MINU:
+    case EMU_IR_V_MIN:
+    case EMU_IR_V_MAXU:
+    case EMU_IR_V_MAX: {
+        const bool max = op == EMU_IR_V_MAXU || op == EMU_IR_V_MAX;
+        const bool sign = op == EMU_IR_V_MIN || op == EMU_IR_V_MAX;
+
+        if (sew == 2u) {
+            /* if (a op b fails) a = b: unsigned max takes b when a < b */
+            const uint32_t cc = max ? (sign ? T2_CC_LT : T2_CC_LO)
+                                    : (sign ? T2_CC_GT : T2_CC_HI);
+
+            t2_cmp(T2_R0, rb);
+            t2_emit16((uint16_t)(0xBF00u | (cc << 4) | 0x8u)); /* IT cc */
+            t2_mov(T2_R0, rb);
+        } else {
+            /* GE where a >= b, lane by lane; SEL takes a there for max */
+            t2_par(subp, !sign, T2_R2, T2_R0, rb);
+            if (max) {
+                t2_sel(T2_R0, T2_R0, rb);
+            } else {
+                t2_sel(T2_R0, rb, T2_R0);
+            }
+        }
+        break;
+    }
+    case EMU_IR_V_MUL:
+        if (sew == 2u) {
+            t2_mul(T2_R0, T2_R0, rb);
+        } else {
+            /* each halfword's low 16 bits: signed or not, the same */
+            t2_smulxy(T2_R2, T2_R0, rb, false, false);
+            t2_smulxy(T2_R0, T2_R0, rb, true, true);
+            t2_pkhbt16(T2_R0, T2_R2, T2_R0);
+        }
+        break;
+    case EMU_IR_V_SLL:
+        t2_shift_reg(T2_LSL, T2_R0, T2_R0, rb);
+        break;
+    case EMU_IR_V_SRL:
+        t2_shift_reg(T2_LSR, T2_R0, T2_R0, rb);
+        break;
+    default: /* EMU_IR_V_SRA */
+        t2_shift_reg(T2_ASR, T2_R0, T2_R0, rb);
+        break;
+    }
+}
+
+/*
+ * EMU_IR_VOP, a word at a time: vs2's word into r0, the second operand
+ * in r1 (vs1's word) or r12 (the scalar, masked to the element and
+ * repeated across the word's lanes, or a shift's count), the operation,
+ * then vd's bytes past vl kept through the window: r3 is window + 128
+ * less vl's bytes for the whole group, so a word's mask is one LDR from
+ * it, and (new & mask) | (old & ~mask) is AND, BIC, ORR.
+ */
+static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    const uint32_t sew = EMU_IR_VOP_SEW(in->aux);
+    const bool vx = EMU_IR_VOP_VX(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+    const bool shift =
+        op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
+
+    if (vx) {
+        ld_operand(T2_R12, in->a);
+        if (shift) {
+            t2_and_imm(T2_R12, T2_R12, 31u);
+        } else if (sew == 0u) {
+            t2_uxtb(T2_R12, T2_R12);
+            t2_add_lsl(T2_R12, T2_R12, T2_R12, 8u);
+            t2_add_lsl(T2_R12, T2_R12, T2_R12, 16u);
+        } else if (sew == 1u) {
+            t2_uxth(T2_R12, T2_R12);
+            t2_add_lsl(T2_R12, T2_R12, T2_R12, 16u);
+        }
+    }
+    ld_operand(T2_R3, in->b);
+    if (sew != 0u) {
+        t2_shift_imm(T2_LSL, T2_R3, T2_R3, sew); /* vl in bytes */
+    }
+    t2_imm32(T2_R2, (uint32_t)(uintptr_t)(k_vop_window + 128u));
+    t2_sub(T2_R3, T2_R2, T2_R3);
+
+    for (uint32_t r = 0; r < nregs; r++) {
+        for (uint32_t w = 0; w < EMU_IR_VREG_BYTES / 4u; w++) {
+            const uint32_t od = t->vreg_offset(vd + r) + 4u * w;
+            uint32_t rb = T2_R12;
+
+            if (!vx) {
+                t2_ldr_imm(T2_R1, T2_CPU, t->vreg_offset(vs1 + r) + 4u * w);
+                rb = T2_R1;
+            }
+            if (op != EMU_IR_V_MV) {
+                t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(vs2 + r) + 4u * w);
+            }
+            vop_word(op, sew, rb);
+            t2_ldr_imm(T2_R2, T2_R3, 16u * r + 4u * w); /* the mask */
+            t2_ldr_imm(T2_R1, T2_CPU, od);               /* the old word */
+            t2_and(T2_R0, T2_R0, T2_R2);
+            t2_bic(T2_R1, T2_R1, T2_R2);
+            t2_orr(T2_R0, T2_R0, T2_R1);
+            t2_str_imm(T2_R0, T2_CPU, od);
+        }
+    }
 }
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -2163,6 +2391,13 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         break;
     }
+
+    case EMU_IR_VOP:
+        if (!vop_lowerable(in->aux) || t->vreg_offset == NULL) {
+            return false;
+        }
+        lower_vop(in, t);
+        break;
 
     case EMU_IR_EXIT_IF: {
         const uint32_t ra = use_reg(in->a, T2_R0);

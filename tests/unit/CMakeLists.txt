@@ -455,6 +455,15 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 # definitions (scripts/sm4-affine.py): x86-64's lowering of EMU_IR_SM4SB
 # reads them, and test_ir checks that lowering only on a CPU with AES-NI
 # and SSSE3, so the tables are held here on every host.
+# build-matrix.sh's table is one single-quoted string, and an apostrophe
+# in a row's description ends it: the rest ran as shell and every row
+# after it vanished -- twice in one round (host-evict's "stubs' first",
+# then host-nozk's "JIT's"). --list must print the table's last row.
+add_test(NAME build-matrix-table
+         COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/build-matrix.sh --list)
+set_tests_properties(build-matrix-table PROPERTIES
+    LABELS fast PASS_REGULAR_EXPRESSION "f746-coremark +stm32f746")
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND)
     add_test(NAME sm4-affine

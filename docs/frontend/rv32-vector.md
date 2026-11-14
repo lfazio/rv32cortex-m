@@ -101,7 +101,17 @@ first; the rest stays the helper. VS off is in the block's context
 (`rv_jit_ctx_key` bit 40), as FS off is, because the inline vsetvli has
 no test of its own. The x86-64 lowering is SSE2 and SSE4.1
 ([backend/x86_64.md](../backend/x86_64.md#the-guests-vector-registers-sse2-and-sse41));
-Thumb-2 declines every form for now.
+Thumb-2's is the DSP extension's SIMD within a register
+([backend/thumb2.md](../backend/thumb2.md#the-guests-vector-registers-the-dsp-extension)).
+
+**On the F746**, vecbench, host cycles a guest instruction, the checksum
+the host's in every row:
+
+| | interpreted | JIT |
+|---|---|---|
+| 03044e9: vector instructions declined, a byte loop an element | 424.22 | 441.55 |
+| 0b2d2d1: the helper under the JIT, plain-RAM accesses copied | 226.46 | 141.01 |
+| the arithmetic lowered with the DSP extension | | 134.22 |
 
 vecbench under the JIT, one binary, callgrind: the helper alone
 (`EMU_HOST_SIMD=0`) 67.6M host instructions, SSE2 64.6M, SSE4.1 59.0M,

@@ -427,6 +427,15 @@ replay's blind spot: a block the board refuses is compared only as the
 passes made it. The XOR lowering made ORR, the replay reported 87
 differences; restored, none.
 
+**With `EMU_IR_VOP`** (2026-11-14): fuzz-ir builds the op within its
+contract -- every operation, width and form the host lowers, groups of
+1 to 8 each starting a group, vl at most the group's elements and often
+a register's edge -- on 32 vector registers in its cpu, compared a word
+at a time. On the host it finds the SSE tail mask a byte late at input
+#187. Its corpus on the board, 4,656 inputs: **4,199 compared, none
+different**, in 119 s; with Thumb-2's mask read a byte off, 274
+different, the VOP blocks among them named in the dump.
+
 
 ## Translation and protection: RV32
 

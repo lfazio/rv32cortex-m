@@ -120,6 +120,40 @@ was looking at:
   costing 2.4× on the loops that crossed the line. Every branch this
   backend emits is the wide form now.
 
+## The guest's vector registers: the DSP extension
+
+`EMU_IR_VOP` (an operation on whole guest vector registers, in the cpu
+state) is lowered a word at a time with the DSP extension's SIMD within
+a register: vs2's word in r0, vs1's in r1 or the scalar in r12 --
+masked to the element and repeated across the word by two `ADD ... LSL`
+-- the operation, then vd's bytes past vl kept. r3 holds a 256-byte
+window of ones then zeros, less vl's bytes, so each word's mask is one
+LDR from it (unaligned, which the M7 reads from normal memory) and the
+keep is `AND`, `BIC`, `ORR`. At 8 and 16 bits: `UADD8`/`UADD16`,
+`USUB8`/`USUB16` (RSUB with the operands swapped), `USUB` or `SSUB`
+setting GE by lane and `SEL` for the minimum and maximum, `SMULBB` and
+`SMULTT` packed by `PKHBT` for a 16-bit multiply. At 32: the ALU, a
+compare and an `IT` for the minimum and maximum -- NZCV written, which
+no IR instruction here carries to the next. No 8-bit multiply and no
+shift narrower than a word: the frontend's helper. The fifteen
+encodings, r12 in every position, were checked against
+arm-none-eabi-as before the first flash; one byte of the comment
+beside them was not.
+
+**The first board run lost 95 blocks** (`unkept`): `bisect_allows`, the
+gate that allows one group of operations at a time for bisection,
+answers false for anything it does not list, after `emu_ir_can_lower`
+had promised the operation. Listed at its own level, 11.
+
+On the F746, vecbench (`tests/guest/vecbench.c`, `-DRV32_EXT_ZVE32X=ON`)
+under the JIT: 141.01 host cycles a guest instruction with every vector
+operation the helper's, 134.22 lowered, the checksum the host's; the
+code it translated 28,520 bytes to 36,280 -- a word is ten
+instructions, unrolled, so an m8 operation is over a kilobyte. Before
+this round's vector work (03044e9: vector instructions declined, a byte
+loop an element) it was 441.55, slower than the interpreter's 424.22;
+the interpreter is 226.46 now.
+
 ## Calling convention
 
 Cortex-M selects instruction set with the low bit of a branch target, so
