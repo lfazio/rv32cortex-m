@@ -41,7 +41,7 @@ uint32_t ppc_fpu_mul(ppc_cpu_t *c, uint32_t a, uint32_t b, uint32_t *dst);
 uint32_t ppc_fpu_div(ppc_cpu_t *c, uint32_t a, uint32_t b, uint32_t *dst);
 
 /*
- * The common cases of efsadd, efssub and efsmul, computed in integers:
+ * The common cases of efsadd, efssub, efsmul and efsdiv, in integers:
  * here, forced inline, so a translated block's helper (ppc_ir.c) runs
  * them without a second call -- the call into the unit after the block's
  * own was a call level the PC profile showed on every FP instruction.
@@ -193,6 +193,70 @@ static EMU_ALWAYS_INLINE bool ppc_fpu_mul_fast(ppc_cpu_t *c, uint32_t a,
         }
     }
     return false;
+}
+
+/*
+ * efsdiv's: two normal operands, round to nearest, FINXE clear, and an
+ * exponent before rounding in 1..253. The quotient of the significands
+ * to 25 bits, floor(ma 2^25 / mb), and its remainder, by long division
+ * in base 2^8 -- four 32-by-32 divides, since each partial remainder is
+ * below mb < 2^24 and shifted by 8 still fits -- where the 49-bit
+ * dividend the general path divides is the library's 64-bit divide on
+ * an M7 (__udivmoddi4, 1.7% of Whetstone's profile). The leading bit is
+ * 25 when ma >= mb and 24 otherwise; the significand, guard and sticky
+ * bits come from there and the remainder, as the others' do. No tie can
+ * arise -- a binary quotient is never halfway between two floats -- so
+ * the tie rule is here for form.
+ */
+static EMU_ALWAYS_INLINE bool ppc_fpu_div_fast(ppc_cpu_t *c, uint32_t a,
+                                               uint32_t b, uint32_t *dst)
+{
+    const uint32_t f = c->spefscr;
+    const uint32_t ea = (a >> 23) & 0xFFu;
+    const uint32_t eb = (b >> 23) & 0xFFu;
+
+    if (!(ea - 1u < 254u && eb - 1u < 254u &&
+          (f & (PPC_SPEFSCR_FRMC | PPC_SPEFSCR_FINXE)) == 0u)) {
+        return false;
+    }
+    const uint32_t mb = (b & 0x7FFFFFu) | 0x800000u;
+    uint32_t n = ((a & 0x7FFFFFu) | 0x800000u) << 8;
+    uint32_t q = n / mb;
+    uint32_t r = n - q * mb;
+
+    n = r << 8;
+    q = (q << 8) | (n / mb);
+    r = n - (n / mb) * mb;
+    n = r << 8;
+    q = (q << 8) | (n / mb);
+    r = n - (n / mb) * mb;
+    n = r << 1;
+    q = (q << 1) | (n / mb);
+    r = n - (n / mb) * mb;
+    {
+        const uint32_t top = q >> 25; /* 1 when ma >= mb */
+        /* The biased exponent less one, ea - eb + 126 + top - 1; wraps
+         * above 253 when too small. */
+        const uint32_t em1 = ea - eb + 125u + top;
+
+        if (em1 >= 253u) {
+            return false;
+        }
+        {
+            const uint32_t sh = 1u + top;
+            const uint32_t sig = q >> sh;
+            const uint32_t g = (q >> (sh - 1u)) & 1u;
+            /* The remainder alone: when it is zero the quotient is
+             * ma 2^25 / mb exactly, which 4 divides (mb < 2^24), so no
+             * bit of q below the guard is set either. */
+            const uint32_t x = (r != 0u) ? 1u : 0u;
+
+            *dst = ((a ^ b) & 0x80000000u) |
+                   ((em1 << 23) + sig + (g & (x | (sig & 1u))));
+            c->spefscr = ppc_fpu_fast_status(f, g, x);
+            return true;
+        }
+    }
 }
 
 /* efssub's: the subtrahend's sign turned, which is all a fast case needs. */

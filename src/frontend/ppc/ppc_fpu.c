@@ -1036,6 +1036,9 @@ EMU_HOT_TEXT uint32_t ppc_fpu_mul(ppc_cpu_t *c, uint32_t a, uint32_t b,
 EMU_HOT_TEXT uint32_t ppc_fpu_div(ppc_cpu_t *c, uint32_t a, uint32_t b,
                                   uint32_t *dst)
 {
+    if (EMU_LIKELY(ppc_fpu_div_fast(c, a, b, dst))) {
+        return PPC_EXC_NONE;
+    }
     res_t r = {0u, 0u, false, false, false, false, false, false, false};
 
     op_div(&r, a, b, rmode(c));

@@ -4772,6 +4772,12 @@ session, and every one of them recurred:
   2^127, where the wrong bound is right; a tie into overflow found it
   at once. **Before adding inputs for an unfound mutant, work out
   whether any input can tell it apart -- then find the one that does.**
+  (efsdiv's fast case brought two more, worked out before running: a
+  zero remainder leaves the quotient divisible by 4, so a term ORing its
+  low bit into the sticky bit can never be set, and no quotient of
+  normals carries into the next binade, so its exponent bound may be
+  254 as well as 253. The first was taken out of the code; the second
+  went unfound in 120 s, as it had to.)
 
 - **A derivation asserts it reproduces the data it came from.** SM4's
   S-box as AES's between two affine maps was derived in a script, and

@@ -1073,6 +1073,27 @@ faster**, the wall clock 1.50 s to 1.41; CoreMark under the JIT
 unchanged. The same profile put 12.9% in the dispatcher (`emu_jit_run`,
 `lookup`) and 1.7% in `__udivmoddi4`, efsdiv's 64-bit divide.
 
+**efsdiv last** (`ppc_fpu_div_fast`): the quotient of the significands
+to 25 bits, floor(ma 2^25 / mb), and its remainder, by long division in
+base 2^8 -- four 32-by-32 divides, each partial remainder below
+mb < 2^24 and so still within 32 bits shifted by 8 -- where the general
+path divides a 49-bit dividend, the library's `__udivmoddi4` on an M7
+(1.7% of the profile above). Two properties of division, each found
+while writing the mutants, keep it short and make two of them
+equivalent: a zero remainder means the quotient is ma 2^25 / mb
+exactly, which 4 divides, so the remainder alone is the sticky bit; and
+no quotient of normals rounds up into the next binade -- it would have
+to lie within 2^-25 of a power of two, and 24-bit significands keep it
+2^-24 away -- so there is no carry, and an exponent bound of 254 would
+do as well as 253 (that mutant went unfound in 120 s, as it must). No
+quotient is a tie either. `efsdiv-edges.S` holds it to the general
+path; of six mutants the other five were found within 11 s.
+On the F746 against e04aa83, Whetstone under the JIT 39.71 to 35.39 and
+39.73 to 35.35, **10.9% and 11.0% faster**, the wall clock 1.50 s to
+1.35; CoreMark under the JIT -0.15% at both layouts. With the other
+three, Whetstone under the JIT is 59.3 to 35.4 host cycles an
+instruction since efsmul's.
+
 **In the block, the same arithmetic lost.** It was first written as IR
 -- MUL and MULHU, the rounding, selects by mask since Thumb-2 has no
 SELECT -- with the helper behind a predicate (a new IR form,

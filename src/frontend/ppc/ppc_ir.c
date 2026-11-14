@@ -283,17 +283,8 @@ EMU_NOINLINE static uint32_t efs_raise(ppc_cpu_t *c, uint32_t e, uint32_t aux)
     return raised(c);
 }
 
-#define PPC_IR_EFS_OP(name, fn)                                                \
-    EMU_HOT_TEXT static uint32_t name(emu_cpu_t *cpu, uint32_t a, uint32_t b,  \
-                                      uint32_t aux)                            \
-    {                                                                          \
-        ppc_cpu_t *const c = (ppc_cpu_t *)cpu;                                 \
-        const uint32_t e = fn(c, a, b, &c->r[aux & 31u]);                      \
-                                                                               \
-        return EMU_LIKELY(e == PPC_EXC_NONE) ? 0u : efs_raise(c, e, aux);      \
-    }
 /*
- * The three with a fast case run it here, inlined (ppc_fpu.h), and call
+ * The four with a fast case run it here, inlined (ppc_fpu.h), and call
  * into the unit only when it says no: a call level fewer on almost every
  * FP instruction, which the PC profile of Whetstone showed as these
  * wrappers' own share beside the unit's.
@@ -315,9 +306,8 @@ EMU_NOINLINE static uint32_t efs_raise(ppc_cpu_t *c, uint32_t e, uint32_t aux)
 PPC_IR_EFS_FAST(ppc_ir_efsadd, ppc_fpu_add_fast, ppc_fpu_add)
 PPC_IR_EFS_FAST(ppc_ir_efssub, ppc_fpu_sub_fast, ppc_fpu_sub)
 PPC_IR_EFS_FAST(ppc_ir_efsmul, ppc_fpu_mul_fast, ppc_fpu_mul)
-PPC_IR_EFS_OP(ppc_ir_efsdiv, ppc_fpu_div)
+PPC_IR_EFS_FAST(ppc_ir_efsdiv, ppc_fpu_div_fast, ppc_fpu_div)
 #undef PPC_IR_EFS_FAST
-#undef PPC_IR_EFS_OP
 
 static const void *const ppc_ir_helpers[] = {
     (const void *)ppc_ir_step,   (const void *)ppc_ir_efs,

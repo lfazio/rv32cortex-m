@@ -985,6 +985,15 @@ integer sum or rounded to 2^127, which the wrong bound computes right
 too; and the sticky bit ORed in instead of borrowed is equivalent,
 which the arithmetic shows and 120 s agreed with.
 
+**And efsdiv's**, `seeds/ppc-jit/efsdiv-edges.S`: exact and inexact
+quotients with the leading bit at 25 and at 24, a dividend just either
+side of the divisor, exponents 1 and 253, the signs, and the general
+path's cases. Of six mutants, five found within 11 s; the sixth, the
+exponent bound at 254, is equivalent -- division cannot carry into the
+next binade -- and went unfound, as it must. Each case's claim was
+checked against exact rationals before the seed was trusted, which
+caught two labels that said "rounded up" of quotients that are exact.
+
 **An entropy source would make the two sides differ by design.** Zkr's
 `seed` reads the platform's source, and the interpreter and the JIT
 polling the host's RDSEED would read different bits and diverge on

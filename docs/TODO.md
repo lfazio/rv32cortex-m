@@ -155,19 +155,15 @@ measured at.
       it has to keep the interpreter's decode as the one checked against
       the M7, and be invalidated by the stores the JIT's `smc_bits`
       already watch.
-- [ ] **PowerPC's FP unit is a call per instruction**, from ITCM and,
-      for the four operations that are most of an FP program, a helper
-      each with nothing to unpack. efsmul's, efsadd's and efssub's
-      helpers compute the common case first in integers -- normal
-      operands, round to nearest, FINXE clear -- and Whetstone under
-      the JIT is 59.3 to 39.7 host cycles an instruction for them on the
-      F746, and with them inlined into the IR wrappers, a call level
-      fewer, 37.4 ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
-      Open: efsdiv (12 of Whetstone's translated sites) -- a 24-bit
-      quotient needs a 48-by-24 divide, which an M7's UDIV is not -- and
-      the block's own call into the wrapper. Discarded: the arithmetic in
-      the block, 19% slower on Thumb-2 for the temps it spent
-      (`wip/ppc-efsmul-in-block`).
+- [ ] **PowerPC's FP unit is a call per instruction**: all four
+      operations that are most of an FP program compute their common
+      case inline in the helper the block calls, and Whetstone under the
+      JIT is 59.3 to 35.4 host cycles an instruction for them on the F746
+      ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
+      What is left is the block's call into the helper, and beside it
+      the dispatcher -- 12.9% of Whetstone's profile, where function
+      returns cannot chain. Discarded: the arithmetic in the block, 19%
+      slower on Thumb-2 for the temps it spent (`wip/ppc-efsmul-in-block`).
 
 ## Linux
 
