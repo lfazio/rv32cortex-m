@@ -234,6 +234,13 @@ typedef struct armv7m_cpu {
     /* ---- SysTick ---- */
     uint32_t systick_ctrl;
     uint32_t systick_reload;
+    /*
+     * The 24-bit counter in the low bits, and CSR's ENABLE mirrored in
+     * the top one (ARMV7M_SYSTICK_ON), so that the interpreter's tick
+     * after every instruction is one load and one compare: enabled with
+     * more than one left is exactly `> ARMV7M_SYSTICK_ON + 1`. Written
+     * where CSR is; read through ARMV7M_SYSTICK_COUNT everywhere else.
+     */
     uint32_t systick_value;
     bool systick_countflag;
 
@@ -429,6 +436,10 @@ typedef struct armv7m_cpu {
 #define ARMV7M_SCS_SIZE 0x1000u
 
 #define ARMV7M_EXC_RETURN_MASK 0xF0000000u
+
+/* armv7m_cpu_t::systick_value: the counter, and ENABLE's mirror. */
+#define ARMV7M_SYSTICK_COUNT 0x00FFFFFFu
+#define ARMV7M_SYSTICK_ON 0x80000000u
 
 extern const struct emu_dev_ops armv7m_scs_ops;
 

@@ -2552,12 +2552,10 @@ EMU_INTERP_TEXT emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget,
             /* The emulator's convention for "this guest is finished". */
             c->state = EMU_STATE_HALTED;
             done++;
-            c->retired++;
             break;
         }
         if (x == ARMV7M_X_SVC) {
             done++;
-            c->retired++;
             armv7m_raise(c, x, pc + len);
             continue;
         }
@@ -2567,23 +2565,31 @@ EMU_INTERP_TEXT emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget,
         }
 
         done++;
-        c->retired++;
 
         /*
          * **Per instruction, not once per slice.** Ticking in bulk sets
          * the pending latch once however many times the counter wrapped,
-         * so at most one SysTick could ever be delivered per slice.
+         * so at most one SysTick could ever be delivered per slice. The
+         * common tick is one load and one compare: enabled, with more
+         * than one left (armv7m_cpu_t::systick_value).
          */
-        if ((c->systick_ctrl & 1u) != 0u) {
-            /* The common tick inline: nothing reloads or pends above 1. */
-            if (EMU_LIKELY(c->systick_value > 1u)) {
-                c->systick_value--;
-            } else {
+        {
+            const uint32_t st = c->systick_value;
+
+            if (EMU_LIKELY(st > ARMV7M_SYSTICK_ON + 1u)) {
+                c->systick_value = st - 1u;
+            } else if ((st & ARMV7M_SYSTICK_ON) != 0u) {
                 armv7m_systick_tick(c, 1u);
             }
         }
     }
 
+    /*
+     * Once, not per instruction: a 64-bit add to memory was, and nothing
+     * reads the count while this loop runs (the status report and the
+     * JIT's count, between runs).
+     */
+    c->retired += done;
     if (retired != NULL) {
         *retired = done;
     }

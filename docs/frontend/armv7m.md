@@ -438,6 +438,20 @@ first. Against 5bea05d at two layouts: **146.93 to 142.44 and 146.86 to
 built: it could replace at most part of that 11%, and three forms
 already lost to the lookup.
 
+**Then the loop's own per-instruction work** (2026-11-14, the same
+profile). SysTick was ticked after every instruction as two loads, two
+tests and two branches -- CSR's enable, then the counter above one --
+about 6% of the samples; ENABLE is mirrored in the counter's top bit
+now (`ARMV7M_SYSTICK_ON`; the counter is 24 bits), so an enabled
+counter above one is one load and one compare, still exact per
+instruction. And the 64-bit retired count was added to in memory per
+instruction where nothing reads it until the run returns: once, at the
+end. Against 235e345 at two layouts: **142.44 to 135.79 and 142.22 to
+135.90, 4.7% and 4.4%**; under the JIT 13.61 to 13.65 and 13.63 to
+13.66; retired counts the same. Every reader and writer of the counter
+masks or keeps the mirror: CSR and CVR in the SCS, the tick, the JIT's
+bulk count, reset.
+
 ---
 
 ## The decoder, twice

@@ -307,7 +307,7 @@ static bool word_read(armv7m_cpu_t *c, uint32_t off, uint32_t *out)
         *out = c->systick_reload;
         return true;
     case SYST_CVR:
-        *out = c->systick_value;
+        *out = c->systick_value & ARMV7M_SYSTICK_COUNT;
         return true;
     case SYST_CALIB:
         *out = 0u;
@@ -445,13 +445,16 @@ static bool word_write(armv7m_cpu_t *c, uint32_t off, uint32_t v)
     switch (r) {
     case SYST_CSR:
         c->systick_ctrl = v & 7u;
+        c->systick_value = (c->systick_value & ARMV7M_SYSTICK_COUNT) |
+                           (((v & SYST_CSR_ENABLE) != 0u) ? ARMV7M_SYSTICK_ON
+                                                         : 0u);
         return true;
     case SYST_RVR:
         c->systick_reload = v & 0x00FFFFFFu;
         return true;
     case SYST_CVR:
         /* Any write clears the counter and COUNTFLAG. */
-        c->systick_value = 0u;
+        c->systick_value &= ARMV7M_SYSTICK_ON;
         c->systick_countflag = false;
         return true;
     case SCB_ICSR:
@@ -658,19 +661,22 @@ void armv7m_systick_tick(armv7m_cpu_t *c, uint32_t insns)
     if ((c->systick_ctrl & SYST_CSR_ENABLE) == 0u) {
         return;
     }
+    uint32_t v = c->systick_value & ARMV7M_SYSTICK_COUNT;
+
     while (insns-- != 0u) {
-        if (c->systick_value == 0u) {
-            c->systick_value = c->systick_reload;
+        if (v == 0u) {
+            v = c->systick_reload;
             continue;
         }
-        c->systick_value--;
-        if (c->systick_value == 0u) {
+        v--;
+        if (v == 0u) {
             c->systick_countflag = true;
             if ((c->systick_ctrl & SYST_CSR_TICKINT) != 0u) {
                 armv7m_set_pending(c, ARMV7M_EXC_SYSTICK, true);
             }
         }
     }
+    c->systick_value = v | ARMV7M_SYSTICK_ON;
 }
 
 /*

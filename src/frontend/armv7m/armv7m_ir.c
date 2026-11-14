@@ -2429,8 +2429,8 @@ static void a7_count(emu_cpu_t *cpu, uint32_t n)
     if ((c->systick_ctrl & 1u) == 0u) {
         return;
     }
-    if (c->systick_value > n) {
-        c->systick_value -= n;
+    if ((c->systick_value & ARMV7M_SYSTICK_COUNT) > n) {
+        c->systick_value -= n; /* ARMV7M_SYSTICK_ON stays */
         return;
     }
     for (uint32_t i = 0u; i < n; i++) {
