@@ -36,6 +36,7 @@
 #include "emu/emu_x86_64.h"
 
 #include <stdlib.h> /* getenv: EMU_HOST_CRYPTO */
+#include <sys/mman.h> /* the memory stubs' page, MAP_32BIT */
 
 #if defined(EMU_HOST_JIT_X86_64)
 
@@ -988,14 +989,99 @@ static void end_pred_skip(uint8_t *skip)
  * System V: (cpu, addr, spec, out-or-value); esi already holds the
  * address and ecx the fourth argument.
  */
+/*
+ * A memory access's slow path through a stub every block shares --
+ *
+ *     mov rdi, rbx ; mov edx, spec ; movabs rax, fn ; jmp rax
+ *
+ * twenty bytes written once, where each access used to carry them; the
+ * block does `mov eax, stub ; call rax`, seven, and the accessor returns
+ * straight to the block, so the stack is as it was with the full call.
+ * One stub per (accessor, spec), found by a search at translation.
+ *
+ * **The call is absolute, and the stubs live below 4 GB** (a mapping of
+ * this backend's own, MAP_32BIT, per core as the code buffer is), so a
+ * stub's address is an imm32. A `call rel32` would have been two bytes
+ * shorter and wrong: compaction moves a block within the buffer, and a
+ * relative call moved with it lands elsewhere. That version passed every
+ * suite and every fuzzer -- none of which compacts at the host's 64 MB --
+ * and crashed a Linux boot at 4 MB (the matrix's `host-evict` row asks
+ * now). With no such mapping, or no room in it, the call is emitted in
+ * full.
+ */
+#define MEM_STUBS 64u
+#define MEM_STUB_BYTES 4096u
+
+static EMU_PER_CORE struct {
+    const void *fn;
+    uint32_t spec;
+    uint8_t *at;
+} g_mem_stub[MEM_STUBS];
+static EMU_PER_CORE unsigned g_mem_stubs;
+static EMU_PER_CORE uint8_t *g_mem_stub_page;
+static EMU_PER_CORE bool g_mem_stub_tried;
+
+static uint8_t *mem_stub(const void *fn, uint32_t spec)
+{
+    for (unsigned i = 0u; i < g_mem_stubs; i++) {
+        if (g_mem_stub[i].fn == fn && g_mem_stub[i].spec == spec) {
+            return g_mem_stub[i].at;
+        }
+    }
+    if (!g_mem_stub_tried) {
+        g_mem_stub_tried = true;
+#ifdef MAP_32BIT
+        void *const p = mmap(NULL, MEM_STUB_BYTES,
+                             PROT_READ | PROT_WRITE | PROT_EXEC,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+
+        if (p != MAP_FAILED && (uintptr_t)p + MEM_STUB_BYTES <= 0xFFFFFFFFu) {
+            g_mem_stub_page = (uint8_t *)p;
+        }
+#endif
+    }
+    if (g_mem_stub_page == NULL || g_mem_stubs == MEM_STUBS) {
+        return NULL;
+    }
+    uint8_t *const s = g_mem_stub_page + 20u * g_mem_stubs;
+    const uint64_t a = (uint64_t)(uintptr_t)fn;
+
+    s[0] = 0x48u; /* mov rdi, rbx */
+    s[1] = 0x89u;
+    s[2] = 0xDFu;
+    s[3] = 0xBAu; /* mov edx, imm32 */
+    for (unsigned i = 0u; i < 4u; i++) {
+        s[4u + i] = (uint8_t)(spec >> (8u * i));
+    }
+    s[8] = 0x48u; /* movabs rax, imm64 */
+    s[9] = 0xB8u;
+    for (unsigned i = 0u; i < 8u; i++) {
+        s[10u + i] = (uint8_t)(a >> (8u * i));
+    }
+    s[18] = 0xFFu; /* jmp rax */
+    s[19] = 0xE0u;
+    g_mem_stub[g_mem_stubs].fn = fn;
+    g_mem_stub[g_mem_stubs].spec = spec;
+    g_mem_stub[g_mem_stubs].at = s;
+    g_mem_stubs++;
+    return s;
+}
+
 static void emit_mem_call(const void *fn, uint32_t spec)
 {
-    emu_jit_emit8(0x48);
-    emu_jit_emit8(0x89);
-    emu_jit_emit8(0xDF); /* mov rdi, rbx (the cpu) */
-    x86_mov_imm32(X86_EDX, spec);
-    x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)fn);
-    x86_call_rax();
+    uint8_t *const s = mem_stub(fn, spec);
+
+    if (s != NULL) {
+        x86_mov_imm32(X86_EAX, (uint32_t)(uintptr_t)s); /* zero-extends */
+        x86_call_rax();
+    } else {
+        emu_jit_emit8(0x48);
+        emu_jit_emit8(0x89);
+        emu_jit_emit8(0xDF); /* mov rdi, rbx (the cpu) */
+        x86_mov_imm32(X86_EDX, spec);
+        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)fn);
+        x86_call_rax();
+    }
     x86_alu_rr(X86_TEST, X86_EAX, X86_EAX);
     note_exit(x86_jcc32(X86_CC_NE));
 }

@@ -500,7 +500,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   `EMU_IR_DEFINE_X86_BACKEND` dropped `.sync` and `.after_interp`.
 - **A hook on committed code must not consult the emitter's state**
   (`compact()` with the overflow flag up). The host's JIT sizes hide every
-  eviction path: build a host runner with the board's.
+  eviction path: build a host runner with the board's -- a `call rel32`
+  to a stub outside the buffer passed every suite and fuzzer at 64 MB and
+  segfaulted once blocks moved (`host-evict` compacts on the host).
 - **A table that drops its Nth entry in silence is a wrong program
   waiting for an Nth entry** (64 exit patch sites).
 - **A stepped instruction that may write the pc ends the block** --

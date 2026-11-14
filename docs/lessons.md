@@ -4794,6 +4794,19 @@ session, and every one of them recurred:
   **When a change helps one configuration and costs another, ask
   whether it can be the first's alone before choosing.**
 
+- **Code that moves cannot hold a relative reference to code that does
+  not.** x86-64's memory slow paths were shortened by calling a shared
+  stub with a `call rel32` from a page in front of the code buffer. It
+  passed both RISC-V suites under the JIT, a Linux boot and four
+  fuzzers -- none of which compacts at the host's 64 MB buffer -- and
+  segfaulted a Linux boot at 4 MB, because compaction moves blocks and a
+  relative call moves with them. The stubs are called absolutely now,
+  from a page below 4 GB. And because nothing on the host compacted, the
+  matrix has a row that does (`host-evict`, 256 KB), which fails the
+  relative version in six tests. **Before emitting anything
+  position-dependent into a block, ask what moves blocks -- and make
+  sure some test runs where it does.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

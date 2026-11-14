@@ -182,16 +182,6 @@ From the last measurements in [linux.md](linux.md).
       satp, so identical physical pages in two address spaces are two
       sets of blocks. Keying on the physical page would share them, at
       the cost of a translation on every lookup.
-- [ ] **The slow path of a probed access is a 40-byte call.** The
-      probe itself is 34 bytes before the access now
-      ([backend/x86_64.md](backend/x86_64.md#the-data-tlb-probe)), and
-      the call it falls back to -- the out-pointer, the cpu, the spec,
-      `movabs` and `call rax`, the trap test -- is most of what is left.
-      A shared stub per access kind, as Thumb-2 has, would make it a
-      `call rel32` -- kept at the head of the code buffer, which a
-      flush would then have to leave alone.
-      Yocto at 32 MB is still 198 compactions, so this is the next
-      lever if 64 MB is ever too much.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.
@@ -310,6 +300,8 @@ From the last measurements in [linux.md](linux.md).
       (R20UT3538, added 2026-11-06) is the probe's hardware and does not
       either; what is needed is a description of the G4MH's debug
       functions themselves.
+- [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
+      into the PCIe framework.
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));
