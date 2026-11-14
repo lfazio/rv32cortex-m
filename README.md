@@ -162,6 +162,7 @@ and the boards do not. A PowerPC firmware takes `-DPPC_GUEST=` instead
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
 | `RV32_EXT_ZK` | `ON` | The scalar cryptography, Zkn and Zks ([docs/frontend/rv32.md](docs/frontend/rv32.md#scalar-cryptography-zkn-and-zks)); needs Zbb and Zbc. Under the JIT on x86-64, AES-NI and PCLMULQDQ where the CPU has them (`EMU_HOST_CRYPTO=0` declines them). |
+| `RV32_EXT_ZKR` | `ON`, `OFF` on the F446 | Zkr, the `seed` CSR ([docs/frontend/rv32.md](docs/frontend/rv32.md#zkr-the-entropy-source)): its bits are the host's RDSEED, or `getrandom(2)` where the CPU has none or `EMU_HOST_RDSEED=0` says so, and the F746's and N6's RNG through the HAL. The F446 has no RNG. |
 | `EMU_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
 | `EMU_SDL` | `OFF` | Show the guest framebuffer in an SDL3 window, and feed the keyboard and mouse devices from it. Needs `sdl3` via pkg-config; off by default so a host without it still builds. |
 | `EMU_SDL_SCALE` | auto | Window scale, stepped down until the window fits a conventional screen -- 3x suits 320x200 and 1x suits the 1024x768 default. Set it to override either way. |

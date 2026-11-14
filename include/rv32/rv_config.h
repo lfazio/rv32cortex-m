@@ -195,7 +195,7 @@
  * Scalar cryptography (rv_crypto.h), on or off together: Zbkb, Zbkc,
  * Zbkx, Zknd, Zkne, Zknh, Zksed and Zksh -- Zkn and Zks. Zbkb's rotates
  * and rev8 are Zbb's code and Zbkc is Zbc's clmul and clmulh, so each
- * needs its base on; Zkr, the entropy source, is not implemented.
+ * needs its base on. Zkr, the entropy source, is RV_EXT_ZKR below.
  */
 #ifndef RV_EXT_ZK
 #define RV_EXT_ZK 1
@@ -210,6 +210,17 @@
 #define RV_EXT_ZKSH RV_EXT_ZK
 #if RV_EXT_ZK && !(RV_EXT_ZBB && RV_EXT_ZBC)
 #error "RV_EXT_ZK: Zbkb's rotates are Zbb's and Zbkc is Zbc's clmul here"
+#endif
+/*
+ * Zkr: the `seed` CSR and mseccfg's USEED and SSEED. Its bits are the
+ * platform's (emu_entropy.h): the host's RDSEED or getrandom, an STM32's
+ * RNG through the HAL. With Zkn and Zkt this is Zk.
+ */
+#ifndef RV_EXT_ZKR
+#define RV_EXT_ZKR 1
+#endif
+#if RV_EXT_ZKR && !RV_EXT_ZICSR
+#error "RV_EXT_ZKR: seed is a CSR"
 #endif
 /*
  * Physical memory protection. Costs nothing until a guest locks an entry:

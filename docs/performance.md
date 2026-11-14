@@ -450,12 +450,21 @@ PowerPC's, are guest code already in a resident block, mostly blocks
 entered part-way through another
 ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
 
-**And a profiled run is not the plain one.** The profile's 32 KB of
+**A profiled run was not the plain one, then.** The profile's 32 KB of
 samples come out of the guest's RAM (118 KiB against 150 for PowerPC),
 and PowerPC CoreMark under the JIT went from 37.66 to 65.32 with it --
-68 compactions against 40 -- for a reason not yet known. The split above
-is from the profiled runs; the ratios quoted beside it are the plain
-builds'.
+68 compactions against 40. The split above is from the profiled runs;
+the ratios quoted beside it are the plain builds'. **It is the same run
+now** (c866eca and Zkr, 2026-11-14): profiled 19.97 against 19.96, 410
+translations and 2 compactions each, the code buffer first in DTCM in
+both and the samples after it. And the RAM alone moves nothing, at the
+default buffer or at 32 KB where CoreMark compacts 342 times: with
+`-DEMU_LAYOUT_PAD_RAM=32768`, which takes 32 KB from the guest and
+moves nothing else, 19.98 against 19.96 and 218.90 against 218.89, the
+translations equal to the block (410, and 10,116). The old difference
+was taken while the profile pushed the buffer out of DTCM and before
+the stop before a known entry; why it also changed the compactions
+was never found, and this tree can no longer ask.
 
 ### The C library's speed variant
 

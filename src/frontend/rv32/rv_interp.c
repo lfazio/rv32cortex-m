@@ -1347,6 +1347,18 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 const bool do_read = !(is_write && rd == 0u);
                 const bool do_write = is_write || (rs1 != 0u);
 
+#if RV_EXT_ZKR
+                /*
+                 * seed only with a write (Zkr): an access that does not
+                 * write is illegal, and is refused before the read,
+                 * which would otherwise take sixteen bits from the
+                 * source.
+                 */
+                if (EMU_UNLIKELY(csr == CSR_SEED) && !do_write) {
+                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                }
+#endif
+
                 if (do_read) {
                     const rv_exc_t exc = rv_csr_read(h, csr, &old);
                     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {

@@ -393,6 +393,11 @@ typedef struct rv_hart {
     uint32_t dtlb_flushes;
     uint32_t itlb_fills;
 #endif
+#if RV_EXT_ZKR
+    /* Zkr: who below M may poll `seed` (MSECCFG_USEED, _SSEED). Read on
+     * a seed access only, so with the cold state at the end. */
+    uint32_t mseccfg;
+#endif
 } rv_hart_t;
 
 #if RV_HAVE_DTLB

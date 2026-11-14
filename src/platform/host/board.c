@@ -40,9 +40,15 @@
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#include <immintrin.h>
+#endif
 
 static int g_fd = -1;
 
@@ -821,6 +827,72 @@ uint64_t board_time_now(void)
     const uint32_t div = (g_timer_div != 0u) ? g_timer_div : 1u;
 
     return emu_cycles_read(&g_time, board_cycles()) / div;
+}
+
+/*
+ * The entropy source: the CPU's own where it has one, the kernel's
+ * otherwise.
+ *
+ * RDSEED (x86, CPUID.7.EBX bit 18) returns bits from the hardware's
+ * conditioned entropy source -- seed-grade, the closest thing a host has
+ * to what Zkr's `seed` describes -- and fails, carry clear, when the
+ * source has none ready: that is Zkr's WAIT, and the guest asks again.
+ * Elsewhere, or with EMU_HOST_RDSEED=0 (which is how this host tests the
+ * other path), getrandom(2) without blocking: the kernel's CSPRNG,
+ * seeded from its own sources; EAGAIN before the pool is ready is WAIT
+ * too. Both are safe from two cores at once.
+ */
+#if defined(__x86_64__) || defined(__i386__)
+__attribute__((target("rdseed"))) static emu_entropy_t
+host_entropy_rdseed(uint16_t *out)
+{
+    unsigned short v;
+
+    if (_rdseed16_step(&v) == 0) {
+        return EMU_ENTROPY_WAIT;
+    }
+    *out = (uint16_t)v;
+    return EMU_ENTROPY_OK;
+}
+
+static bool host_has_rdseed(void)
+{
+    unsigned a, b, c, d;
+    const char *const env = getenv("EMU_HOST_RDSEED");
+
+    if (env != NULL && strcmp(env, "0") == 0) {
+        return false;
+    }
+    if (__get_cpuid_count(7u, 0u, &a, &b, &c, &d) == 0) {
+        return false;
+    }
+    return ((b >> 18) & 1u) != 0u;
+}
+#endif
+
+static emu_entropy_t host_entropy_getrandom(uint16_t *out)
+{
+    uint16_t v;
+    const ssize_t n = getrandom(&v, sizeof(v), GRND_NONBLOCK);
+
+    if (n == (ssize_t)sizeof(v)) {
+        *out = v;
+        return EMU_ENTROPY_OK;
+    }
+    if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
+        return EMU_ENTROPY_WAIT;
+    }
+    return EMU_ENTROPY_DEAD;
+}
+
+emu_entropy_fn board_entropy_source(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    if (host_has_rdseed()) {
+        return host_entropy_rdseed;
+    }
+#endif
+    return host_entropy_getrandom;
 }
 
 /*

@@ -566,6 +566,15 @@ option(RV32_EXT_ZBC "Zbc carry-less multiply" ON)
 # Scalar cryptography: Zbkb, Zbkc, Zbkx, Zknd, Zkne, Zknh, Zksed, Zksh --
 # Zkn and Zks. Needs Zbb and Zbc (rv_config.h).
 option(RV32_EXT_ZK "Zkn and Zks scalar cryptography" ON)
+# Zkr: the seed CSR, its bits the platform's (emu_entropy.h) -- the
+# host's RDSEED or getrandom, an STM32's RNG through the HAL. Off by
+# default on the F446, which has no RNG: seed would read DEAD.
+if(EMU_PLATFORM STREQUAL "stm32f446")
+    set(_zkr_default OFF)
+else()
+    set(_zkr_default ON)
+endif()
+option(RV32_EXT_ZKR "Zkr entropy source (the seed CSR)" ${_zkr_default})
 option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 # Double precision. FLEN becomes 64 and single values are NaN-boxed, so
@@ -752,6 +761,7 @@ add_library(emucore STATIC
     src/emu/emu_ir_jit.c
     src/emu/emu_cpu.c
     src/emu/emu_crypto.c
+    src/emu/emu_entropy.c
     src/emu/emu_elf.c
     src/emu/emu_uart.c
     src/emu/emu_finisher.c
@@ -923,6 +933,7 @@ if(EMU_GUEST_ARCH_RV32)
         RV_EXT_ZBB=$<BOOL:${RV32_EXT_ZBB}>
         RV_EXT_ZBC=$<BOOL:${RV32_EXT_ZBC}>
         RV_EXT_ZK=$<BOOL:${RV32_EXT_ZK}>
+        RV_EXT_ZKR=$<BOOL:${RV32_EXT_ZKR}>
         RV_EXT_ZBS=$<BOOL:${RV32_EXT_ZBS}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
         RV_MISALIGNED_OK=$<BOOL:${RV32_MISALIGNED}>
@@ -1388,7 +1399,13 @@ if(EMU_GUEST_ARCH_RV32)
         string(APPEND _isa "_zbc")
     endif()
     if(RV32_EXT_ZK)
-        string(APPEND _isa "_zbkb_zbkc_zbkx_zknd_zkne_zknh_zksed_zksh")
+        string(APPEND _isa "_zbkb_zbkc_zbkx_zknd_zkne_zknh")
+    endif()
+    if(RV32_EXT_ZKR)
+        string(APPEND _isa "_zkr")
+    endif()
+    if(RV32_EXT_ZK)
+        string(APPEND _isa "_zksed_zksh")
     endif()
     # Zkt is a promise about timing with no option; rv_config.h makes it.
     string(APPEND _isa "_zkt")

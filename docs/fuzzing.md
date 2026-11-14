@@ -974,6 +974,19 @@ the seed itself, the others in 8 and 111 s. Run alone (`FUZZ_SHOW=1`),
 it retires all 16 with no enables and takes the round interrupt at the
 first inexact result with all five.
 
+**An entropy source would make the two sides differ by design.** Zkr's
+`seed` reads the platform's source, and the interpreter and the JIT
+polling the host's RDSEED would read different bits and diverge on
+every program that folds them. So `fz_run` installs its own source
+(`fuzz_harness.h`) and restarts it before each side: a counter's hash,
+WAIT one poll in seven, the same sequence for both. It asks nothing of
+the bits but that both backends deliver them alike -- the probe and
+`test_seed` ask the rest. `seeds/rv32-jit/seed-csr.S` polls it in a
+loop past WAIT, folds 24 values and then mutates mseccfg and the
+read-only form; with the restart removed from the harness it was found
+by its own inputs in 14 s. The fuzzers outside `fz_run` (rv32-vm,
+rv32-mmu) set no source, and both sides read DEAD.
+
 **A fast case is held against the general path by a seed of its edges.**
 efsmul's translated helper computes two normal operands under round to
 nearest before anything else ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)),
@@ -984,8 +997,10 @@ own and SPEFSCR read after it: ties to odd and to even, a sticky bit
 only in the product's low word with the leading bit at 46 and at 47,
 the carry out of an all-ones significand, exponents at 0, 1, 253 and
 254, 253 rounded into 254 and 254 into overflow, and the specials. Its
-cases are 32 bytes, so fuzz.sh's 256-byte cuts leave eight whole in
-each input; with a two-instruction prologue every cut had split one.
+cases are padded to 64 bytes, so fuzz.sh's 256-byte cuts leave four
+whole in each input: unpadded they are 40, and the cuts split one in
+six -- which the first version of this paragraph, counting eight
+instructions where there are ten, said they did not.
 Six mutants of the fast case -- the tie rule, the low word's sticky
 bits, the exponent bound, FINXE or FRMC ignored, FG written as FX --
 were each found, five by the seed's inputs within 13 s and FRMC by

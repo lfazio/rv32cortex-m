@@ -18,10 +18,12 @@
 /* This platform: its own header, and the contract it implements. */
 #include <errno.h>
 #include "board.h"
+#include "board_hal.h"
 
 /* The shared runner pieces this file talks to. */
 #include "emu_args.h"
 #include "emu_board.h"
+#include "emu_console.h"
 #include "emu_debug.h"
 #include "emu_run.h"
 #include "emu_session.h"
@@ -173,6 +175,86 @@ uint64_t board_time_now(void)
 {
     return emu_cycles_read(&g_cycles, board_cycles()) / g_cycles_per_tick;
 }
+
+/*
+ * The entropy source: the part's RNG, through the HAL. The F746 and the
+ * N6 have one -- a true RNG fed by analogue noise, a word every 40 or so
+ * of its clock's periods -- and the HAL spells it alike on both; the
+ * F446 has none, and builds without Zkr.
+ *
+ * **Never blocks.** HAL_RNG_GenerateRandomNumber waits for DRDY, up to
+ * 2 ms; a poll of `seed` must answer at once, so DRDY is tested first
+ * and its absence is WAIT, which the guest's loop expects. Each word is
+ * two answers, the high half kept for the next poll: no half is handed
+ * out twice. A seed or clock error (SECS, CECS) is what Zkr calls BIST:
+ * the RNG is brought up again, and the guest asks again.
+ *
+ * **The guest's window reaches the RNG too** (platform.c): a guest that
+ * reads its DR takes words this source then never sees, and one that
+ * turns it off leaves `seed` at WAIT. Neither takes the emulator down,
+ * which is the line the window draws, so the RNG stays the guest's to
+ * reach -- and seed's polls are this file's.
+ */
+#if defined(RNG) /* the F746 and the N6; RM0390's F446 has none */
+#ifndef HAL_RNG_MODULE_ENABLED
+#error "the part's hal_conf.h must enable the RNG: board_entropy_source uses it"
+#endif
+
+static RNG_HandleTypeDef g_rng;
+static uint16_t g_rng_half;
+static bool g_rng_half_ready;
+
+static bool rng_start(void)
+{
+    __HAL_RCC_RNG_CLK_ENABLE();
+    g_rng.Instance = RNG;
+#ifdef RNG_CED_ENABLE
+    g_rng.Init.ClockErrorDetection = RNG_CED_ENABLE;
+#endif
+    return HAL_RNG_Init(&g_rng) == HAL_OK;
+}
+
+static emu_entropy_t stm32_entropy(uint16_t *out)
+{
+    uint32_t w = 0u;
+
+    if (g_rng_half_ready) {
+        g_rng_half_ready = false;
+        *out = g_rng_half;
+        return EMU_ENTROPY_OK;
+    }
+    if (__HAL_RNG_GET_FLAG(&g_rng, RNG_FLAG_SECS) ||
+        __HAL_RNG_GET_FLAG(&g_rng, RNG_FLAG_CECS)) {
+        (void)HAL_RNG_DeInit(&g_rng);
+        return rng_start() ? EMU_ENTROPY_TESTING : EMU_ENTROPY_DEAD;
+    }
+    if (!__HAL_RNG_GET_FLAG(&g_rng, RNG_FLAG_DRDY)) {
+        return EMU_ENTROPY_WAIT;
+    }
+    if (HAL_RNG_GenerateRandomNumber(&g_rng, &w) != HAL_OK) {
+        return EMU_ENTROPY_WAIT;
+    }
+    *out = (uint16_t)w;
+    g_rng_half = (uint16_t)(w >> 16);
+    g_rng_half_ready = true;
+    return EMU_ENTROPY_OK;
+}
+
+emu_entropy_fn board_entropy_source(void)
+{
+    if (!rng_start()) {
+        emu_console_printf("emu: the RNG did not start: seed reads DEAD\n");
+        return NULL;
+    }
+    return stm32_entropy;
+}
+#else
+/* No RNG on the part, and so no Zkr by default (CMakeLists.txt). */
+emu_entropy_fn board_entropy_source(void)
+{
+    return NULL;
+}
+#endif
 
 /*
  * The run loop's clock hook. A board reads a *real* cycle counter, not

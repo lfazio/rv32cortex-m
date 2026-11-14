@@ -127,11 +127,6 @@ measured at.
       attached. And with the counter running in Sleep, the park loop
       could sleep with lwIP up on the F746 too (`board_idle`), untried
       over SLIP.
-- [ ] **Why a profiled PowerPC run is a different run.** The PC
-      profile's 32 KB come out of the guest's RAM (118 KiB against 150),
-      and PowerPC CoreMark under the JIT went from 37.66 to 65.32 host
-      cycles an instruction with it, 68 compactions against 40. Nothing
-      in the JIT should depend on the RAM's size.
 - [ ] **Below 32 KB the JIT is still slower than the interpreter.**
       Giving up on pcs that keep being evicted
       ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))
@@ -225,11 +220,12 @@ From the last measurements in [linux.md](linux.md).
 ## RV32
 
 - [ ] Implement V extensions
-- [ ] **Zkr, the entropy source**, and so Zk: Zkn, Zks and Zkt are done
-      ([frontend/rv32.md](frontend/rv32.md#scalar-cryptography-zkn-and-zks)).
-      `seed` needs a source: the host's getrandom, the board's RNG
-      peripheral -- which the guest owns -- or a declared-weak PRNG.
-      Also open there: SM4 under the JIT on a host with GFNI.
+- [ ] **SM4 under the JIT on a host with GFNI.** `sm4ed` and `sm4ks`
+      are the crypto helper's on every host
+      ([frontend/rv32.md](frontend/rv32.md#scalar-cryptography-zkn-and-zks));
+      GF2P8AFFINEQB with AESENCLAST computes SM4's S-box on x86-64,
+      as AES-NI computes AES's -- an `EMU_IR_SM4SB` beside
+      `EMU_IR_AESSB`, asked at run time the same way.
 
 ## RV64
 

@@ -75,6 +75,7 @@ set(hal_src
     stm32n6xx_hal_rcc.c
     stm32n6xx_hal_rcc_ex.c
     stm32n6xx_hal_uart.c
+    stm32n6xx_hal_rng.c
     stm32n6xx_hal_uart_ex.c
 )
 list(TRANSFORM hal_src PREPEND "${STM32_HAL_DIR}/Src/")

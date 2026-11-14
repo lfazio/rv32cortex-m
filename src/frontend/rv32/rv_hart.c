@@ -87,6 +87,9 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->mcause = 0u;
     h->mtval = 0u;
     h->mcountinhibit = 0u;
+#if RV_EXT_ZKR
+    h->mseccfg = 0u; /* seed is M's alone until M says otherwise */
+#endif
     h->mcycle = 0u;
     h->minstret = 0u;
 #if RV_EXT_ZIHPM

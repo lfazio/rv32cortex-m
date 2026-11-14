@@ -10,7 +10,11 @@ learn to run an operating system. What is still open is in
 Everything is driven by `scripts/run-linux.sh` (it builds init, the
 initramfs manifest, the kernel and OpenSBI, then runs) and by two CMake
 targets, `linux` and `linux-shell`. The device tree is
-`boot/rv32-emu.dts`.
+`boot/rv32-emu.dts`, and it describes the **default** build: a runner
+built without an extension the tree names does not boot -- OpenSBI
+acts on what the tree says, and with `zkr` declared it sets
+mseccfg.SSEED (and so Linux may poll `seed` from S), which a
+`-DRV32_EXT_ZKR=OFF` runner refuses before OpenSBI prints a line.
 
 ## OpenSBI
 

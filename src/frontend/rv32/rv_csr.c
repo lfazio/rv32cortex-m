@@ -11,6 +11,8 @@
 #include "rv32/rv_hart.h"
 #include "rv32/rv_csr.h"
 
+#include "emu/emu_entropy.h"
+
 #if RV_EXT_ZICSR
 
 /* ------------------------------------------------------------------ */
@@ -57,6 +59,48 @@ static uint32_t envcfg_legal(uint32_t val)
     }
     return val;
 }
+
+#if RV_EXT_ZKR
+/* What mseccfg holds: USEED where there is a U-mode, SSEED where S. */
+#define MSECCFG_WMASK                                                          \
+    ((RV_EXT_U ? MSECCFG_USEED : 0u) | (RV_EXT_S ? MSECCFG_SSEED : 0u))
+
+/*
+ * Whether the hart's privilege may poll `seed`: M always, S and U as
+ * mseccfg says. The read-only forms of the CSR instructions are refused
+ * before this, in the interpreter, which alone knows the form -- and the
+ * translator declines every CSR instruction but a read of time, so the
+ * interpreter is the one path.
+ */
+static bool seed_allowed(const rv_hart_t *h)
+{
+    if (h->priv == RV_PRIV_M) {
+        return true;
+    }
+    return (h->mseccfg & ((h->priv == RV_PRIV_S) ? MSECCFG_SSEED
+                                                 : MSECCFG_USEED)) != 0u;
+}
+
+/*
+ * One poll of the platform's source (emu_entropy.h), as OPST and sixteen
+ * bits; everything else reads zero. Out of line: no loop polls it hot.
+ */
+static EMU_NOINLINE uint32_t seed_poll(void)
+{
+    uint16_t e = 0u;
+
+    switch (emu_entropy16(&e)) {
+    case EMU_ENTROPY_OK:
+        return SEED_OPST_ES16 | (uint32_t)e;
+    case EMU_ENTROPY_WAIT:
+        return SEED_OPST_WAIT;
+    case EMU_ENTROPY_TESTING:
+        return SEED_OPST_BIST;
+    default:
+        return SEED_OPST_DEAD;
+    }
+}
+#endif
 
 static uint64_t read_time(const rv_hart_t *h)
 {
@@ -316,6 +360,22 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MCONFIGPTR:
         *out = 0u;
         break;
+
+#if RV_EXT_ZKR
+    /* --- the entropy source (Zkr) --- */
+    case CSR_SEED:
+        if (!seed_allowed(h)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        *out = seed_poll();
+        break;
+    case CSR_MSECCFG:
+        *out = h->mseccfg;
+        break;
+    case CSR_MSECCFGH:
+        *out = 0u; /* every field belongs to an absent extension */
+        break;
+#endif
 
     /* --- trap setup --- */
     case CSR_MSTATUS:
@@ -718,6 +778,20 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
     case CSR_MENVCFGH:
         break; /* every field belongs to an absent extension */
 
+#if RV_EXT_ZKR
+    case CSR_SEED:
+        /* The value is ignored -- but only where a read is allowed. */
+        if (!seed_allowed(h)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        break;
+    case CSR_MSECCFG:
+        h->mseccfg = val & MSECCFG_WMASK;
+        break;
+    case CSR_MSECCFGH:
+        break;
+#endif
+
     case CSR_MISA:
         break; /* the extension set is fixed at build time */
 
@@ -982,6 +1056,14 @@ const char *rv_csr_name(uint32_t csr)
         return "menvcfg";
     case CSR_MENVCFGH:
         return "menvcfgh";
+#if RV_EXT_ZKR
+    case CSR_SEED:
+        return "seed";
+    case CSR_MSECCFG:
+        return "mseccfg";
+    case CSR_MSECCFGH:
+        return "mseccfgh";
+#endif
 #if RV_EXT_S
     case CSR_SSTATUS:
         return "sstatus";

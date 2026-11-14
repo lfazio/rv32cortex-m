@@ -37,6 +37,7 @@ extern "C" {
 #define HAL_PWR_MODULE_ENABLED       /* over-drive mode for 216 MHz */
 #define HAL_RCC_MODULE_ENABLED
 #define HAL_UART_MODULE_ENABLED
+#define HAL_RNG_MODULE_ENABLED       /* Zkr's seed: emu_entropy.h */
 
 /* ---------------------------------------------------------------- */
 /* Oscillators                                                       */
@@ -126,6 +127,9 @@ extern "C" {
 #endif
 #ifdef HAL_UART_MODULE_ENABLED
 #include "stm32f7xx_hal_uart.h"
+#endif
+#ifdef HAL_RNG_MODULE_ENABLED
+#include "stm32f7xx_hal_rng.h"
 #endif
 
 /* ---------------------------------------------------------------- */

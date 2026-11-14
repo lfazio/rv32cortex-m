@@ -70,6 +70,7 @@
 #include "emu/emu_backend.h"
 #include "emu/emu_bus.h"
 #include "emu/emu_cpu.h"
+#include "emu/emu_entropy.h"
 #include "emu/emu_jit.h"
 
 #define FZ_MAX_CORES 2u
@@ -257,6 +258,27 @@ static inline emu_run_reason_t fz_run_core(const fz_target_t *t,
     return r;
 }
 
+/*
+ * The entropy source both sides read (RISC-V's `seed`, emu_entropy.h):
+ * the platform's would hand the interpreter and the JIT different bits,
+ * so this one restarts for each side's run and gives both the same
+ * sequence -- and answers WAIT one poll in seven, so a guest's retry is
+ * fuzzed too. Its bits are a counter's hash: nothing here asks whether
+ * they are random, only whether both backends deliver them alike.
+ */
+static uint32_t g_fz_entropy;
+
+static inline emu_entropy_t fz_entropy(uint16_t *out)
+{
+    const uint32_t n = g_fz_entropy++;
+
+    if (n % 7u == 6u) {
+        return EMU_ENTROPY_WAIT;
+    }
+    *out = (uint16_t)((n * 0x9E3779B9u) >> 16);
+    return EMU_ENTROPY_OK;
+}
+
 static inline void fz_run(const fz_target_t *t, fz_side_t *sd)
 {
     const unsigned ncores = (sd->ncores > 1u) ? sd->ncores : 1u;
@@ -266,6 +288,8 @@ static inline void fz_run(const fz_target_t *t, fz_side_t *sd)
     *t->active = sd->backend;
     sd->aside = 0u;
     sd->device_accesses = 0u;
+    g_fz_entropy = 0u;
+    emu_entropy_set(fz_entropy);
     if (t->before_run != NULL) {
         t->before_run(sd);
     }

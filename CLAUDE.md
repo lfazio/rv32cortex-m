@@ -306,11 +306,12 @@ Each has cost more than one session, and every one recurred.
   after the core state): a "flush after start-up worth 17%" was the
   steady-state loop landing in the 9 KB of DTCM the buffer then reached.
   Placed first, CoreMark under the JIT is 3.5-6.8% faster on three
-  frontends; and a `-DEMU_PC_PROFILE` build moves `.bss` by 32 KB,
+  frontends; and a `-DEMU_PC_PROFILE` build moved `.bss` by 32 KB,
   which took the buffer out of DTCM and erased the effect under study
-  -- and takes 32 KB of guest RAM, which moved PowerPC CoreMark's JIT
-  from 37.66 to 65.32. Where from the profile, how much from the plain
-  build.
+  -- PowerPC CoreMark's JIT went from 37.66 to 65.32 then. Now both put
+  the buffer first and agree (19.97, 19.96; less guest RAM alone moves
+  nothing, `EMU_LAYOUT_PAD_RAM`). Where from the profile, how much from
+  the plain build, and check the counters agree.
 - **Pin what every block touches.** Core state goes where the platform
   says (`EMU_HOT_DATA`: the F746's DTCM); left to the linker, RV32's
   hart slid into SRAM1 behind the 4 KB D-cache in a one-partition build
@@ -455,7 +456,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   what a chained exit would skip follows the edge three times first.
 - **A device counting instructions reads a chain's start** under the JIT
   (PowerPC STM read 900 of 1,000); asynchronous interrupts arrive a block
-  late, which the architecture permits.
+  late, which the architecture permits -- all of isatest's retired
+  difference between the backends is its two timer waits, 11 iterations
+  each (minstret marked after every test found them).
 - **A decision needs the information it depends on**: chainability fixed
   in the prologue missed an `FPUT` in the body, and FS stayed Clean.
 - **A second path to an array goes through the first path's function**:
@@ -746,7 +749,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   polled console stuck behind the fault.
 - **The same bit on two parts is two questions**: the N6's counter runs
   through a WFI without DBG_SLEEP, where the F746's stops; it sets
-  nothing (`check-wfi-attach.sh TREE stm32n6`).
+  nothing (`check-wfi-attach.sh TREE stm32n6`). And one family is three
+  peripheral lists: the F446 has no RNG, so Zkr is off there -- only
+  its build said so.
 - **A register only a power-on reset clears is set by whoever wrote it
   last -- the probe included.** Without DBGMCU_CR.DBG_SLEEP a WFI on the
   F746 stops CYCCNT (43,558 cycles in 250 ms) and shuts the probe out;

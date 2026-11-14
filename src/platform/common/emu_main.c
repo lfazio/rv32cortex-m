@@ -495,6 +495,9 @@ static int emu_main_body(int argc, char **argv)
         return 1;
     }
 
+    /* The entropy source (Zkr's `seed`), brought up by the board once. */
+    emu_entropy_set(board_entropy_source());
+
     /*
      * Installing the image is here, not in a board: an upload changes it
      * too, and having one place that sets board_img is what keeps "which

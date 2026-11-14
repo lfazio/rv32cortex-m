@@ -2796,6 +2796,54 @@ static void test_zicond(void)
         t2_;                                                                   \
     })
 
+#if RV32_EXT_ZKR
+/*
+ * Zkr's seed from M-mode, whatever the platform's source is -- on the
+ * board its RNG through the HAL, on the host RDSEED or getrandom
+ * (emu_entropy.h): 32 polls, each past WAIT, all ES16 with bits [29:16]
+ * zero and not all the same sixteen bits; and the read-only form
+ * raising illegal instruction. The privilege rules are
+ * tests/arch-test/probes/zkr.S's, against Sail and Spike.
+ */
+static uint32_t seed_poll(void)
+{
+    uint32_t v = 0u;
+
+    for (unsigned i = 0; i < 100000u; i++) {
+        __asm__ volatile("csrrw %0, 0x015, x0" : "=r"(v));
+        if ((v >> 30) != 1u) { /* not WAIT */
+            break;
+        }
+    }
+    return v;
+}
+
+static void test_zkr(void)
+{
+    uint32_t first = 0u, differ = 0u, opst = 0u, bits = 0u, before;
+
+    for (unsigned i = 0; i < 32u; i++) {
+        const uint32_t v = seed_poll();
+
+        opst += ((v >> 30) != 2u) ? 1u : 0u;
+        bits += ((v & 0x3FFF0000u) != 0u) ? 1u : 0u;
+        if (i == 0u) {
+            first = v & 0xFFFFu;
+        } else if ((v & 0xFFFFu) != first) {
+            differ++;
+        }
+    }
+    check("zkr-seed-es16", opst, 0u);
+    check("zkr-seed-zero-bits", bits, 0u);
+    check("zkr-seed-varies", differ != 0u, 1u);
+
+    before = g_trap_count;
+    __asm__ volatile("csrrs t0, 0x015, x0" ::: "t0");
+    check("zkr-seed-readonly-taken", g_trap_count - before, 1u);
+    check("zkr-seed-readonly-cause", g_last_cause, 2u);
+}
+#endif
+
 /*
  * Scalar cryptography (rv_crypto.c), as tests/arch-test/probes/kcrypto.S
  * asks it of Sail and Spike: the six S-box readers over all 256 bytes,
@@ -5556,6 +5604,9 @@ int main(void)
     test_zicond();
     test_bitmanip();
     test_kcrypto();
+#if RV32_EXT_ZKR
+    test_zkr();
+#endif
     test_hints();
     test_zalasr();
     test_zawrs();

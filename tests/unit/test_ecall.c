@@ -32,6 +32,7 @@
 #include "rv32/rv_backend.h"
 
 #include "emu/emu_bus.h"
+#include "emu/emu_entropy.h"
 
 #define RAM_BASE 0x80000000u
 
@@ -135,9 +136,78 @@ static void test_csr_absent(void)
     }
 }
 
+#if RV_EXT_ZKR
+/*
+ * seed's four answers, from a source of the test's own: each of the
+ * platform's statuses as its OPST, and the bits only with ES16. The
+ * probe (zkr.S) holds the access rules to Sail and Spike, where every
+ * read is ES16; these are the other three. With no source at all the
+ * answer is DEAD, never bits; a refused access does not poll.
+ */
+static emu_entropy_t g_fake_status;
+static unsigned g_fake_polls;
+
+static emu_entropy_t fake_entropy(uint16_t *out)
+{
+    g_fake_polls++;
+    *out = 0xBEEFu; /* written whatever the status: only ES16 shows it */
+    return g_fake_status;
+}
+
+static void test_seed(void)
+{
+    static const struct {
+        emu_entropy_t status;
+        uint32_t want;
+    } k[] = {
+        {EMU_ENTROPY_OK, 0x8000BEEFu},
+        {EMU_ENTROPY_WAIT, 0x40000000u},
+        {EMU_ENTROPY_TESTING, 0x00000000u},
+        {EMU_ENTROPY_DEAD, 0xC0000000u},
+    };
+    uint32_t v = 0xA5A5A5A5u;
+
+    emu_bus_init(&g_bus);
+    rv_hart_init(&g_hart, &g_bus, 0u);
+    emu_entropy_set(NULL);
+    CHECK_EQ(rv_csr_read(&g_hart, CSR_SEED, &v), RV_EXC_NONE);
+    CHECK_EQ(v, 0xC0000000u);
+
+    emu_entropy_set(fake_entropy);
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        g_fake_status = k[i].status;
+        v = 0xA5A5A5A5u;
+        CHECK_EQ(rv_csr_read(&g_hart, CSR_SEED, &v), RV_EXC_NONE);
+        CHECK_EQ(v, k[i].want);
+    }
+
+    /* S without SSEED: refused, read or write, and nothing polled. */
+    const unsigned polls = g_fake_polls;
+    g_hart.priv = RV_PRIV_S;
+    CHECK_EQ(rv_csr_read(&g_hart, CSR_SEED, &v), RV_EXC_ILLEGAL_INSN);
+    CHECK_EQ(rv_csr_write(&g_hart, CSR_SEED, 0u), RV_EXC_ILLEGAL_INSN);
+    CHECK_EQ(g_fake_polls, polls);
+
+    /* mseccfg keeps USEED and SSEED and nothing else; S may not read it. */
+    CHECK_EQ(rv_csr_read(&g_hart, CSR_MSECCFG, &v), RV_EXC_ILLEGAL_INSN);
+    g_hart.priv = RV_PRIV_M;
+    CHECK_EQ(rv_csr_write(&g_hart, CSR_MSECCFG, 0xFFFFFFFFu), RV_EXC_NONE);
+    CHECK_EQ(rv_csr_read(&g_hart, CSR_MSECCFG, &v), RV_EXC_NONE);
+    CHECK_EQ(v, MSECCFG_USEED | MSECCFG_SSEED);
+    g_hart.priv = RV_PRIV_S;
+    g_fake_status = EMU_ENTROPY_OK;
+    CHECK_EQ(rv_csr_read(&g_hart, CSR_SEED, &v), RV_EXC_NONE);
+    CHECK_EQ(v, 0x8000BEEFu);
+    emu_entropy_set(NULL);
+}
+#endif
+
 void test_ecall(void)
 {
     test_csr_absent();
+#if RV_EXT_ZKR
+    test_seed();
+#endif
 
 #if !RV_ENABLE_ECALL_HOOK
     return;

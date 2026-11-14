@@ -128,6 +128,16 @@ so a line setting it would have said what it does not do.
 (probe-rs read CYCCNT twice, seconds apart, as one value: the probe's
 view of the counter is not the firmware's, and was not used.)
 
+## The RNG behind Zkr
+
+RISC-V's `seed` reads the part's RNG through the HAL
+(`src/platform/stm32/board.c`, shared with the F746), clock-error
+detection on; `isatest`'s `test_zkr` passes here -- ES16 within its
+poll bound, values that vary. The driver costs ROM, and the RV32
+firmware has about 1.1 KB of its 216 KB to spare now
+(`stm32n657xx_lrun.ld`); the RAM half has about 95 KB, so the next
+growth moves the line again.
+
 ## The plan, as written before the port
 
 What the platform is, concretely -- the F746's nine files, and

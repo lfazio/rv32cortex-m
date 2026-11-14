@@ -52,6 +52,7 @@
  */
 #include "emu/emu_bus.h"
 #include "emu/emu_cpu.h"
+#include "emu/emu_entropy.h"
 #include "emu/emu_gdb.h"
 
 #include <stdbool.h>
@@ -234,6 +235,17 @@ uint64_t board_perf_cycles(void);
  * normalisation this layer exists to do.
  */
 uint64_t board_time_now(void);
+
+/*
+ * The platform's entropy source, brought up once and handed to
+ * emu_entropy_set() at start-up (emu_main.c): what a guest's RISC-V
+ * `seed` CSR reads (Zkr). The host's is RDSEED where the CPU has it and
+ * getrandom(2) otherwise; an STM32's is its RNG peripheral through the
+ * vendor HAL, which the emulator owns from then on even though the
+ * guest's peripheral window reaches it (stm32/board.c says what that
+ * costs). NULL, if the platform has none: the guest then reads DEAD.
+ */
+emu_entropy_fn board_entropy_source(void);
 
 /* ------------------------------------------------------------------ */
 /* The two ends of a run                                               */

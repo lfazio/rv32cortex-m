@@ -129,8 +129,9 @@ _Min_Stack_Size = 0x2000;
  * of RAM; the JIT's chain search and RV32's stop before a known entry
  * then overflowed ROM by 672 bytes. At 212K/299K RV32 had about 4.4 KB
  * of ROM to spare and G4MH about 41 KB of RAM, until RV32's scalar
- * crypto overflowed ROM by 800 bytes. At 216K/295K RV32 has about 4.4 KB
- * of ROM to spare and 95 KB of RAM, and G4MH about 37 KB of RAM. Moving
+ * crypto overflowed ROM by 800 bytes. At 216K/295K RV32 had about 4.4 KB
+ * of ROM to spare, and about 1.1 KB once Zkr's RNG driver came in, with
+ * 95 KB of RAM; G4MH about 37 KB of RAM. Moving
  * the line is free; the two halves are one bank, and RAM still ends at
  * 0x3420_0000.
  *

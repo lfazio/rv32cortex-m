@@ -68,6 +68,15 @@ firmware dies rather than the test failing. Every hole in the table begins
 just above reserved space, so there is no register immediately below one to
 probe with. Test the window with registers that exist.
 
+## No RNG, so no Zkr
+
+RM0390's F446 has no RNG -- the F746 and the N6 do, and serve RISC-V's
+`seed` from it through the HAL (`src/platform/stm32/board.c`). The
+HAL's RNG driver does not compile for this part, so the shared code
+leaves it out where CMSIS names no `RNG`, `board_entropy_source`
+returns none, and `RV32_EXT_ZKR` defaults off here: a guest is not told
+of an entropy source that would only ever read DEAD.
+
 ## Interrupts
 
 An interrupt is the one thing the passthrough window cannot carry. A guest

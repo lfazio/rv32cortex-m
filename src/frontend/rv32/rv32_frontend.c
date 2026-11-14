@@ -166,10 +166,18 @@
 #endif
 #if RV_EXT_ZK
 #define RV32_S_ZBK "_zbkb_zbkc_zbkx"
-#define RV32_S_ZKNS "_zknd_zkne_zknh_zksed_zksh"
+#define RV32_S_ZKN "_zknd_zkne_zknh"
+#define RV32_S_ZKS "_zksed_zksh"
 #else
 #define RV32_S_ZBK ""
-#define RV32_S_ZKNS ""
+#define RV32_S_ZKN ""
+#define RV32_S_ZKS ""
+#endif
+/* Between Zkn and Zks: the canonical order is alphabetical there. */
+#if RV_EXT_ZKR
+#define RV32_S_ZKR "_zkr"
+#else
+#define RV32_S_ZKR ""
 #endif
 #if RV_EXT_ZKT
 #define RV32_S_ZKT "_zkt"
@@ -201,7 +209,7 @@
     "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND RV32_S_ZICSR           \
         RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
             RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_ZBK        \
-                RV32_S_ZKNS RV32_S_ZKT RV32_S_SSCOFPMF RV32_S_SVINVAL
+                RV32_S_ZKN RV32_S_ZKR RV32_S_ZKS RV32_S_ZKT RV32_S_SSCOFPMF RV32_S_SVINVAL
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */

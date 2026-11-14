@@ -103,11 +103,14 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 # and account for every directory, by adding it here or by saying below
 # why not.
 #
-#   Zabha, ZacasZabha, Zbkb, Zbkc, Zbkx, Zcmop, Zfa*, Zfh, ZfhD,
-#   Zfbfmin, Zimop, Zknd, Zkne, Zknh, Zksed, Zksh    not implemented --
+#   Zabha, ZacasZabha, Zcmop, Zfa*, Zfh, ZfhD,
+#   Zfbfmin, Zimop                                   not implemented --
 #                                                    Zfh is the half
 #                                                    arithmetic; Zfhmin
 #                                                    and ZfhminD are named
+#   (Zkr has no directory: the checkout generates no
+#   test for it, so tests/arch-test/probes/zkr.S
+#   holds it to Sail and Spike)
 #   Misalign, MisalignD, MisalignF, MisalignZca      --misaligned: this
 #                                                    description says
 #                                                    MISALIGNED_LDST false

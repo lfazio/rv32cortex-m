@@ -4462,7 +4462,9 @@ session, and every one of them recurred:
   profiled against 37.66 plain, 68 compactions against 40 -- so the
   first reading, "the JIT halves over a long run", was the profile.
   **Take where the time goes from the profile and how much from the
-  plain build, and check the two agree on the counters first.**
+  plain build, and check the two agree on the counters first.** (They
+  agree now -- 410 translations each, 19.97 against 19.96 -- with the
+  buffer first in DTCM in both; less guest RAM alone moves nothing.)
 
 - **A locked-up core can still be asked.** The last unasked branch of
   the lazy save was a lockup, put off because it means locking the
@@ -4737,6 +4739,26 @@ session, and every one of them recurred:
   bookkeeping were the cost, not the call. **Before inlining, measure
   which part of the call's cost the inlining removes, on the host with
   the smallest block.**
+
+- **One family is three peripheral lists.** Zkr's `seed` was to read
+  "the STM32's RNG through the HAL", and the code was written once, in
+  the file all three parts share. The F746 and the N6 linked; the F446
+  did not, because RM0390's part has no RNG -- the HAL's driver had no
+  `RNG` to name. The shared code now leaves it out where CMSIS defines
+  no `RNG`, and Zkr defaults off on that part rather than advertising a
+  source that would read DEAD. **Check each part's peripheral list
+  before writing shared code for "the STM32"** -- and build every part,
+  since only the one without it says so.
+
+- **Mark the counter after every test to find where two runs part.**
+  isatest retired 168 more instructions under the JIT than interpreted,
+  unexplained in validation.md since October, and the gap moved with
+  the layout (147 to 182) as tests were added. Reading `minstret` after
+  each of its 38 tests, on both backends, put all of it in the two tests
+  that wait for a timer interrupt: each wait ran 11 more iterations
+  under the JIT, which takes an asynchronous interrupt at a block
+  boundary -- permitted, and already a rule. **A whole-run difference is
+  one number; a mark per test makes it a list with a name in it.**
 
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is

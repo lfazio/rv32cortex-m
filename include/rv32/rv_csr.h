@@ -65,6 +65,25 @@ struct rv_hart;
 #define CSR_SENVCFG 0x10A
 
 /*
+ * Zkr: the entropy source, and who below M may poll it. `seed` reads
+ * OPST in [31:30] and sixteen bits of entropy in [15:0], the rest zero,
+ * and may be accessed only by an instruction that writes it -- the write
+ * is ignored -- so that a read-only CSR access cannot take bits it then
+ * drops. mseccfg's USEED and SSEED open it to U and S; its other fields
+ * belong to extensions this core does not have (Smepmp, Zicfilp, Smmpm)
+ * and read zero, as all of mseccfgh does.
+ */
+#define CSR_SEED 0x015
+#define CSR_MSECCFG 0x747
+#define CSR_MSECCFGH 0x757
+#define MSECCFG_USEED (1u << 8)
+#define MSECCFG_SSEED (1u << 9)
+#define SEED_OPST_BIST (0u << 30)
+#define SEED_OPST_WAIT (1u << 30)
+#define SEED_OPST_ES16 (2u << 30)
+#define SEED_OPST_DEAD (3u << 30)
+
+/*
  * The environment-configuration registers, which say what a *lower*
  * privilege level may do. Only the cache-block bits mean anything here:
  * FIOM (fence-implies-IO) is vacuous with no distinct IO ordering, and

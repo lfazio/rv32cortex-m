@@ -31,11 +31,14 @@
 	xor	%r7, %r7, %r5
 	rotlwi	%r8, %r8, 3
 	xor	%r8, %r8, %r6
+	.balign	64			/* a case a slot: see the top */
 	.endm
 
 	/* No prologue: fuzz.sh cuts a seed into 256-byte inputs, and each
-	 * case is 32 bytes, so every input holds eight whole ones. r7 and
-	 * r8 start as the harness leaves them. */
+	 * case is ten instructions padded to 64 bytes (the assembler's
+	 * branch over nops), so every input holds four whole ones -- at 40
+	 * bytes unpadded, the cuts split one case in six. r7 and r8 start
+	 * as the harness leaves them. */
 	MUL	0x3F800001, 0x3FC00000	/* tie, odd: up */
 	MUL	0x3F800003, 0x3FC00000	/* tie, even: down */
 	MUL	0xBF800001, 0x3FC00000	/* the same, negative */
