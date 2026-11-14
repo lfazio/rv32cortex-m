@@ -42,12 +42,18 @@ Neither reaches `ir_lower.c`'s decisions — which registers, which
 frame slot, which branch gets patched.
 
 **`emu_ir_can_lower` answers yes by default, and every yes is a
-promise.** It has been broken twice, both times found when a frontend
+promise.** It has been broken three times, each found when a frontend
 started asking: the rotations and the four value bit operations, then
 the memory bit operations (`EMU_IR_BITOP_*`), which `lower_one` has never
-lowered. G4MH emitted those anyway and lost each block containing one at
-emission; it asks now, and a no sends each to a helper that keeps the
-block whole.
+lowered, then CLMUL and AESSB, which an M7 has no instruction for. G4MH
+emitted the bit operations anyway and lost each block containing one at
+emission; RV32 believed the yes for `clmul`, which GCC makes of
+CoreMark's CRC loops, and CoreMark under the JIT was 32% slower here
+with 910,195 instructions interpreted. Every operation `lower_one`
+refuses is named now -- SELECT and POPCNT too, which nothing asks about
+yet -- and a refusal of a promised one is counted and printed as
+`unkept` ([../jit/README.md](../jit/README.md)), so the next one shows in
+the run's own report.
 
 ## Registers and the frame
 

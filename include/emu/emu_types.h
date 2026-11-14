@@ -214,6 +214,23 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
 #endif
 
 /*
+ * EMU_INTERP_HELPER -- a function an interpreter's run loop calls, placed
+ * with the loop: EMU_INTERP_TEXT's section without its noinline. Where
+ * the compiler inlines it the copy is in the loop anyway; what it keeps
+ * out of line would otherwise land in .text -- on the F746, flash, where
+ * a quarter of ARMv7-M's interpreter samples were (add_c, cond_holds,
+ * dp_op, the access helpers), and where a change to the loop's size
+ * moved its figure by 1-5% as LTO chose differently what to keep out.
+ * Only on a function the interpreter alone calls, so that what the JIT
+ * shares with it (armv7m_interp.c's access helpers) stays as it was.
+ */
+#if defined(__GNUC__) && defined(EMU_INTERP_TEXT_SECTION)
+#define EMU_INTERP_HELPER __attribute__((section(EMU_INTERP_TEXT_SECTION)))
+#else
+#define EMU_INTERP_HELPER
+#endif
+
+/*
  * EMU_PER_CORE -- state belonging to whichever core is running, kept per
  * host thread.
  *

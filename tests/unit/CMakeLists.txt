@@ -438,6 +438,10 @@ if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_PMP AND TARGET emu-host)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_FOUND)
         file(GLOB _probes "${CMAKE_SOURCE_DIR}/tests/arch-test/probes/*.S")
+        # A probe of instructions the build leaves out says nothing.
+        if(NOT RV32_EXT_ZK)
+            list(FILTER _probes EXCLUDE REGEX "kcrypto\\.S$")
+        endif()
         foreach(_p IN LISTS _probes)
             get_filename_component(_n "${_p}" NAME_WE)
             add_test(NAME probe-${_n}

@@ -17,7 +17,10 @@
 # `old` and `new` are the firmware's host cycles per guest instruction.
 # `same?` compares what must not move: the retired count, the CRC and
 # CoreMark's validations. A difference that does not follow the layout
-# in both pads is not a difference (CLAUDE.md, "Measuring").
+# in both pads is not a difference (CLAUDE.md, "Measuring"). It adds
+# `old UNKEPT` or `new UNKEPT` when that firmware's report has an
+# `unkept` line: a backend refused an operation its emu_ir_can_lower
+# promised, and lost the block (emu_ir.h, emu_ir_note_refused).
 #
 # Rows (all by default):
 #   rv32-j rv32-i   RV32 CoreMark x120, JIT and interpreter
@@ -91,6 +94,14 @@ for row in $ROWS; do
         same=yes
         for k in retired crc valid; do
             [ "$(after $k "$a")" = "$(after $k "$b")" ] || same="no ($k)"
+        done
+        # A block lost to a capability the backend promised and refused
+        # (emu_ir_note_refused): RV32 CoreMark 32% slower, all else equal.
+        for side in old new; do
+            if grep -q -a '^  unkept ' \
+                "$ROOT/build/board/$TAG-$side-$row-p$pad.txt" 2>/dev/null; then
+                same="$same, $side UNKEPT"
+            fi
         done
         change=$(awk -v a="$ra" -v b="$rb" \
             'BEGIN { if (a + 0 > 0 && b + 0 > 0) printf "%+.2f%%", 100 * (b - a) / a; else print "-" }')

@@ -33,6 +33,7 @@
 
 #include "rv32/rv_hart.h"
 #include "rv32/rv_bitmanip.h"
+#include "rv32/rv_crypto.h"
 #include "rv32/rv_decode.h"
 #include "rv32/rv_ir.h"
 #include "rv32/rv_jit.h"
@@ -688,14 +689,39 @@ static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
 #define RV_IR_H_BITOP ((const void *)rv_ir_helper_absent)
 #endif
 
+/*
+ * The scalar crypto, every instruction of it: rv_crypto_exec is the
+ * interpreter's code too, and an S-box read that touches all 256 entries
+ * (Zkt) is no instruction a lowering could offer. None can fault.
+ */
+#if RV_EXT_ZK
+static uint32_t rv_ir_crypto_helper(emu_cpu_t *cpu, uint32_t insn,
+                                    uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    uint32_t v = 0u;
+
+    (void)unused;
+    (void)rv_crypto_exec(insn, h->x[rv_rs1(insn)], h->x[rv_rs2(insn)], &v);
+    if (rv_rd(insn) != 0u) {
+        h->x[rv_rd(insn)] = v;
+    }
+    return 0u;
+}
+#define RV_IR_H_CRYPTO ((const void *)rv_ir_crypto_helper)
+#else
+#define RV_IR_H_CRYPTO ((const void *)rv_ir_helper_absent)
+#endif
+
 static const void *const rv_ir_helpers[] = {
     RV_IR_H_FP, RV_IR_H_AMO, (const void *)rv_ir_csr_helper,
-    (const void *)rv_ir_muldiv_helper, RV_IR_H_BITOP};
+    (const void *)rv_ir_muldiv_helper, RV_IR_H_BITOP, RV_IR_H_CRYPTO};
 #define RV_IR_HELPER_FP 0u
 #define RV_IR_HELPER_AMO 1u
 #define RV_IR_HELPER_CSR 2u
 #define RV_IR_HELPER_MULDIV 3u
 #define RV_IR_HELPER_BITOP 4u
+#define RV_IR_HELPER_CRYPTO 5u
 
 /* One instruction, handed whole to rv_ir_bitop_helper. */
 static bool rv_ir_bitop_call(emu_ir_block_t *b, uint32_t insn)
@@ -810,6 +836,197 @@ static bool rv_ir_fp_fallback(emu_ir_block_t *b, uint32_t pc, uint32_t insn)
  * anything else here would be a staleness bug; that is the rule, and
  * this file has one place it applies.
  */
+#if RV_EXT_ZK
+/*
+ * The scalar crypto, lowered (rv_crypto.h has the semantics, and the
+ * helper below has all of it).
+ *
+ * **The rotate-and-XOR instructions are plain IR on every host**:
+ * sha256sum0 is three rotates and two XORs, which both backends lower to
+ * three ROR/ROL and two XOR, where the helper was a call. sha512*, sm3p*,
+ * pack and packh likewise -- constant time by construction, each a shift
+ * by an immediate or a logic operation (Zkt).
+ *
+ * **aes32 is EMU_IR_AESSB and the rest around it**, where the host has the
+ * S-box as an instruction -- x86-64 with AES-NI -- and the helper where it
+ * does not: the byte select, the S-box, MixColumns' column by doublings in
+ * GF(2^8) written without a test, the rotate back, the XOR. SM4, brev8,
+ * zip, unzip and xperm stay with the helper: no host here has them, and
+ * none is a short sequence.
+ */
+static uint16_t rv_ir_k(emu_ir_block_t *b, emu_ir_op_t op, uint16_t x,
+                        uint32_t n)
+{
+    return emu_ir_emit(b, op, 0u, x, EMU_IR_NO_TEMP, n, 0u);
+}
+
+/* x times 2 in GF(2^8): (x << 1) ^ (0x1B & -(x >> 7)), a byte. */
+static uint16_t rv_ir_xt2(emu_ir_block_t *b, uint16_t x)
+{
+    const uint16_t hi = emu_ir_emit(b, EMU_IR_NEG, 0u,
+                                    rv_ir_k(b, EMU_IR_SHRI, x, 7u),
+                                    EMU_IR_NO_TEMP, 0u, 0u);
+
+    return rv_ir_k(b, EMU_IR_ANDI,
+                   emu_ir_alu(b, EMU_IR_XOR, rv_ir_k(b, EMU_IR_SHLI, x, 1u),
+                              rv_ir_k(b, EMU_IR_ANDI, hi, 0x1Bu)),
+                   0xFFu);
+}
+
+/* (x rol p) ^ (x rol q) ^ (x rol r), or with r 0, x ^ ... */
+static uint16_t rv_ir_rol3(emu_ir_block_t *b, uint16_t x, uint32_t p,
+                           uint32_t q, uint32_t r)
+{
+    const uint16_t t = emu_ir_alu(b, EMU_IR_XOR, rv_ir_k(b, EMU_IR_ROTLI, x, p),
+                                  rv_ir_k(b, EMU_IR_ROTLI, x, q));
+
+    return emu_ir_alu(b, EMU_IR_XOR, t,
+                      (r == 0u) ? x : rv_ir_k(b, EMU_IR_ROTLI, x, r));
+}
+
+/* Sum of a list of shifted copies: +n is a left shift by n, -n right. */
+static uint16_t rv_ir_shifts(emu_ir_block_t *b, uint16_t a, const int8_t *sa,
+                             uint16_t bb, const int8_t *sb)
+{
+    uint16_t v = EMU_IR_NO_TEMP;
+
+    for (int pass = 0; pass < 2; pass++) {
+        const int8_t *s = pass ? sb : sa;
+        const uint16_t x = pass ? bb : a;
+
+        for (; *s != 0; s++) {
+            const uint16_t t = (*s > 0)
+                                   ? rv_ir_k(b, EMU_IR_SHLI, x, (uint32_t)*s)
+                                   : rv_ir_k(b, EMU_IR_SHRI, x, (uint32_t)-*s);
+
+            v = (v == EMU_IR_NO_TEMP) ? t : emu_ir_alu(b, EMU_IR_XOR, v, t);
+        }
+    }
+    return v;
+}
+
+static bool rv_ir_crypto(emu_ir_block_t *b, uint32_t insn)
+{
+    const uint32_t op = insn & 0x7Fu;
+    const uint32_t f3 = rv_funct3(insn);
+    const uint32_t f7 = insn >> 25;
+    const uint16_t a = emu_ir_get(b, rv_rs1(insn));
+    uint16_t v = EMU_IR_NO_TEMP;
+
+    if (op == 0x13u) {
+        if (f7 == 0x08u && f3 == 1u) {
+            switch (rv_rs2(insn)) {
+            case 0u: /* sha256sum0 */
+                v = rv_ir_rol3(b, a, 30u, 19u, 10u);
+                break;
+            case 1u: /* sha256sum1 */
+                v = rv_ir_rol3(b, a, 26u, 21u, 7u);
+                break;
+            case 2u: /* sha256sig0 */
+            case 3u: /* sha256sig1 */ {
+                const bool s1 = rv_rs2(insn) == 3u;
+                const uint16_t t = emu_ir_alu(
+                    b, EMU_IR_XOR, rv_ir_k(b, EMU_IR_ROTLI, a, s1 ? 15u : 25u),
+                    rv_ir_k(b, EMU_IR_ROTLI, a, s1 ? 13u : 14u));
+
+                v = emu_ir_alu(b, EMU_IR_XOR, t,
+                               rv_ir_k(b, EMU_IR_SHRI, a, s1 ? 10u : 3u));
+                break;
+            }
+            case 8u: /* sm3p0 */
+                v = rv_ir_rol3(b, a, 9u, 17u, 0u);
+                break;
+            case 9u: /* sm3p1 */
+                v = rv_ir_rol3(b, a, 15u, 23u, 0u);
+                break;
+            default:
+                break;
+            }
+        }
+    } else {
+        const uint16_t bb = emu_ir_get(b, rv_rs2(insn));
+
+        if (f7 == 0x04u && f3 == 4u) { /* pack; not zext.h, the caller's */
+            v = emu_ir_alu(b, EMU_IR_OR, rv_ir_k(b, EMU_IR_SHLI, bb, 16u),
+                           emu_ir_emit(b, EMU_IR_ZEXT16, 0u, a,
+                                       EMU_IR_NO_TEMP, 0u, 0u));
+        } else if (f7 == 0x04u && f3 == 7u) { /* packh */
+            v = emu_ir_alu(
+                b, EMU_IR_OR,
+                rv_ir_k(b, EMU_IR_SHLI, rv_ir_k(b, EMU_IR_ANDI, bb, 0xFFu), 8u),
+                rv_ir_k(b, EMU_IR_ANDI, a, 0xFFu));
+        } else if (f3 == 0u && f7 >= 0x28u && f7 <= 0x2Fu &&
+                   f7 != 0x2Cu && f7 != 0x2Du) {
+            /* sha512*: the spec's shifts of rs1 and of rs2, XORed. */
+            static const int8_t k[8][2][7] = {
+                {{25, 30, -28, 0}, {-7, -2, 4, 0}},       /* sum0r */
+                {{23, -14, -18, 0}, {-9, 18, 14, 0}},     /* sum1r */
+                {{-1, -7, -8, 0}, {31, 25, 24, 0}},       /* sig0l */
+                {{3, -6, -19, 0}, {-29, 26, 13, 0}},      /* sig1l */
+                {{0}, {0}},
+                {{0}, {0}},
+                {{-1, -7, -8, 0}, {31, 24, 0}},           /* sig0h */
+                {{3, -6, -19, 0}, {-29, 13, 0}},          /* sig1h */
+            };
+
+            v = rv_ir_shifts(b, a, k[f7 - 0x28u][0], bb, k[f7 - 0x28u][1]);
+        } else if (f3 == 0u && ((f7 & 0x19u) == 0x11u)) {
+            /* aes32esi 11, esmi 13, dsi 15, dsmi 17: bit 1 mix, bit 2 inverse */
+            const bool mix = (f7 & 0x02u) != 0u;
+            const bool inv = (f7 & 0x04u) != 0u;
+            const uint32_t sh = (insn >> 30) * 8u;
+
+            if (emu_ir_can_lower(EMU_IR_AESSB, inv ? 1u : 0u)) {
+                const uint16_t x =
+                    (sh != 0u) ? rv_ir_k(b, EMU_IR_SHRI, bb, sh) : bb;
+                const uint16_t sv = emu_ir_emit(b, EMU_IR_AESSB, inv ? 1u : 0u,
+                                                x, EMU_IR_NO_TEMP, 0u, 0u);
+                uint16_t u = sv;
+
+                if (mix && !inv) { /* {3, 1, 1, 2} */
+                    const uint16_t s2 = rv_ir_xt2(b, sv);
+                    const uint16_t s3 = emu_ir_alu(b, EMU_IR_XOR, sv, s2);
+
+                    u = emu_ir_alu(
+                        b, EMU_IR_OR,
+                        emu_ir_alu(b, EMU_IR_OR,
+                                   rv_ir_k(b, EMU_IR_SHLI, s3, 24u),
+                                   rv_ir_k(b, EMU_IR_SHLI, sv, 16u)),
+                        emu_ir_alu(b, EMU_IR_OR,
+                                   rv_ir_k(b, EMU_IR_SHLI, sv, 8u), s2));
+                } else if (mix) { /* {11, 13, 9, 14} */
+                    const uint16_t s2 = rv_ir_xt2(b, sv);
+                    const uint16_t s4 = rv_ir_xt2(b, s2);
+                    const uint16_t s8 = rv_ir_xt2(b, s4);
+                    const uint16_t s9 = emu_ir_alu(b, EMU_IR_XOR, s8, sv);
+                    const uint16_t s11 = emu_ir_alu(b, EMU_IR_XOR, s9, s2);
+                    const uint16_t s13 = emu_ir_alu(b, EMU_IR_XOR, s9, s4);
+                    const uint16_t s14 = emu_ir_alu(
+                        b, EMU_IR_XOR, emu_ir_alu(b, EMU_IR_XOR, s8, s4), s2);
+
+                    u = emu_ir_alu(
+                        b, EMU_IR_OR,
+                        emu_ir_alu(b, EMU_IR_OR,
+                                   rv_ir_k(b, EMU_IR_SHLI, s11, 24u),
+                                   rv_ir_k(b, EMU_IR_SHLI, s13, 16u)),
+                        emu_ir_alu(b, EMU_IR_OR,
+                                   rv_ir_k(b, EMU_IR_SHLI, s9, 8u), s14));
+                }
+                v = emu_ir_alu(b, EMU_IR_XOR, a,
+                               (sh != 0u) ? rv_ir_k(b, EMU_IR_ROTLI, u, sh) : u);
+            }
+        }
+    }
+    if (v == EMU_IR_NO_TEMP) { /* the helper: SM4, brev8, zip, xperm, ... */
+        (void)emu_ir_emit(b, EMU_IR_HELPER, 0u, emu_ir_const(b, insn),
+                          EMU_IR_NO_TEMP, RV_IR_HELPER_CRYPTO, 0u);
+        return true;
+    }
+    emu_ir_put(b, rv_rd(insn), v);
+    return true;
+}
+#endif
+
 static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                       uint32_t pc, uint32_t len, bool *ends_block,
                       bool *counted)
@@ -825,6 +1042,18 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 
     *ends_block = false;
     *counted = false;
+
+#if RV_EXT_ZK
+    /*
+     * The scalar crypto, through one helper, asked before the opcode's own
+     * decode -- a translate-time question only. Not zext.h, which is
+     * pack with rs2 zero and lowered natively below.
+     */
+    if ((op == 0x13u || op == 0x33u) && (insn & 0xFFF0707Fu) != 0x08004033u &&
+        rv_crypto_is(insn)) {
+        return rv_ir_crypto(b, insn);
+    }
+#endif
 
     switch (op) {
     case 0x37u: /* LUI   */
@@ -1136,6 +1365,21 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 #if !RV_EXT_ZBB
                 if (f3 >= 4u) {
                     return false;
+                }
+#endif
+#if RV_EXT_ZBC
+                if (f3 >= 1u && f3 <= 3u) {
+                    /* clmul, clmulr, clmulh: the low half, bits 62:31,
+                     * the high half -- where the host has the instruction */
+                    const uint8_t part =
+                        (f3 == 1u) ? 0u : ((f3 == 3u) ? 1u : 2u);
+
+                    if (emu_ir_can_lower(EMU_IR_CLMUL, part)) {
+                        emu_ir_put(b, rd,
+                                   emu_ir_emit(b, EMU_IR_CLMUL, part, x, y, 0u,
+                                               0u));
+                        return true;
+                    }
                 }
 #endif
                 return (f3 != 0u) && rv_ir_bitop_call(b, insn);

@@ -2796,6 +2796,100 @@ static void test_zicond(void)
         t2_;                                                                   \
     })
 
+/*
+ * Scalar cryptography (rv_crypto.c), as tests/arch-test/probes/kcrypto.S
+ * asks it of Sail and Spike: the six S-box readers over all 256 bytes,
+ * one byte-select case, and the rest of Zbkb, Zbkx, Zknh and Zksh over
+ * 16 operand pairs from an LCG, each folded into a sum -- rotate left by
+ * 5, then XOR -- that both models agree on. Here because the board runs
+ * the instructions through the Thumb-2 JIT's helper call, which no host
+ * suite reaches.
+ */
+#define K_ARCH "zbkb,+zbkx,+zknd,+zkne,+zknh,+zksed,+zksh"
+
+#define K_BS(mn, a, b, bs)                                                     \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT(K_ARCH, mn " %0, %1, %2, " #bs)              \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)), "r"(opaque(b)));                    \
+        r_;                                                                    \
+    })
+#define K2(mn, a, b)                                                           \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT(K_ARCH, mn " %0, %1, %2")                    \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)), "r"(opaque(b)));                    \
+        r_;                                                                    \
+    })
+#define K1(mn, a)                                                              \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT(K_ARCH, mn " %0, %1")                        \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)));                                    \
+        r_;                                                                    \
+    })
+
+static uint32_t k_fold(uint32_t s, uint32_t v)
+{
+    return ((s << 5) | (s >> 27)) ^ v;
+}
+
+static void test_kcrypto(void)
+{
+    uint32_t s1 = 0u, s2 = 0u, s3 = 0u, s4 = 0u, s5 = 0u, s6 = 0u, s7 = 0u;
+    uint32_t s8 = 0u;
+    uint32_t a = 0x12345678u;
+
+    for (uint32_t x = 0u; x < 256u; x++) {
+        s1 = k_fold(s1, K_BS("aes32esi", 0u, x, 0));
+        s2 = k_fold(s2, K_BS("aes32esmi", 0u, x, 0));
+        s3 = k_fold(s3, K_BS("aes32dsi", 0u, x, 0));
+        s4 = k_fold(s4, K_BS("aes32dsmi", 0u, x, 0));
+        s5 = k_fold(s5, K_BS("sm4ed", 0u, x, 0));
+        s6 = k_fold(s6, K_BS("sm4ks", 0u, x, 0));
+        s7 = k_fold(s7, K_BS("aes32esmi", 0x5a5a1234u, x << 24, 3));
+    }
+    check("aes32esi, every byte", s1, 0x12fda0b6u);
+    check("aes32esmi, every byte", s2, 0xb52f0e6du);
+    check("aes32dsi, every byte", s3, 0x8a384469u);
+    check("aes32dsmi, every byte", s4, 0x14fcd9aeu);
+    check("sm4ed, every byte", s5, 0xd212b980u);
+    check("sm4ks, every byte", s6, 0x0dcf5b17u);
+    check("aes32esmi bs 3", s7, 0x6db52f0eu);
+
+    for (uint32_t i = 0u; i < 16u; i++) {
+        uint32_t p, q;
+
+        a = a * 1664525u + 1013904223u;
+        p = a;
+        a = a * 1664525u + 1013904223u;
+        q = a;
+        s8 = k_fold(s8, K2("pack", p, q));
+        s8 = k_fold(s8, K2("packh", p, q));
+        s8 = k_fold(s8, K2("xperm4", p, q));
+        s8 = k_fold(s8, K2("xperm8", p, q));
+        s8 = k_fold(s8, K2("sha512sum0r", p, q));
+        s8 = k_fold(s8, K2("sha512sum1r", p, q));
+        s8 = k_fold(s8, K2("sha512sig0l", p, q));
+        s8 = k_fold(s8, K2("sha512sig0h", p, q));
+        s8 = k_fold(s8, K2("sha512sig1l", p, q));
+        s8 = k_fold(s8, K2("sha512sig1h", p, q));
+        s8 = k_fold(s8, K1("brev8", p));
+        s8 = k_fold(s8, K1("zip", p));
+        s8 = k_fold(s8, K1("unzip", p));
+        s8 = k_fold(s8, K1("sha256sum0", p));
+        s8 = k_fold(s8, K1("sha256sum1", p));
+        s8 = k_fold(s8, K1("sha256sig0", p));
+        s8 = k_fold(s8, K1("sha256sig1", p));
+        s8 = k_fold(s8, K1("sm3p0", p));
+        s8 = k_fold(s8, K1("sm3p1", p));
+    }
+    check("zbkb, zbkx, zknh, zksh over 16 pairs", s8, 0x07bfd44cu);
+}
+
 static void test_bitmanip(void)
 {
     const uint32_t before = g_trap_count;
@@ -5461,6 +5555,7 @@ int main(void)
 #endif
     test_zicond();
     test_bitmanip();
+    test_kcrypto();
     test_hints();
     test_zalasr();
     test_zawrs();

@@ -161,6 +161,7 @@ and the boards do not. A PowerPC firmware takes `-DPPC_GUEST=` instead
 | `EMU_NET` | `ON` on the F746, `OFF` elsewhere | lwIP over PPP (or SLIP, `EMU_NET_LINK`) on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
+| `RV32_EXT_ZK` | `ON` | The scalar cryptography, Zkn and Zks ([docs/frontend/rv32.md](docs/frontend/rv32.md#scalar-cryptography-zkn-and-zks)); needs Zbb and Zbc. Under the JIT on x86-64, AES-NI and PCLMULQDQ where the CPU has them (`EMU_HOST_CRYPTO=0` declines them). |
 | `EMU_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
 | `EMU_SDL` | `OFF` | Show the guest framebuffer in an SDL3 window, and feed the keyboard and mouse devices from it. Needs `sdl3` via pkg-config; off by default so a host without it still builds. |
 | `EMU_SDL_SCALE` | auto | Window scale, stepped down until the window fits a conventional screen -- 3x suits 320x200 and 1x suits the 1024x768 default. Set it to override either way. |
@@ -174,7 +175,8 @@ Guest images are built
 supported by the emulator but deliberately absent there — compressed
 guest code is *slower* to interpret, not faster. So are Zicond, Zihpm,
 Zalasr, Zawrs and the two hint extensions, which the core implements and
-no guest but the self-test uses: the march decides what the compiler
+no guest but the self-test uses -- the scalar crypto, Zkn and Zks, among
+them: the march decides what the compiler
 emits for *every* guest, and every published retired count with it. See
 [docs/frontend/rv32.md](docs/frontend/rv32.md).
 

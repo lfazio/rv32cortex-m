@@ -125,8 +125,9 @@ the firmware's own line sets it. `scripts/check-wfi-attach.sh [TREE]`
 builds it, runs it to its park, wants the cycle count, then reads
 DHCSR's S_SLEEP, CYCCNT twice four seconds apart and DBGMCU_CR through
 the probe, without a reset; with the firmware's line removed it fails,
-twice of two. The F446 and the N6 do not set the bit
-([TODO](../TODO.md)).
+twice of two. The N6 needs no bit: its counter runs through a WFI
+without one ([stm32n6/README.md](../stm32n6/README.md#wfi-keeps-its-clocks-here));
+the F446 has not been asked ([TODO](../TODO.md)).
 
 ## Cache maintenance
 

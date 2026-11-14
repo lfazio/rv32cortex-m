@@ -806,6 +806,8 @@ static bool op_is_pure(uint8_t op)
     case EMU_IR_CLZ:
     case EMU_IR_CTZ:
     case EMU_IR_POPCNT:
+    case EMU_IR_CLMUL:
+    case EMU_IR_AESSB:
     case EMU_IR_BEXT:
     case EMU_IR_BSET:
     case EMU_IR_BCLR:
@@ -1491,6 +1493,36 @@ void emu_ir_opt_totals(emu_ir_opt_stats_t *out)
     emu_lock(&g_opt_lock);
     *out = g_opt_totals;
     emu_unlock(&g_opt_lock);
+}
+
+static uint32_t g_unkept;
+static uint8_t g_unkept_op;
+static uint8_t g_unkept_aux;
+
+void emu_ir_note_refused(uint8_t op, uint8_t aux)
+{
+    if (op >= (uint8_t)EMU_IR_OP_COUNT ||
+        !emu_ir_can_lower((emu_ir_op_t)op, aux)) {
+        return; /* refused as promised */
+    }
+    emu_lock(&g_opt_lock);
+    if (g_unkept == 0u) {
+        g_unkept_op = op;
+        g_unkept_aux = aux;
+    }
+    g_unkept++;
+    emu_unlock(&g_opt_lock);
+}
+
+uint32_t emu_ir_unkept(uint8_t *op, uint8_t *aux)
+{
+    emu_lock(&g_opt_lock);
+    const uint32_t n = g_unkept;
+
+    *op = g_unkept_op;
+    *aux = g_unkept_aux;
+    emu_unlock(&g_opt_lock);
+    return n;
 }
 
 void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,

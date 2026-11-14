@@ -10,6 +10,7 @@
 
 #include "rv32/rv_disasm.h"
 #include "rv32/rv_decode.h"
+#include "rv32/rv_config.h"
 #include "rv32/rv_csr.h"
 
 #include <string.h>
@@ -295,6 +296,10 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
                                      : NULL;
                 one = (f7 == 0x14u && rs2 == 7u)    ? "orc.b"
                       : (f7 == 0x34u && rs2 == 24u) ? "rev8"
+#if RV_EXT_ZK
+                      : (f7 == 0x34u && rs2 == 7u)  ? "brev8"
+                      : (f7 == 0x04u && rs2 == 15u) ? "unzip"
+#endif
                                                     : NULL;
             } else {
                 mn = (f7 == 0x00u)   ? "slli"
@@ -303,6 +308,20 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
                      : (f7 == 0x34u) ? "binvi"
                                      : NULL;
                 one = (f7 == 0x30u && rs2 < 8u) ? unary[rs2] : NULL;
+#if RV_EXT_ZK
+                {
+                    static const char *const sha_sm3[10] = {
+                        "sha256sum0", "sha256sum1", "sha256sig0",
+                        "sha256sig1", NULL, NULL, NULL, NULL,
+                        "sm3p0", "sm3p1"};
+
+                    if (f7 == 0x04u && rs2 == 15u) {
+                        one = "zip";
+                    } else if (f7 == 0x08u && rs2 < 10u) {
+                        one = sha_sm3[rs2];
+                    }
+                }
+#endif
             }
             if (mn != NULL) {
                 emit_rri(&o, mn, insn, (int32_t)rs2);
@@ -396,6 +415,29 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
                              : NULL;
         } else if (f7 == 0x14u) {
             m = (f3 == 1u) ? "bset" : NULL;
+#if RV_EXT_ZK
+            m = (f3 == 2u) ? "xperm4" : (f3 == 4u) ? "xperm8" : m;
+        } else if (f7 == 0x04u && (f3 == 4u || f3 == 7u)) {
+            m = (f3 == 4u) ? "pack" : "packh"; /* zext.h below, rs2 0 */
+        } else if (f3 == 0u && f7 >= 0x28u && f7 <= 0x2Fu) {
+            static const char *const sha512[8] = {
+                "sha512sum0r", "sha512sum1r", "sha512sig0l", "sha512sig1l",
+                NULL,          NULL,          "sha512sig0h", "sha512sig1h"};
+
+            m = sha512[f7 - 0x28u];
+        } else if (f3 == 0u && ((f7 & 0x1Fu) == 0x11u || (f7 & 0x1Fu) == 0x13u ||
+                                (f7 & 0x1Fu) == 0x15u || (f7 & 0x1Fu) == 0x17u ||
+                                (f7 & 0x1Fu) == 0x18u || (f7 & 0x1Fu) == 0x1Au)) {
+            /* The byte-select forms: rd, rs1, rs2, bs. */
+            static const char *const bsel[10] = {
+                "aes32esi", NULL, "aes32esmi", NULL, "aes32dsi",
+                NULL,       "aes32dsmi", "sm4ed", NULL, "sm4ks"};
+
+            emit_rrr(&o, bsel[(f7 & 0x1Fu) - 0x11u], insn);
+            emit_str(&o, ", ");
+            emit_int(&o, (int32_t)(f7 >> 5));
+            break;
+#endif
         } else if (f7 == 0x24u) {
             m = (f3 == 1u) ? "bclr" : (f3 == 5u) ? "bext" : NULL;
         } else if (f7 == 0x34u) {

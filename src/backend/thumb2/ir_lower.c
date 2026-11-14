@@ -1266,6 +1266,22 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_BITOP_TST:
         return false;
 
+    /*
+     * And the rest of what lower_one refuses, which nothing named here
+     * until a frontend asked: CLMUL and AESSB, which an M7 has no
+     * instruction for, and SELECT and POPCNT. The default promised CLMUL
+     * to RV32's clmul, and GCC turns CoreMark's CRC loops into clmul: on
+     * the F746 910,195 instructions fell back to the interpreter where 1
+     * had, and CoreMark under the JIT was 32% slower, with every host
+     * suite green. A broken promise is counted now (emu_ir_note_refused)
+     * and printed as `unkept` in the run's report.
+     */
+    case EMU_IR_CLMUL:
+    case EMU_IR_AESSB:
+    case EMU_IR_SELECT:
+    case EMU_IR_POPCNT:
+        return false;
+
     default:
         return true;
     }
@@ -2431,6 +2447,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_BITOP_INV:
     case EMU_IR_BITOP_TST:
     case EMU_IR_POPCNT:
+    case EMU_IR_CLMUL: /* no carry-less multiply on an M7 */
+    case EMU_IR_AESSB: /* nor AES */
     case EMU_IR_BEXT:
     case EMU_IR_BSET:
     case EMU_IR_BCLR:
@@ -2643,6 +2661,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         uint8_t *const at = emu_jit_here();
 #endif
         if (!lower_one(&b->insn[i], t)) {
+            emu_ir_note_refused(b->insn[i].op, b->insn[i].aux);
             return false;
         }
 #if EMU_JIT_BYTE_STATS

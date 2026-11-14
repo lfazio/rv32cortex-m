@@ -62,7 +62,18 @@ static void set_nzc(armv7m_cpu_t *c, uint32_t v, uint32_t cy)
  * subtraction any other way is how a borrow ends up inverted on one of
  * the two paths.
  */
-static uint32_t add_c(armv7m_cpu_t *c, uint32_t a, uint32_t b, uint32_t ci,
+/*
+ * EMU_INTERP_HELPER on the six helpers only this interpreter calls --
+ * add_c, cond_holds, dp_op, ldm_stm, t32_mul, t32_mull: kept out of the
+ * loop by LTO, they lived in flash behind veneers, a quarter of
+ * interpreted CoreMark's samples on the F746. Not rd_u and wr_u, which
+ * the JIT's slow path reaches through armv7m_load_u. The six alone made
+ * the interpreter 4.5% faster and cost the JIT 1.4% -- as much as with
+ * rd_u and wr_u placed, so not through them, for a reason not found --
+ * and with the handlers below forced inline the JIT was 0.24% faster.
+ */
+static EMU_INTERP_HELPER uint32_t add_c(armv7m_cpu_t *c, uint32_t a,
+                                        uint32_t b, uint32_t ci,
                       bool setflags)
 {
     const uint64_t u = (uint64_t)a + (uint64_t)b + (uint64_t)ci;
@@ -111,7 +122,7 @@ static void it_advance(armv7m_cpu_t *c)
     }
 }
 
-static bool cond_holds(const armv7m_cpu_t *c, uint32_t cond)
+static EMU_INTERP_HELPER bool cond_holds(const armv7m_cpu_t *c, uint32_t cond)
 {
     const bool n = (c->xpsr & ARMV7M_N) != 0u;
     const bool z = (c->xpsr & ARMV7M_Z) != 0u;
@@ -398,7 +409,8 @@ static inline uint32_t reg_pc(const armv7m_cpu_t *c, uint32_t n, uint32_t pc)
  * architecture permits restarting the instruction, which only works if
  * the first attempt did not consume its own base.
  */
-static X ldm_stm(armv7m_cpu_t *c, uint32_t rn, uint32_t list, bool load,
+static EMU_INTERP_HELPER X ldm_stm(armv7m_cpu_t *c, uint32_t rn,
+                                   uint32_t list, bool load,
                  bool before, bool wback)
 {
     uint32_t count = 0u;
@@ -680,7 +692,9 @@ static X t16_dp(armv7m_cpu_t *c, uint16_t insn, bool setf)
 }
 
 /* Special data instructions and branch and exchange: 010001. */
-static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
+/* Inlined, forced: see the note on t32_dp_reg. */
+static EMU_ALWAYS_INLINE X t16_special(armv7m_cpu_t *c, uint16_t insn,
+                                       uint32_t pc)
 {
     const uint32_t op = (insn >> 6) & 15u;
     const uint32_t rm = (insn >> 3) & 15u;
@@ -1023,7 +1037,8 @@ static X exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
  * turns ORR into MOV and ORN into MVN. Both are handled here so neither
  * form can forget them.
  */
-static X dp_op(armv7m_cpu_t *c, uint32_t op, uint32_t rd, uint32_t rn,
+static EMU_INTERP_HELPER X dp_op(armv7m_cpu_t *c, uint32_t op, uint32_t rd,
+                                 uint32_t rn,
                uint32_t b, uint32_t cy, bool s)
 {
     const uint32_t a = c->r[rn];
@@ -1089,6 +1104,20 @@ static X dp_op(armv7m_cpu_t *c, uint32_t op, uint32_t rd, uint32_t rn,
 }
 
 /*
+ * The destination a data-processing encoding names, for the sp/pc test:
+ * none for TST, TEQ, CMN and CMP, whose d of pc means no destination.
+ * **Every 32-bit compare took the sp/pc path without this** -- the rule
+ * and dp_op, out of line in flash, for an encoding naming neither --
+ * and the rule allows exactly these when nothing else is sp or pc.
+ */
+static EMU_ALWAYS_INLINE uint32_t dp_named_d(uint32_t op, uint32_t rd, bool s)
+{
+    const bool test = ((0x2111u >> op) & 1u) != 0u; /* ops 0, 4, 8, 13 */
+
+    return (s && test && rd == ARMV7M_PC) ? 0u : rd;
+}
+
+/*
  * Data processing that names sp or pc: the rule, then the operation, then
  * sp's bits [1:0] (sp_write). Out of line, as the rule always was.
  */
@@ -1110,7 +1139,9 @@ static EMU_COLD_NOINLINE X dp_sp_pc(armv7m_cpu_t *c, uint32_t op, uint32_t rd,
 }
 
 /* Data processing (modified immediate): 11110 x0 xxxxx | 0 */
-static X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+/* Inlined, forced: see the note on t32_dp_reg. */
+static EMU_ALWAYS_INLINE X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0,
+                                      uint16_t w1)
 {
     const uint32_t imm12 = ((uint32_t)((w0 >> 10) & 1u) << 11) |
                            ((uint32_t)((w1 >> 12) & 7u) << 8) | (w1 & 0xFFu);
@@ -1121,7 +1152,7 @@ static X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
     uint32_t cy;
     const uint32_t b = armv7m_expand_imm_c(imm12, carry(c), &cy);
 
-    if (EMU_UNLIKELY(!armv7m_none_sp_pc(rd, rn, 0u))) {
+    if (EMU_UNLIKELY(!armv7m_none_sp_pc(dp_named_d(sel, rd, s), rn, 0u))) {
         return dp_sp_pc(c, sel, rd, rn, false, 0u, 0u, 0u, b, cy, s);
     }
     return dp_op(c, sel, rd, rn, b, cy, s);
@@ -1266,8 +1297,18 @@ static EMU_ALWAYS_INLINE X t32_dp_plain(armv7m_cpu_t *c, uint16_t w0,
     }
 }
 
-/* Data processing (shifted register): 1110101 */
-static X t32_dp_reg(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+/*
+ * Data processing (shifted register): 1110101
+ *
+ * **Inlined, forced, with t32_dp_imm and t16_special**, as t32_dp_plain
+ * is: with the compare test above, LTO moved all three out of the ITCM
+ * loop into flash (interpreted CoreMark +5.5% on the F746); forced back
+ * in, with the six helpers in ITCM beside them, it read 2.6-4.7% faster
+ * at four .text offsets and the JIT 0.24% faster. Check `nm` for what
+ * left the loop after any change here.
+ */
+static EMU_ALWAYS_INLINE X t32_dp_reg(armv7m_cpu_t *c, uint16_t w0,
+                                      uint16_t w1)
 {
     const uint32_t op = (w0 >> 5) & 15u;
     const uint32_t rn = w0 & 15u;
@@ -1309,7 +1350,7 @@ static X t32_dp_reg(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
         const bool s = ((w0 >> 4) & 1u) != 0u;
         const uint32_t b = armv7m_shift_c(c->r[rm], t, n, carry(c), &cy);
 
-        if (EMU_UNLIKELY(!armv7m_none_sp_pc(rd, rn, rm))) {
+        if (EMU_UNLIKELY(!armv7m_none_sp_pc(dp_named_d(op, rd, s), rn, rm))) {
             return dp_sp_pc(c, op, rd, rn, true, rm, t, n, b, cy, s);
         }
         return dp_op(c, op, rd, rn, b, cy, s);
@@ -1570,7 +1611,7 @@ static inline int32_t half(uint32_t v, bool top)
 }
 
 /* Multiply, multiply accumulate, absolute difference: 111110110 */
-static X t32_mul(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+static EMU_INTERP_HELPER X t32_mul(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
 {
     const uint32_t op1 = (w0 >> 4) & 7u;
     const uint32_t op2 = (w1 >> 4) & 3u;
@@ -1678,7 +1719,7 @@ static X t32_mul(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
 }
 
 /* Long multiply, long multiply accumulate, and divide: 111110111 */
-static X t32_mull(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+static EMU_INTERP_HELPER X t32_mull(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
 {
     const uint32_t op1 = (w0 >> 4) & 7u;
     const uint32_t op2 = (w1 >> 4) & 15u;

@@ -89,7 +89,10 @@ def run_sail(sail, elf, tmp):
     subprocess.run([sail, "--config",
                     os.path.join(ROOT, "tests/arch-test/rv32cortex-m-rv32/sail.json"),
                     "--disable-trap-loop-detection",
-                    "--trace-gpr", "--use-abi-names", "--inst-limit", "5000",
+                    "--trace-gpr", "--use-abi-names",
+                    # The emulator's --max-insn: 5000 cut kcrypto.S's loop
+                    # of 10,000 short, and its sums read as a disagreement.
+                    "--inst-limit", "100000",
                     "--trace-output", trace, elf],
                    capture_output=True, text=True, timeout=120)
     regs = {}

@@ -45,6 +45,17 @@ implemented_extensions:
   - { name: Zbb, version: "= 1.0.0" }
   - { name: Zbc, version: "= 1.0.0" }
   - { name: Zbs, version: "= 1.0.0" }
+  # Scalar cryptography, Zkn and Zks: rv_crypto.c, one executor for both
+  # backends. Zbkb's rotates and rev8 are Zbb's, Zbkc is Zbc's clmul and
+  # clmulh. No Zkr: there is no entropy source.
+  - { name: Zbkb, version: "= 1.0.0" }
+  - { name: Zbkc, version: "= 1.0.0" }
+  - { name: Zbkx, version: "= 1.0.0" }
+  - { name: Zknd, version: "= 1.0.0" }
+  - { name: Zkne, version: "= 1.0.0" }
+  - { name: Zknh, version: "= 1.0.0" }
+  - { name: Zksed, version: "= 1.0.0" }
+  - { name: Zksh, version: "= 1.0.0" }
   - { name: C, version: "= 2.0" }
   - { name: Zca, version: "= 1.0.0" }
   # C on RV32F is defined to include the compressed FP load/stores.

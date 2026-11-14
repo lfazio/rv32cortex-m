@@ -4678,6 +4678,52 @@ session, and every one of them recurred:
   and when a figure follows LTO's placement, say so rather than call it
   the change's cost.**
 
+- **A test for the rare case must not match a common one.** ARMv7-M's
+  interpreter sends any data-processing encoding that names sp or pc to
+  an out-of-line rule, and a 32-bit TST, TEQ, CMN or CMP encodes "no
+  destination" as pc -- so every compare took the slow path, two calls
+  out of the ITCM into flash, for as long as the rules had existed. It
+  showed only in a PC profile taken for something else. Keeping the
+  compares off it (and the hot handlers in the loop, and six helpers in
+  ITCM) made interpreted CoreMark 2.6-4.7% faster. **When a fast path is
+  guarded by a test on fields, ask which common encodings the test
+  matches by accident.**
+
+- **A reference's budget is part of its answer.** The probe holding RV32's
+  new S-boxes to Sail and Spike first read every register as differing,
+  the emulator's as zero and the two models' as disagreeing with each
+  other: run-probe.py stopped Sail after 5,000 instructions, of a loop of
+  10,000, and its default emulator was a stale build without the
+  instructions. With Sail's limit the emulator's (100,000) and the
+  current runner, all eight sums agreed on all three. **Before reading a
+  three-way difference as a finding, check each side ran to the end of
+  the same program.**
+
+- **The same bit on two parts is two questions.** DBGMCU_CR.DBG_SLEEP
+  decides on the F746 whether a WFI stops the cycle counter (43,558
+  cycles in 250 ms without it, 54M with); on the N6's Cortex-M55 the
+  counter ran 150M through the same WFI either way, the probe reached
+  the parked core, and the bit read back 0 after the firmware set it.
+  Setting it there would have been a line that does nothing. **Port a
+  measured fact, not the line that came of it.**
+
+- **A capability query's default is a promise to every operation added
+  after it.** RV32's `clmul` went to `EMU_IR_CLMUL` wherever
+  `emu_ir_can_lower` said yes, and Thumb-2's query ends in `default:
+  return true`: CLMUL and AESSB were not named, so it promised both and
+  its lowering refused them, losing every block that held one. GCC turns
+  CoreMark's CRC loops into `clmul`, so on the F746 910,195 instructions
+  fell back to the interpreter where 1 had, and CoreMark under the JIT
+  was 32% slower -- with the whole host matrix green, because x86-64
+  lowers both. The board A/B saw it as `same no (retired)` and the
+  `interp` line; the third time this default has lied. Thumb-2 names
+  all four operations its lowering refuses now, and a refusal of a
+  promised operation is counted (`emu_ir_note_refused`), printed as
+  `unkept` with the first operation's number, and marked by
+  `board-ab.sh` -- a mutant with CLMUL's case removed printed `unkept 55
+  ... (first op 38)`. **Make a broken promise loud on the host that
+  breaks it, since only that host can.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

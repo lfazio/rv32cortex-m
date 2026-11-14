@@ -475,8 +475,44 @@ const char *board_name(void)
     return "Cortex-M55";
 }
 
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+static volatile uint32_t g_wfi_cleared; /* DBGMCU_CR after the clear */
+
+/*
+ * The first park: a quarter of a second of WFI by SysTick's millisecond,
+ * timed by CYCCNT from inside, as the F746's is -- about 150M cycles and
+ * 250 wake-ups at 600 MHz, DBG_SLEEP or not (see board_hw_init).
+ */
+static void wfi_check(void)
+{
+    uint32_t wakes = 0u;
+    uint32_t t0 = HAL_GetTick();
+
+    while (HAL_GetTick() == t0) {
+    }
+    t0 = HAL_GetTick();
+    const uint32_t c0 = DWT->CYCCNT;
+    while (HAL_GetTick() - t0 < 250u) {
+        __WFI();
+        wakes++;
+    }
+    emu_console_printf("wfi-check cycles %u wakes %u dbgmcu %08x "
+                       "cleared %08x\n",
+                       (unsigned)(DWT->CYCCNT - c0), (unsigned)wakes,
+                       (unsigned)DBGMCU->CR, (unsigned)g_wfi_cleared);
+}
+#endif
+
 void board_wfi(void)
 {
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+    static bool checked;
+
+    if (!checked) {
+        checked = true;
+        wfi_check();
+    }
+#endif
     __WFI();
 }
 
@@ -625,6 +661,24 @@ void board_hw_init(void)
     cycles_init();
     led_init();
     console_init();
+
+    /*
+     * **No DBGMCU_CR.DBG_SLEEP here, unlike the F746**, because it was
+     * measured not to matter: on the F746 a WFI without it stops the
+     * cycle counter the time base reads and shuts the probe out, and on
+     * this Cortex-M55 neither happens. With the bit set or never written,
+     * a quarter of a second of WFI counted 150,000,030 and 150,000,001
+     * cycles, 250 SysTick wake-ups each (-DEMU_WFI_CHECK=ON,
+     * scripts/check-wfi-attach.sh), and probe-rs read DHCSR with S_SLEEP
+     * set from the parked core. And the register read back 0 after the
+     * firmware had enabled the debug clock (__HAL_RCC_DBG_CLK_ENABLE) and
+     * set the bit, so a line setting it would say what it does not do.
+     */
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+    DBGMCU->CR = 0u; /* as a power-on reset leaves it, the F746's check */
+    __DSB();
+    g_wfi_cleared = DBGMCU->CR;
+#endif
 
     /*
      * What ITCM came up as, now that there is a console to say it on.

@@ -120,14 +120,13 @@ measured at.
       -- but whatever retention does wrong with more chained blocks may
       be costing the stop's figures too
       ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
-- [ ] **DBGMCU_CR.DBG_SLEEP on the F446 and the N6.** Every F746
-      firmware sets it now, so the probe reaches one parked in WFI, and
-      CYCCNT runs through the sleep at the core's clock
-      (`scripts/check-wfi-attach.sh`). Neither other part has been
-      asked: the F446 is not attached, and the N6's DBGMCU is not the
-      F7's. And with the counter running in Sleep, the park loop could
-      sleep with lwIP up on the F746 too (`board_idle`), untried over
-      SLIP.
+- [ ] **DBGMCU_CR.DBG_SLEEP on the F446.** Every F746 firmware sets
+      it, and the N6 needs none -- its counter runs through a WFI and the
+      probe reaches it without (`scripts/check-wfi-attach.sh TREE
+      stm32n6`, [stm32n6/README.md](stm32n6/README.md)). The F446 is not
+      attached. And with the counter running in Sleep, the park loop
+      could sleep with lwIP up on the F746 too (`board_idle`), untried
+      over SLIP.
 - [ ] **Why a profiled PowerPC run is a different run.** The PC
       profile's 32 KB come out of the guest's RAM (118 KiB against 150),
       and PowerPC CoreMark under the JIT went from 37.66 to 65.32 host
@@ -146,29 +145,20 @@ measured at.
       grows each time it is undone, or that forgets only marks older
       than the last, is the next thing to try -- measured on the board,
       where a translation costs tens of thousands of cycles.
-- [ ] **ARMv7-M's sp/pc and IT rules cost its interpreter 7.1% on the
-      F746** (143.44 to 153.69 host cycles an instruction on CoreMark,
-      154.52 on 2026-11-07, 155.43 with sp's bits [1:0] masked;
-      [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
-      about 2% in the predicates by a PC profile and the rest code shape.
-      The JIT, the default, pays nothing. Eight variants were measured,
-      the last two on 2026-11-07: the flash-resident helpers moved into
-      ITCM (154.88) and the EXC_RETURN test reordered (noise); seven more
-      of the sp mask on 2026-11-08 read -4.7% to +5.5% with callgrind
-      1.1% lower for each, the -4.7% with the helpers in ITCM costing
-      the JIT 1.5%. Two leads from those: **every 32-bit TST, TEQ, CMN
-      and CMP takes the sp/pc path** (its d of pc), two calls into flash
-      each, and keeping them off it in the handlers pushed the handlers
-      out of the loop; and a quarter of the samples are in helpers LTO
-      places anew at each change -- the figure is that placement's
-      until something pins it without costing the JIT. A decode
-      cache is the one lever not tried since the rules exist, and the
-      reason it might win now where it lost by 3% before
-      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost))
-      is that a hit would skip the sp/pc predicates as well as the
-      decode; it has to keep the interpreter's decode as the one
-      checked against the M7, and be invalidated by the stores the JIT's
-      `smc_bits` already watch.
+- [ ] **ARMv7-M's interpreter is about 3.5% above 375f9bf's 143.44 on
+      the F746** (148.5 host cycles an instruction on CoreMark; the
+      sp/pc and IT rules made it 7.1%, and the helpers placed in ITCM
+      with the compares off the sp/pc path took back half,
+      [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
+      Open: `rd_u` and `wr_u`, still in flash because the JIT's slow
+      path shares them; why the six helpers alone cost the JIT 1.4%,
+      which the forced inlines then removed; and a decode cache, the one
+      lever not tried since the rules exist -- a hit would skip the
+      sp/pc predicates as well as the decode
+      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost));
+      it has to keep the interpreter's decode as the one checked against
+      the M7, and be invalidated by the stores the JIT's `smc_bits`
+      already watch.
 - [ ] **PowerPC's FP unit is a call per instruction**, from ITCM and,
       for the four operations that are most of an FP program, a helper
       each with nothing to unpack (-8.8% host instructions, -2.5% to
@@ -232,7 +222,11 @@ From the last measurements in [linux.md](linux.md).
 ## RV32
 
 - [ ] Implement V extensions
-- [ ] Implement Crypto extensions: Zbk[bcx], Zknd, Zkne, Zknh, Zksed, Zkr, Zkn, Zks, Zk, Zkt
+- [ ] **Zkr, the entropy source**, and so Zk: Zkn, Zks and Zkt are done
+      ([frontend/rv32.md](frontend/rv32.md#scalar-cryptography-zkn-and-zks)).
+      `seed` needs a source: the host's getrandom, the board's RNG
+      peripheral -- which the guest owns -- or a declared-weak PRNG.
+      Also open there: SM4 under the JIT on a host with GFNI.
 
 ## RV64
 
@@ -262,6 +256,30 @@ From the last measurements in [linux.md](linux.md).
 - [ ] **ARMv8-M in the armvX-m frontend**, with the N657's own map as
       ARMv7-M has the F746's (`emu_cpu_ops_t::guest_map`,
       [memory.md](memory.md#armv7-m)): its TCMs, its flash, its SRAM.
+
+## 680x0
+
+- [ ] **The 680x0 frontend**, which is the only one that has not been
+      started. The first step is to read the manuals and write a
+      description of what the guest sees, and what the host must do to
+      make it happen. The second step is to implement the interpreter,
+      which is the only part that can be tested without a board. The
+      third step is to implement the JIT, which is the only part that
+      can be tested with a board. The fourth step is to implement the
+      MMU, which is the only part that can be tested with a board. The
+      fifth step is to implement the peripherals, which are the only
+      parts that can be tested with a board.
+- [ ] Emulate an amiga3000 machine, with its 68030 CPU, MMU and peripherals. The amiga3000 is
+      the only machine that has been tested with a board. The first step
+      is to read the manuals and write a description of what the guest
+      sees, and what the host must do to make it happen. The second step
+      is to implement the interpreter, which is the only part that can
+      be tested without a board. The third step is to implement the JIT,
+      which is the only part that can be tested with a board. The fourth
+      step is to implement the MMU, which is the only part that can be
+      tested with a board. The fifth step is to implement the
+      peripherals, which are the only parts that can be tested with a
+      board.
 
 ## RH850 / G4MH
 

@@ -463,8 +463,8 @@ bool board_parks_after_run(void)
  * clocks run in Sleep and CYCCNT counted 53,999,852 cycles in a quarter
  * of a second of WFI; without it, 43,558 across the same 250 SysTick
  * wake-ups -- only the time awake, as lwIP's 6% was. Sleeping with the
- * link up is untried over SLIP on that part, and the F446 and N6 do not
- * set the bit.
+ * link up is untried over SLIP on that part; the N6 needs no bit, and
+ * the F446 has not been asked.
  */
 void board_idle(void)
 {

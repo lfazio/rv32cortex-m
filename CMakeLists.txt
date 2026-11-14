@@ -563,6 +563,9 @@ option(RV32_EXT_ZCB "Zcb compressed instructions" ON)
 option(RV32_EXT_ZBA "Zba address generation" ON)
 option(RV32_EXT_ZBB "Zbb basic bit manipulation" ON)
 option(RV32_EXT_ZBC "Zbc carry-less multiply" ON)
+# Scalar cryptography: Zbkb, Zbkc, Zbkx, Zknd, Zkne, Zknh, Zksed, Zksh --
+# Zkn and Zks. Needs Zbb and Zbc (rv_config.h).
+option(RV32_EXT_ZK "Zkn and Zks scalar cryptography" ON)
 option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 # Double precision. FLEN becomes 64 and single values are NaN-boxed, so
@@ -748,6 +751,7 @@ add_library(emucore STATIC
     src/backend/thumb2/ir_lower.c
     src/emu/emu_ir_jit.c
     src/emu/emu_cpu.c
+    src/emu/emu_crypto.c
     src/emu/emu_elf.c
     src/emu/emu_uart.c
     src/emu/emu_finisher.c
@@ -878,6 +882,7 @@ if(EMU_GUEST_ARCH_RV32)
         src/frontend/rv32/rv32_frontend.c
         src/frontend/rv32/rv_aplic.c
         src/frontend/rv32/rv_clint.c
+        src/frontend/rv32/rv_crypto.c
         src/frontend/rv32/rv_csr.c
         src/frontend/rv32/rv_decode.c
         src/frontend/rv32/rv_disasm.c
@@ -917,6 +922,7 @@ if(EMU_GUEST_ARCH_RV32)
         RV_EXT_ZBA=$<BOOL:${RV32_EXT_ZBA}>
         RV_EXT_ZBB=$<BOOL:${RV32_EXT_ZBB}>
         RV_EXT_ZBC=$<BOOL:${RV32_EXT_ZBC}>
+        RV_EXT_ZK=$<BOOL:${RV32_EXT_ZK}>
         RV_EXT_ZBS=$<BOOL:${RV32_EXT_ZBS}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
         RV_MISALIGNED_OK=$<BOOL:${RV32_MISALIGNED}>
@@ -1380,6 +1386,9 @@ if(EMU_GUEST_ARCH_RV32)
     endif()
     if(RV32_EXT_ZBC)
         string(APPEND _isa "_zbc")
+    endif()
+    if(RV32_EXT_ZK)
+        string(APPEND _isa "_zbkb_zbkc_zbkx_zknd_zkne_zknh_zksed_zksh")
     endif()
     # Zkt is a promise about timing with no option; rv_config.h makes it.
     string(APPEND _isa "_zkt")

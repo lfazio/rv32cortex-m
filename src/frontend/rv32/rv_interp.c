@@ -73,6 +73,7 @@ static EMU_ALWAYS_INLINE uint32_t mulh_uu(uint32_t a, uint32_t b)
 /* clz, ctz, the rotates, orc.b and the carry-less multiplies: shared
  * with the translator's helper, so they live in a header. */
 #include "rv32/rv_bitmanip.h"
+#include "rv32/rv_crypto.h"
 
 /* ------------------------------------------------------------------ */
 /* Control-transfer target validation                                  */
@@ -666,6 +667,16 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                     break;
                 }
 #endif
+#if RV_EXT_ZK
+                { /* zip, sha256*, sm3p*: rs2 part of the encoding */
+                    uint32_t v;
+
+                    if (rv_crypto_exec(insn, a, 0u, &v)) {
+                        wr(h, rd, v);
+                        break;
+                    }
+                }
+#endif
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
@@ -699,6 +710,16 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 if (f7i == 0x24u) {
                     wr(h, rd, (a >> rv_rs2(insn)) & 1u); /* bexti */
                     break;
+                }
+#endif
+#if RV_EXT_ZK
+                { /* brev8, unzip */
+                    uint32_t v;
+
+                    if (rv_crypto_exec(insn, a, 0u, &v)) {
+                        wr(h, rd, v);
+                        break;
+                    }
                 }
 #endif
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);
@@ -882,6 +903,16 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             }
 #endif
             else {
+#if RV_EXT_ZK
+                /* The scalar crypto, after everything else: what reaches
+                 * here was illegal before it, so nothing pays for it. */
+                uint32_t v;
+
+                if (rv_crypto_exec(insn, a, b, &v)) {
+                    wr(h, rd, v);
+                    break;
+                }
+#endif
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
             break;

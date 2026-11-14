@@ -180,7 +180,9 @@ Each has cost more than one session, and every one recurred.
 - **"Nothing failed" also passes when nothing ran.** Assert something only
   a completed run produces (`PPC-ISATEST-END`); a capped run is a verdict
   of its own (riscv-tests reported 77/77 while 64 of them looped in their
-  own handler).
+  own handler) -- and so is a capped reference: run-probe.py stopped Sail
+  at 5,000 instructions of a 10,000 loop, and the sums read as a
+  three-way disagreement.
 - **A harness narrower than the value passes against the bug.**
   `CHECK_EQ` casts to `uint32_t`; doubles compared their low halves.
   `CHECK_EQ64` exists.
@@ -481,8 +483,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   Linux).
 - **Every `default:` that declines is a list a new operation falls off**,
   and both defaults of `emu_ir_can_lower` have lied (Thumb-2 promising
-  what it refused; x86-64 declining what it lowers). Make each effect
-  countable (`emu_ir_opt_totals`).
+  what it refused, three times -- the last CLMUL, RV32 CoreMark 32%
+  slower on the F746 with every host suite green; x86-64 declining what
+  it lowers). Make each effect countable (`emu_ir_opt_totals`; a broken
+  promise prints as `unkept`, and `board-ab.sh` marks it).
 - **A list of exceptions fails open**: the dead-value pass removed a
   load nothing read -- an APLIC claim. It is a list of pure operations
   now.
@@ -667,6 +671,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   ARMv7-M run loop took any 0xFxxxxxxx pc in Handler mode as
   EXC_RETURN; MOV pc, ADD pc and BLX branch, and the F746 faults them
   (`sys.c` `excret-*`, `pc_not_exc_return`).
+- **A test for the rare case must not match a common one**: a 32-bit
+  CMP encodes "no destination" as pc, so every compare took ARMv7-M's
+  sp/pc slow path into flash; off it, the interpreter is 2.6-4.7%
+  faster (`dp_named_d`).
 - **A property of a register holds at every writer of it**: the M7's sp
   drops bits [1:0] whatever writes it -- MOV, ADD, ADDW, SUB, `ldr sp`,
   a writeback through sp -- and only MSR's path masked them
@@ -733,6 +741,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   HardFault loop once code moved. A difference every run shows is a
   defect until explained; ask the core (gdb through probe-rs), not a
   polled console stuck behind the fault.
+- **The same bit on two parts is two questions**: the N6's counter runs
+  through a WFI without DBG_SLEEP, where the F746's stops; it sets
+  nothing (`check-wfi-attach.sh TREE stm32n6`).
 - **A register only a power-on reset clears is set by whoever wrote it
   last -- the probe included.** Without DBGMCU_CR.DBG_SLEEP a WFI on the
   F746 stops CYCCNT (43,558 cycles in 250 ms) and shuts the probe out;
@@ -799,7 +810,8 @@ sixteen defects the first time anything fuzzed them.
   490 bytes written by a 19-byte one. Compute an end in 64 bits
   (`emu_bus_add` took a region past 4 GB for one ending below its base).
 - **A buffer sized for the configuration a test had** is too small for
-  the one that ships: `qSupported` fitted test_gdb's (no description)
+  the one that ships (the console's 192 bytes cut the banner once the
+  ISA string grew by the crypto extensions): `qSupported` fitted test_gdb's (no description)
   and gdb-check's (no flash), and every board, which has both, wrote 12
   bytes past it.
 - **Two clients of one resource need an owner**: TFTP and gdb shared

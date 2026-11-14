@@ -93,7 +93,13 @@ fallback — Thumb-2 once declined `HELPER_TRAP` itself, so every "no"
 cost the whole block. And **its default is an answer**: x86-64's says
 no, and for a while did not name operations it lowers, so a frontend
 sent them to the helper with every test passing; Thumb-2's says yes, and
-for a while promised operations it refuses, which costs the block.
+has promised operations it refuses three times, which costs the block --
+the last time CLMUL, and RV32 CoreMark under the JIT was 32% slower on
+the F746 with every host suite green. So a backend reports each
+refusal (`emu_ir_note_refused`), and one the query had promised is
+counted: the run's `-- ir --` report prints it as `unkept`, with the
+first operation's number in `emu_ir_op_t`, and `board-ab.sh` marks
+that side of a row `UNKEPT`.
 
 ## Identity, validity and permission
 

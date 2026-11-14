@@ -36,6 +36,7 @@
  * an emu one, but not owned by any single host.
  */
 
+#include "emu/emu_crypto.h"
 #include "emu/emu_ir.h"
 
 #include <string.h>
@@ -608,6 +609,17 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
             break;
         case EMU_IR_POPCNT:
             r = (uint32_t)__builtin_popcount(a);
+            break;
+        case EMU_IR_CLMUL: {
+            const uint64_t p = emu_clmul64(a, bv);
+
+            r = (in->aux == 0u)   ? (uint32_t)p
+                : (in->aux == 1u) ? (uint32_t)(p >> 32)
+                                  : (uint32_t)(p >> 31);
+            break;
+        }
+        case EMU_IR_AESSB:
+            r = emu_aes_sbox(a, in->aux != 0u);
             break;
 
         case EMU_IR_BEXT:

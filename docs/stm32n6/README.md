@@ -112,6 +112,22 @@ So the N6 keeps lwIP, PPP, TFTP and telnet unchanged. NetX Duo
 would only be worth reaching for if ST's stack were wanted on its
 own merits, which is a different question from this port.
 
+## WFI keeps its clocks here
+
+**The N6 sets no DBGMCU_CR.DBG_SLEEP, unlike the F746, because it was
+measured not to matter.** On the F746 a WFI without it stops the cycle
+counter the time base reads and shuts the probe out. On this Cortex-M55
+neither happens: with `-DEMU_WFI_CHECK=ON` the firmware times a quarter
+of a second of WFI by SysTick's millisecond from inside, and read
+150,000,030 cycles with the bit set and 150,000,001 with it never
+written, 250 wake-ups each; probe-rs then read DHCSR with S_SLEEP set
+from the parked core. The register read back 0 after the firmware had
+enabled its debug clock (`__HAL_RCC_DBG_CLK_ENABLE`) and set the bit,
+so a line setting it would have said what it does not do.
+`scripts/check-wfi-attach.sh TREE stm32n6` asks the same of a tree.
+(probe-rs read CYCCNT twice, seconds apart, as one value: the probe's
+view of the counter is not the firmware's, and was not used.)
+
 ## The plan, as written before the port
 
 What the platform is, concretely -- the F746's nine files, and

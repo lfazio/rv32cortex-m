@@ -414,6 +414,18 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
                 (unsigned)o.addr_folded, (unsigned)o.identities,
                 (unsigned)o.macs);
         }
+
+        uint8_t op = 0u;
+        uint8_t aux = 0u;
+        const uint32_t unkept = emu_ir_unkept(&op, &aux);
+
+        if (unkept != 0u) {
+            /* The op's number in emu_ir_op_t: the names are a stats
+             * build's (emu_ir_bytes.c), and the N6 has no room for them. */
+            emu_console_printf("  unkept   %u refused after emu_ir_can_lower "
+                               "promised them (first op %u aux %u)\n",
+                               (unsigned)unkept, (unsigned)op, (unsigned)aux);
+        }
     }
 
 #if EMU_JIT_BYTE_STATS

@@ -303,6 +303,12 @@ see a defect in a pass -- the zero-register forwarding passed it
 ([lessons.md](lessons.md)). Here the reference runs the block before any
 pass touched it.
 
+`EMU_IR_AESSB` and `EMU_IR_CLMUL`, which x86-64 lowers with AES-NI and
+PCLMULQDQ where the CPU has them, are built in the slot `POPCNT` had:
+declined by both hosts, it built nothing, and taking it over leaves every
+saved input that does not land there decoding as it did. A `clmulr`
+shifted by 32 was found at input #243.
+
 The machine is made up, and small on purpose: sixteen registers, a flag
 word in one of three layouts (low bits, ARM's N Z C V at the top, none),
 eight FP registers held 64 bits wide so the NaN box means something, a

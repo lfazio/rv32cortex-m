@@ -34,6 +34,8 @@
 #include "emu/emu_ir_bytes.h"
 #include "emu/emu_x86_64.h"
 
+#include <stdlib.h> /* getenv: EMU_HOST_CRYPTO */
+
 #if defined(EMU_HOST_JIT_X86_64)
 
 /*
@@ -1014,6 +1016,35 @@ static void emit_mem_call(const void *fn, uint32_t spec)
  * x86-64 without AVX-512 has no unsigned form at all and the workaround
  * is a range test and a bias.
  */
+/*
+ * The crypto instructions this CPU has, asked once per thread: AES-NI for
+ * EMU_IR_AESSB and PCLMULQDQ for EMU_IR_CLMUL. Not a build option, as FMA3
+ * is (see EMU_IR_FMA below), because a host runner built here may run on
+ * another machine and these are worth asking for at run time: they are
+ * what makes RISC-V's aes32 one AESENCLAST instead of a 256-entry masked
+ * scan. EMU_HOST_CRYPTO=0 in the environment answers no, so the helper
+ * the frontend falls back to is testable on a CPU that has both.
+ */
+#define HOST_AES 1u
+#define HOST_PCLMUL 2u
+
+static unsigned host_crypto(void)
+{
+    static EMU_PER_CORE int known = -1;
+
+    if (known < 0) {
+        const char *const env = getenv("EMU_HOST_CRYPTO");
+        unsigned m = 0u;
+
+        if (env == NULL || env[0] != '0') {
+            m |= __builtin_cpu_supports("aes") ? HOST_AES : 0u;
+            m |= __builtin_cpu_supports("pclmul") ? HOST_PCLMUL : 0u;
+        }
+        known = (int)m;
+    }
+    return (unsigned)known;
+}
+
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
     switch (op) {
@@ -1044,6 +1075,11 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_REMS:
     case EMU_IR_REMU:
         return true;
+
+    case EMU_IR_CLMUL:
+        return aux <= 2u && (host_crypto() & HOST_PCLMUL) != 0u;
+    case EMU_IR_AESSB:
+        return aux <= 1u && (host_crypto() & HOST_AES) != 0u;
 
     case EMU_IR_FGET:
     case EMU_IR_FPUT:
@@ -2143,6 +2179,53 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+    /*
+     * The AES S-box: the byte in all sixteen lanes, then AESENCLAST (or
+     * AESDECLAST) with a zero round key. A state that is one byte
+     * everywhere is its own ShiftRows, so every lane comes out as the
+     * S-box of that byte, and lane 0 is read back. Constant time, as AES-NI
+     * is -- which is what RISC-V's Zkt asks of aes32.
+     */
+    case EMU_IR_AESSB:
+        if (!emu_ir_can_lower(EMU_IR_AESSB, in->aux)) {
+            return false;
+        }
+        ld_operand(T0, in->a);
+        x86_alu_imm32(4u, T0, 0xFFu); /* and eax, 0xff */
+        x86_imul_imm32(T0, 0x01010101u); /* the byte in all four */
+        x86_movd_to_xmm(X86_XMM0, T0);
+        x86_pshufd(X86_XMM0, X86_XMM0, 0x00u); /* ...and all sixteen */
+        x86_pxor(X86_XMM1, X86_XMM1); /* the round key */
+        x86_sse_0f38((in->aux != 0u) ? X86_AESDECLAST : X86_AESENCLAST,
+                     X86_XMM0, X86_XMM1);
+        x86_movd_from_xmm(T0, X86_XMM0);
+        x86_alu_imm32(4u, T0, 0xFFu);
+        st_slot(T0, in->dst);
+        break;
+
+    /* The 64-bit carry-less product, and the 32 bits aux names. */
+    case EMU_IR_CLMUL:
+        if (!emu_ir_can_lower(EMU_IR_CLMUL, in->aux)) {
+            return false;
+        }
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        x86_movd_to_xmm(X86_XMM0, T0);
+        x86_movd_to_xmm(X86_XMM1, T1);
+        x86_pclmulqdq(X86_XMM0, X86_XMM1, 0x00u);
+        x86_movq_from_xmm(T0, X86_XMM0);
+        if (in->aux != 0u) {
+            x86_shr64_imm(T0, (in->aux == 1u) ? 32u : 31u);
+        }
+        /*
+         * mov eax, eax: the upper half to zero. st_slot may leave the
+         * value in rax for the next instruction, and a temp's register
+         * is read whole wherever an address is formed from it.
+         */
+        x86_mov_rr(T0, T0);
+        st_slot(T0, in->dst);
+        break;
+
     case EMU_IR_FMIN:
     case EMU_IR_FMAX:
     case EMU_IR_FCLASS:
@@ -2350,6 +2433,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         uint8_t *const at = emu_jit_here();
 #endif
         if (!lower_one(&b->insn[i], t)) {
+            emu_ir_note_refused(b->insn[i].op, b->insn[i].aux);
             return false;
         }
 #if EMU_JIT_BYTE_STATS

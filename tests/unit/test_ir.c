@@ -729,6 +729,7 @@ static void test_only_pure_ops_are_removable(void)
         EMU_IR_SHLI,    EMU_IR_SHRI,    EMU_IR_SARI,    EMU_IR_ROTLI,
         EMU_IR_NEG,     EMU_IR_NOT,     EMU_IR_BSWAP32, EMU_IR_BSWAP16,
         EMU_IR_HSWAP,   EMU_IR_CLZ,     EMU_IR_CTZ,     EMU_IR_POPCNT,
+        EMU_IR_CLMUL,   EMU_IR_AESSB,
         EMU_IR_BEXT,    EMU_IR_BSET,    EMU_IR_BCLR,    EMU_IR_BINV,
         EMU_IR_SEXT8,   EMU_IR_SEXT16,  EMU_IR_ZEXT8,   EMU_IR_ZEXT16,
         EMU_IR_GETCOND, EMU_IR_SETCC,   EMU_IR_SELECT,  EMU_IR_FGET,
@@ -1082,6 +1083,175 @@ static void test_lower_add(void)
         return;
     }
     CHECK_EQ(cpu.r[3], 42u);
+}
+
+/*
+ * EMU_IR_AESSB and EMU_IR_CLMUL, compiled -- on x86-64, AES-NI and
+ * PCLMULQDQ where the CPU has them -- against references written here:
+ * the S-box from its definition (the inverse in GF(2^8), then the affine
+ * map), not from the table emu_crypto.c holds, and the carry-less product
+ * one bit at a time. Every byte and both directions for the S-box; the
+ * multiply at its edges -- all-ones, a carry out of bit 31, the identity,
+ * zero -- and a spread of others. Where the host declines (a CPU without
+ * them, a Thumb-2 build), the test says so and asks nothing.
+ */
+static uint32_t ref_gmul(uint32_t a, uint32_t b)
+{
+    uint32_t p = 0u;
+
+    for (int i = 0; i < 8; i++) {
+        if (b & 1u) {
+            p ^= a;
+        }
+        a = (a << 1) ^ ((a & 0x80u) ? 0x11Bu : 0u);
+        b >>= 1;
+    }
+    return p & 0xFFu;
+}
+
+static uint32_t ref_sbox(uint32_t x)
+{
+    uint32_t inv = 0u;
+
+    for (uint32_t y = 1u; y < 256u && x != 0u; y++) {
+        if (ref_gmul(x, y) == 1u) {
+            inv = y;
+            break;
+        }
+    }
+    uint32_t r = 0x63u;
+
+    for (int i = 0; i < 5; i++) {
+        r ^= ((inv << i) | (inv >> (8 - i))) & 0xFFu;
+    }
+    return r;
+}
+
+static uint64_t ref_clmul(uint32_t a, uint32_t b)
+{
+    uint64_t r = 0u;
+
+    for (int i = 0; i < 32; i++) {
+        if ((b >> i) & 1u) {
+            r ^= (uint64_t)a << i;
+        }
+    }
+    return r;
+}
+
+/* One op on r1 (and r2), into r3; false if the host declines it. */
+static bool run_crypto_op(emu_ir_op_t op, uint8_t aux, uint32_t a,
+                          uint32_t b, uint32_t *out)
+{
+    fake_cpu_t cpu;
+
+    if (!emu_ir_can_lower(op, aux)) {
+        return false;
+    }
+    emu_ir_reset(&g_b);
+    const uint16_t x = emu_ir_get(&g_b, 1u);
+    const uint16_t y = emu_ir_get(&g_b, 2u);
+    emu_ir_put(&g_b, 3u, emu_ir_emit(&g_b, op, aux, x, y, 0u, 0u));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = a;
+    cpu.r[2] = b;
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return false;
+    }
+    *out = cpu.r[3];
+    return true;
+}
+
+/*
+ * A refusal of what emu_ir_can_lower promised is counted, and a refusal
+ * it warned of is not. Called directly: this host's default is "no", so
+ * nothing it promises is refused at emission -- the case that happened
+ * was Thumb-2's, CLMUL, and the board run of a mutant asks that one.
+ */
+static void test_unkept_counted(void)
+{
+    uint8_t op = 0u;
+    uint8_t aux = 0u;
+    const uint32_t before = emu_ir_unkept(&op, &aux);
+
+    CHECK(emu_ir_can_lower(EMU_IR_ADDI, 0u));
+    emu_ir_note_refused((uint8_t)EMU_IR_ADDI, 0u);
+    CHECK_EQ(emu_ir_unkept(&op, &aux), before + 1u);
+    if (before == 0u) {
+        CHECK_EQ((uint32_t)op, (uint32_t)EMU_IR_ADDI);
+    }
+
+    /* Every operation this host declines: refused as warned. */
+    unsigned declined = 0u;
+    for (uint32_t o = 0u; o < (uint32_t)EMU_IR_OP_COUNT; o++) {
+        if (!emu_ir_can_lower((emu_ir_op_t)o, 0u)) {
+            emu_ir_note_refused((uint8_t)o, 0u);
+            declined++;
+        }
+    }
+    CHECK(declined > 0u);
+    CHECK_EQ(emu_ir_unkept(&op, &aux), before + 1u);
+}
+
+static void test_lower_crypto_ops(void)
+{
+    uint32_t sbox[256];
+    uint32_t got;
+    unsigned asked = 0u;
+
+    for (uint32_t x = 0u; x < 256u; x++) {
+        sbox[x] = ref_sbox(x);
+    }
+    for (uint32_t x = 0u; x < 256u; x++) {
+        /* Upper bits set, which the operation ignores. */
+        if (run_crypto_op(EMU_IR_AESSB, 0u, 0xABCDEF00u | x, 0u, &got)) {
+            CHECK_EQ(got, sbox[x]);
+            asked++;
+        }
+        if (run_crypto_op(EMU_IR_AESSB, 1u, x, 0u, &got)) {
+            CHECK_EQ(sbox[got & 0xFFu], x); /* the inverse */
+            CHECK_EQ(got >> 8, 0u);
+        }
+    }
+    {
+        static const uint32_t k[][2] = {
+            {0xFFFFFFFFu, 0xFFFFFFFFu}, {0x80000000u, 0x00000002u},
+            {0x00000003u, 0x00000003u}, {0x12345678u, 0x00000000u},
+            {0x12345678u, 0x00000001u}, {0x00000001u, 0x12345678u},
+            {0x80000000u, 0x80000000u}, {0xDEADBEEFu, 0xCAFEF00Du},
+        };
+        uint32_t lcg = 1u;
+
+        for (unsigned i = 0u; i < 8u + 64u; i++) {
+            uint32_t a, b;
+
+            if (i < 8u) {
+                a = k[i][0];
+                b = k[i][1];
+            } else {
+                lcg = lcg * 1664525u + 1013904223u;
+                a = lcg;
+                lcg = lcg * 1664525u + 1013904223u;
+                b = lcg;
+            }
+            const uint64_t p = ref_clmul(a, b);
+
+            for (uint8_t aux = 0u; aux < 3u; aux++) {
+                const uint32_t want = (aux == 0u)   ? (uint32_t)p
+                                      : (aux == 1u) ? (uint32_t)(p >> 32)
+                                                    : (uint32_t)(p >> 31);
+
+                if (run_crypto_op(EMU_IR_CLMUL, aux, a, b, &got)) {
+                    CHECK_EQ(got, want);
+                    asked++;
+                }
+            }
+        }
+    }
+    if (asked == 0u) {
+        printf("    crypto ops: the host lowers neither, nothing asked\n");
+    }
 }
 
 /*
@@ -2808,6 +2978,8 @@ void test_ir(void)
     test_fp_box_reference();
 #if defined(EMU_HOST_JIT_X86_64)
     test_lower_add();
+    test_unkept_counted();
+    test_lower_crypto_ops();
     test_lower_zero_register();
     test_lower_more_exits_than_the_table();
     test_zero_register_write_then_read();

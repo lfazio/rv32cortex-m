@@ -365,6 +365,73 @@ void x86_movd_from_xmm(int gpr, int xmm)
     sse_rr(0x66u, 0x7Eu, (unsigned)xmm, (unsigned)gpr);
 }
 
+/*
+ * The cryptographic group: AES-NI and PCLMULQDQ, with what they need
+ * around them. 66 0F 38 xx and 66 0F 3A xx ib -- the prefix, then REX,
+ * then the escape bytes, the order SSE requires.
+ */
+void x86_sse_0f38(uint8_t op, int dst, int src)
+{
+    emu_jit_emit8(0x66);
+    emit_rex(0u, (unsigned)dst, (unsigned)src);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0x38);
+    emu_jit_emit8(op);
+    modrm_rr(dst, src);
+}
+
+void x86_pclmulqdq(int dst, int src, uint8_t imm)
+{
+    emu_jit_emit8(0x66);
+    emit_rex(0u, (unsigned)dst, (unsigned)src);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0x3A);
+    emu_jit_emit8(0x44);
+    modrm_rr(dst, src);
+    emu_jit_emit8(imm);
+}
+
+/* pshufd xmm, xmm, imm8: 66 0F 70 /r ib. */
+void x86_pshufd(int dst, int src, uint8_t imm)
+{
+    sse_rr(0x66u, 0x70u, (unsigned)dst, (unsigned)src);
+    emu_jit_emit8(imm);
+}
+
+/* pxor xmm, xmm: 66 0F EF /r. */
+void x86_pxor(int dst, int src)
+{
+    sse_rr(0x66u, 0xEFu, (unsigned)dst, (unsigned)src);
+}
+
+/* movq r64, xmm: 66 REX.W 0F 7E /r -- the xmm in reg, the gpr in rm. */
+void x86_movq_from_xmm(int gpr, int xmm)
+{
+    emu_jit_emit8(0x66);
+    emit_rex(1u, (unsigned)xmm, (unsigned)gpr);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0x7E);
+    modrm_rr(xmm, gpr);
+}
+
+/* imul r32, r32, imm32: 69 /r id, the register by itself. */
+void x86_imul_imm32(int r, uint32_t imm)
+{
+    emit_rex(0u, (unsigned)r, (unsigned)r);
+    emu_jit_emit8(0x69);
+    modrm_rr(r, r);
+    emu_jit_emit32(imm);
+}
+
+/* shr r64, imm8: REX.W C1 /5 ib. */
+void x86_shr64_imm(int r, uint8_t n)
+{
+    emit_rex(1u, 0u, (unsigned)r);
+    emu_jit_emit8(0xC1);
+    modrm_rr(5, r);
+    emu_jit_emit8(n);
+}
+
 /* The scalar-single arithmetic group: F3 0F xx, xmm to xmm. */
 void x86_ss_op(uint8_t op2, int dst, int src)
 {

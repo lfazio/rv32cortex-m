@@ -246,6 +246,13 @@ target_compile_options(emu-stm32n6 PRIVATE -Wall -Wextra -Wundef)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for
 # the ARM host, so the emulated figure has something to be read against.
+# A quarter of a second of WFI timed from inside on the first park, with
+# DBGMCU_CR cleared at boot as a power-on would: board.c's wfi_check,
+# scripts/check-wfi-attach.sh. Off by default.
+option(EMU_WFI_CHECK "Time a WFI from inside the firmware on its first park" OFF)
+target_compile_definitions(emu-stm32n6 PRIVATE
+    EMU_WFI_CHECK=$<BOOL:${EMU_WFI_CHECK}>)
+
 option(EMU_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
 if(EMU_NATIVE_COREMARK)
     include(${CMAKE_SOURCE_DIR}/cmake/coremark_native.cmake)

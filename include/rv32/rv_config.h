@@ -192,6 +192,26 @@
 #define RV_EXT_ZBS 1 /* single-bit: bset/bclr/binv/bext */
 #endif
 /*
+ * Scalar cryptography (rv_crypto.h), on or off together: Zbkb, Zbkc,
+ * Zbkx, Zknd, Zkne, Zknh, Zksed and Zksh -- Zkn and Zks. Zbkb's rotates
+ * and rev8 are Zbb's code and Zbkc is Zbc's clmul and clmulh, so each
+ * needs its base on; Zkr, the entropy source, is not implemented.
+ */
+#ifndef RV_EXT_ZK
+#define RV_EXT_ZK 1
+#endif
+#define RV_EXT_ZBKB RV_EXT_ZK
+#define RV_EXT_ZBKC RV_EXT_ZK
+#define RV_EXT_ZBKX RV_EXT_ZK
+#define RV_EXT_ZKND RV_EXT_ZK
+#define RV_EXT_ZKNE RV_EXT_ZK
+#define RV_EXT_ZKNH RV_EXT_ZK
+#define RV_EXT_ZKSED RV_EXT_ZK
+#define RV_EXT_ZKSH RV_EXT_ZK
+#if RV_EXT_ZK && !(RV_EXT_ZBB && RV_EXT_ZBC)
+#error "RV_EXT_ZK: Zbkb's rotates are Zbb's and Zbkc is Zbc's clmul here"
+#endif
+/*
  * Physical memory protection. Costs nothing until a guest locks an entry:
  * an unlocked entry does not restrict M-mode, so the access path skips the
  * check entirely while none is locked. See src/core/rv_pmp.c.

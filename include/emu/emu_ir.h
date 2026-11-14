@@ -213,6 +213,23 @@ typedef enum emu_ir_op {
     EMU_IR_POPCNT,
 
     /*
+     * Two cryptographic primitives (emu_crypto.h), for the hosts that have
+     * them as instructions: x86-64's PCLMULQDQ and AES-NI, used only when
+     * the CPU reports them. Neither is anywhere near every host -- a
+     * Cortex-M has neither -- so a frontend asks emu_ir_can_lower first
+     * and calls its helper when told no; both run in time independent of
+     * their operands, as RISC-V's Zkt asks of what they serve.
+     *
+     *   CLMUL  a carry-less multiply of a and b, 64 bits wide: aux 0 the
+     *          low 32 bits, 1 the high 32, 2 bits 62:31 (RISC-V's clmul,
+     *          clmulh and clmulr)
+     *   AESSB  the AES S-box of a's low byte, aux 0, or its inverse,
+     *          aux 1; zero above
+     */
+    EMU_IR_CLMUL,
+    EMU_IR_AESSB,
+
+    /*
      * Extract or deposit one bit of a *value*. `b` holds the bit number;
      * using a value rather than an immediate keeps the register and
      * immediate forms of a guest's bit instructions on one path.
@@ -960,6 +977,22 @@ typedef struct emu_ir_opt_stats {
  * code never ran, and a counter with no reader cannot even be identical.
  */
 void emu_ir_opt_totals(emu_ir_opt_stats_t *out);
+
+/*
+ * A lowering refused an operation: the backends call this where their
+ * lower_one returns false, and it counts the refusal only if
+ * emu_ir_can_lower had promised that operation -- a frontend that
+ * believed the promise lost the whole block where it would have kept it
+ * with a helper. Both backends' defaults have broken it, each time
+ * silently: Thumb-2 promised CLMUL, and RV32 CoreMark under the JIT
+ * was 32% slower on the F746 with every host suite green. The run's
+ * report prints a non-zero count as `unkept`, with the first operation
+ * refused, and board-ab.sh flags a row whose firmware printed one.
+ */
+void emu_ir_note_refused(uint8_t op, uint8_t aux);
+
+/* The promises broken so far; *op and *aux the first one's. */
+uint32_t emu_ir_unkept(uint8_t *op, uint8_t *aux);
 
 /* Defined under Lowering below; the passes read one field of it. */
 typedef struct emu_ir_target emu_ir_target_t;

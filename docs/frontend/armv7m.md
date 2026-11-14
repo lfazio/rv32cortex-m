@@ -390,8 +390,22 @@ The shipped one held at six ITCM offsets (`-DEMU_LAYOUT_PAD_ITCM`, 4 to
 on the way: **every 32-bit TST, TEQ, CMN and CMP takes the sp/pc path**,
 since their "no destination" is a d of pc -- two calls into flash each,
 before and after; and a quarter of the interpreter's samples are in
-flash helpers whose placement LTO decides anew at each change. Neither
-is fixed ([TODO](../TODO.md)).
+flash helpers whose placement LTO decides anew at each change.
+
+**Both taken on 2026-11-11**, against be39628 (155.44):
+
+| | interpreted, at .text offsets 0 / 64 / 128 / 256 | under the JIT |
+|---|---|---|
+| the six interpreter-only helpers in ITCM (`EMU_INTERP_HELPER`) | -4.45%, -4.61% | +1.39%, +1.33% |
+| ...and compares off the sp/pc path, the three handlers forced inline (**shipped**) | **-2.58%, -4.50%, -4.72%, -4.65%** | **-0.24% at all four** |
+
+The six are `add_c`, `cond_holds`, `dp_op`, `ldm_stm`, `t32_mul` and
+`t32_mull`; `rd_u` and `wr_u` stay where they were, since the JIT's
+slow path reaches them through `armv7m_load_u`. What cost the JIT 1.4%
+with the six alone is not known -- it was as much with `rd_u` and `wr_u`
+placed too, and the JIT does not move with its own ITCM offset (16.47
+to 16.53 at six) -- and it went with the forced inlines. That leaves
+the interpreter about 3.5% above 375f9bf's 143.44, from 7.1%.
 
 ---
 

@@ -508,8 +508,15 @@ static int emu_main_body(int argc, char **argv)
     }
     emu_guest_map_select(g_cfg.ops->guest_map);
 
-    emu_console_printf("\n\nemu: %s on %s @ %u MHz\n", g_cfg.ops->desc,
-                       board_core_name,
+    /*
+     * The description is written out, not formatted: RV32's ISA string
+     * with the scalar crypto passed emu_console_printf's 192 bytes, and the
+     * banner lost its end -- "_svinval on" and the host -- with nothing
+     * said (the rv32-isa-string test noticed).
+     */
+    emu_console_puts("\n\nemu: ");
+    emu_console_puts(g_cfg.ops->desc);
+    emu_console_printf(" on %s @ %u MHz\n", board_core_name,
                        (unsigned)(board_clock_hz() / 1000000u));
 
     /*
