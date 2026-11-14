@@ -223,6 +223,23 @@
 #error "RV_EXT_ZKR: seed is a CSR"
 #endif
 /*
+ * Zve32x, the vector extension's embedded integer subset, VLEN 128
+ * (Zvl128b) and ELEN 32 -- **in progress**: off by default, and named in
+ * no ISA string and no misa bit until every instruction Zve32x names is
+ * in (docs/frontend/rv32-vector.md has what is and what is not). The
+ * vector unit is rv_vec.c; both backends reach it, the JIT through the
+ * FP helper for the loads and stores and by declining OP-V.
+ */
+#ifndef RV_EXT_ZVE32X
+#define RV_EXT_ZVE32X 0
+#endif
+#define RV_VLEN 128u
+#define RV_VLENB (RV_VLEN / 8u)
+#define RV_ELEN 32u
+#if RV_EXT_ZVE32X && !RV_EXT_ZICSR
+#error "RV_EXT_ZVE32X: vl and vtype are CSRs"
+#endif
+/*
  * Physical memory protection. Costs nothing until a guest locks an entry:
  * an unlocked entry does not restrict M-mode, so the access path skips the
  * check entirely while none is locked. See src/core/rv_pmp.c.

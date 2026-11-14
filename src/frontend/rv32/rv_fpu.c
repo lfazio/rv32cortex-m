@@ -25,6 +25,7 @@
  * removed when SoftFloat became mandatory.
  */
 
+#include "rv32/rv_vec.h"
 #include "rv32/rv_hart.h"
 #include "rv32/rv_csr.h"
 #include "rv32/rv_decode.h"
@@ -721,6 +722,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     const uint32_t rs3 = (insn >> 27) & 0x1Fu;
     const uint32_t funct7 = (insn >> 25) & 0x7Fu;
     uint32_t flags = 0u;
+
+#if RV_EXT_ZVE32X
+    /*
+     * A vector load or store shares these opcodes, told apart by its
+     * width, and is gated by VS, not FS: before anything about FS. The
+     * JIT's FP helper comes here too, so both backends reach rv_vec.c.
+     */
+    if ((opcode == OP_LOAD_FP || opcode == OP_STORE_FP) &&
+        rv_vec_is_mem(insn)) {
+        return rv_hart_vec(h, insn, tval);
+    }
+#endif
 
     /*
      * An FPU that is Off cannot execute anything -- including the loads and

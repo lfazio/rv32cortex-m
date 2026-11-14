@@ -22,6 +22,14 @@ struct rv_hart;
 #define CSR_FFLAGS 0x001
 #define CSR_FRM 0x002
 #define CSR_FCSR 0x003
+/* The vector unit's (Zve32x): user read-write, then user read-only. */
+#define CSR_VSTART 0x008
+#define CSR_VXSAT 0x009
+#define CSR_VXRM 0x00A
+#define CSR_VCSR 0x00F
+#define CSR_VL 0xC20
+#define CSR_VTYPE 0xC21
+#define CSR_VLENB 0xC22
 
 #define FFLAG_NX 0x01u /* inexact          */
 #define FFLAG_UF 0x02u /* underflow        */
@@ -246,6 +254,8 @@ struct rv_hart;
 #define MSTATUS_TSR (1u << 22)
 #define MSTATUS_FS_SHIFT 13
 #define MSTATUS_FS_MASK (3u << MSTATUS_FS_SHIFT)
+#define MSTATUS_VS_SHIFT 9
+#define MSTATUS_VS_MASK (3u << MSTATUS_VS_SHIFT)
 #define MSTATUS_SD (1u << 31)
 
 /* Bits software is allowed to change in mstatus on this implementation. */
@@ -283,9 +293,16 @@ struct rv_hart;
 #define MSTATUS_WMASK_S 0u
 #endif
 
+/* VS, as FS: writable, or software could never turn the unit on. */
+#if RV_EXT_ZVE32X
+#define MSTATUS_WMASK_V MSTATUS_VS_MASK
+#else
+#define MSTATUS_WMASK_V 0u
+#endif
+
 #define MSTATUS_WMASK                                                          \
     (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK | MSTATUS_WMASK_F |         \
-     MSTATUS_WMASK_U | MSTATUS_WMASK_S)
+     MSTATUS_WMASK_U | MSTATUS_WMASK_S | MSTATUS_WMASK_V)
 
 /*
  * What sstatus exposes of mstatus. Reads outside this mask return zero and
@@ -294,7 +311,7 @@ struct rv_hart;
  */
 #define SSTATUS_RMASK                                                          \
     (MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_SUM | MSTATUS_MXR |    \
-     MSTATUS_FS_MASK | MSTATUS_SD)
+     MSTATUS_FS_MASK | MSTATUS_WMASK_V | MSTATUS_SD)
 #define SSTATUS_WMASK (SSTATUS_RMASK & MSTATUS_WMASK)
 
 /* ------------------------------------------------------------------ */

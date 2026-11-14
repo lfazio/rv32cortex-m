@@ -22,6 +22,7 @@
 #include "rv32/rv_backend.h"
 #include "rv32/rv_decode.h"
 #include "rv32/rv_hart.h"
+#include "rv32/rv_vec.h"
 
 #if EMU_PAIR_STATS
 #include "rv32/rv_pairstats.h"
@@ -1425,6 +1426,26 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             const rv_exc_t exc = rv_hart_fp(h, insn, &ftval);
             if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
                 TRAP(exc, ftval);
+            }
+            break;
+        }
+#endif
+
+#if RV_EXT_ZVE32X
+        /*
+         * The vector unit (rv_vec.c). Its loads and stores share the FP
+         * opcodes and reach it through rv_hart_fp above; without F they
+         * come straight here.
+         */
+#if !RV_EXT_F
+        case 0x07u >> 2: /* vector loads  */
+        case 0x27u >> 2: /* vector stores */
+#endif
+        case 0x57u >> 2: { /* OP-V */
+            uint32_t vtval = insn;
+            const rv_exc_t exc = rv_hart_vec(h, insn, &vtval);
+            if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
+                TRAP(exc, vtval);
             }
             break;
         }

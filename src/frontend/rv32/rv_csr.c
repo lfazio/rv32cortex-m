@@ -130,8 +130,26 @@ static uint32_t mstatus_read(const rv_hart_t *h)
         return h->mstatus | MSTATUS_SD;
     }
 #endif
+#if RV_EXT_ZVE32X
+    if ((h->mstatus & MSTATUS_VS_MASK) == MSTATUS_VS_MASK) {
+        return h->mstatus | MSTATUS_SD;
+    }
+#endif
     return h->mstatus & ~MSTATUS_SD;
 }
+
+#if RV_EXT_ZVE32X
+/* The vector CSRs, every one of them, are refused while VS is Off. */
+static bool vs_off(const rv_hart_t *h)
+{
+    return (h->mstatus & MSTATUS_VS_MASK) == 0u;
+}
+
+static void vs_dirty(rv_hart_t *h)
+{
+    h->mstatus |= MSTATUS_VS_MASK;
+}
+#endif
 
 /*
  * May the current privilege read this unprivileged counter shadow?
@@ -332,6 +350,26 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     }
 
     switch (csr) {
+#if RV_EXT_ZVE32X
+    case CSR_VSTART:
+    case CSR_VXSAT:
+    case CSR_VXRM:
+    case CSR_VCSR:
+    case CSR_VL:
+    case CSR_VTYPE:
+    case CSR_VLENB:
+        if (vs_off(h)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        *out = (csr == CSR_VSTART) ? h->vstart
+               : (csr == CSR_VXSAT) ? h->vxsat
+               : (csr == CSR_VXRM)  ? h->vxrm
+               : (csr == CSR_VCSR)  ? ((h->vxrm << 1) | h->vxsat)
+               : (csr == CSR_VL)    ? h->vl
+               : (csr == CSR_VTYPE) ? h->vtype
+                                    : RV_VLENB;
+        break;
+#endif
 #if RV_EXT_F
     case CSR_FFLAGS:
         *out = h->fcsr & 0x1Fu;
@@ -633,6 +671,30 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
     }
 
     switch (csr) {
+#if RV_EXT_ZVE32X
+    case CSR_VSTART:
+    case CSR_VXSAT:
+    case CSR_VXRM:
+    case CSR_VCSR:
+        if (vs_off(h)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        if (csr == CSR_VSTART) {
+            /* As many bits as the largest element index needs: VLMAX at
+             * LMUL 8 and SEW 8, 128 at VLEN 128 -- seven bits, as Spike
+             * keeps them. */
+            h->vstart = val & ((RV_VLEN * 8u / 8u) - 1u);
+        } else if (csr == CSR_VXSAT) {
+            h->vxsat = val & 1u;
+        } else if (csr == CSR_VXRM) {
+            h->vxrm = val & 3u;
+        } else {
+            h->vxsat = val & 1u;
+            h->vxrm = (val >> 1) & 3u;
+        }
+        vs_dirty(h);
+        break;
+#endif
 #if RV_EXT_F
     case CSR_FFLAGS:
         h->fcsr = (h->fcsr & ~0x1Fu) | (val & 0x1Fu);
@@ -1008,6 +1070,22 @@ bool rv_csr_exists(uint32_t csr)
 const char *rv_csr_name(uint32_t csr)
 {
     switch (csr) {
+#if RV_EXT_ZVE32X
+    case CSR_VSTART:
+        return "vstart";
+    case CSR_VXSAT:
+        return "vxsat";
+    case CSR_VXRM:
+        return "vxrm";
+    case CSR_VCSR:
+        return "vcsr";
+    case CSR_VL:
+        return "vl";
+    case CSR_VTYPE:
+        return "vtype";
+    case CSR_VLENB:
+        return "vlenb";
+#endif
 #if RV_EXT_F
     case CSR_FFLAGS:
         return "fflags";

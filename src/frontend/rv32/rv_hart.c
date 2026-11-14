@@ -110,6 +110,17 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
      * defined and leaving it Off would make every FP instruction trap. */
     h->mstatus |= (1u << MSTATUS_FS_SHIFT);
 #endif
+#if RV_EXT_ZVE32X
+    /* vill set and vl 0 until a vset, as Spike resets them; VS Initial,
+     * for the reason FS is. */
+    memset(h->v, 0, sizeof(h->v));
+    h->vl = 0u;
+    h->vtype = 0x80000000u;
+    h->vstart = 0u;
+    h->vxrm = 0u;
+    h->vxsat = 0u;
+    h->mstatus |= (1u << MSTATUS_VS_SHIFT);
+#endif
 
     h->mcounteren = 0u;
     h->menvcfg = 0u;

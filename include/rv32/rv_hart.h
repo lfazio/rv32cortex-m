@@ -76,6 +76,22 @@ typedef struct rv_hart {
     uint32_t fcsr; /* frm in [7:5], fflags in [4:0] */
 #endif
 
+#if RV_EXT_ZVE32X
+    /*
+     * The vector unit (rv_vec.c): 32 registers of VLEN bits, adjacent, so
+     * a register group is one run of bytes and element i of a group at
+     * v is at v * RV_VLENB + i * SEW / 8, little-endian. vtype's top bit
+     * is vill. The five are rv_vec.c's alone; the CSRs reach them
+     * through rv_csr.c.
+     */
+    uint8_t v[32][RV_VLENB] __attribute__((aligned(8)));
+    uint32_t vl;
+    uint32_t vtype;
+    uint32_t vstart;
+    uint32_t vxrm;
+    uint32_t vxsat;
+#endif
+
     uint32_t mcounteren;
     uint32_t menvcfg;
 #if RV_EXT_S

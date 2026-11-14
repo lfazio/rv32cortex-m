@@ -576,6 +576,10 @@ else()
     set(_zkr_default ON)
 endif()
 option(RV32_EXT_ZKR "Zkr entropy source (the seed CSR)" ${_zkr_default})
+# Zve32x, the vector extension's integer subset, VLEN 128 and ELEN 32:
+# in progress, so off and advertised nowhere until it is whole
+# (docs/frontend/rv32-vector.md); built in, rv_vec.c runs what is there.
+option(RV32_EXT_ZVE32X "Zve32x vector integer subset (in progress)" OFF)
 option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 # Double precision. FLEN becomes 64 and single values are NaN-boxed, so
@@ -898,6 +902,7 @@ if(EMU_GUEST_ARCH_RV32)
         src/frontend/rv32/rv_decode.c
         src/frontend/rv32/rv_disasm.c
         src/frontend/rv32/rv_fpu.c
+        src/frontend/rv32/rv_vec.c
         src/frontend/rv32/rv_hart.c
         src/frontend/rv32/rv_interp.c
         src/frontend/rv32/rv_pmp.c
@@ -935,6 +940,7 @@ if(EMU_GUEST_ARCH_RV32)
         RV_EXT_ZBC=$<BOOL:${RV32_EXT_ZBC}>
         RV_EXT_ZK=$<BOOL:${RV32_EXT_ZK}>
         RV_EXT_ZKR=$<BOOL:${RV32_EXT_ZKR}>
+        RV_EXT_ZVE32X=$<BOOL:${RV32_EXT_ZVE32X}>
         RV_EXT_ZBS=$<BOOL:${RV32_EXT_ZBS}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
         RV_MISALIGNED_OK=$<BOOL:${RV32_MISALIGNED}>

@@ -143,10 +143,10 @@ measured at.
       six helpers and `rd_u`/`wr_u` each did, which is why the last are
       placed only where there is no JIT
       ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
-      The interpreter itself is below 375f9bf's 143.44 now (142.44),
-      from the run loop's per-instruction tests, not a decode cache.
-      What the profile leaves: the loop's own 18%, SysTick ticked per
-      instruction (about 6%), the fetch's MPU and execute-never test.
+      The interpreter itself is below 375f9bf's 143.44 now (135.8),
+      from the run loop's per-instruction work, not a decode cache.
+      What the profile leaves: the loop's state, pending and Thumb-bit
+      tests, and the fetch's MPU and execute-never test.
 - [ ] **PowerPC's FP unit is a call per instruction**: all four
       operations that are most of an FP program compute their common
       case inline in the helper the block calls, and Whetstone under the
@@ -204,7 +204,15 @@ From the last measurements in [linux.md](linux.md).
 
 ## RV32
 
-- [ ] Implement V extensions
+- [ ] **The vector extension**, by its embedded subsets: Zve32x is in
+      progress behind `-DRV32_EXT_ZVE32X=ON` (off, advertised nowhere),
+      with configuration, every load and store form but segments, the
+      single-width integer ALU, multiply, divide, masks and reductions,
+      held to Spike by `probes/vec-int.S`. Left for Zve32x: segments,
+      carries, widening and narrowing, extension, fixed point, slides,
+      gathers, `vcompress`, whole-register moves, widening reductions,
+      and a probe of an element that faults; then Zve32f, Zve64*, V
+      ([frontend/rv32-vector.md](frontend/rv32-vector.md)).
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
       under the x86-64 JIT now, AES's S-box between two maps of two
       `pshufb` each ([backend/x86_64.md](backend/x86_64.md#aes-ni-and-pclmulqdq));
@@ -240,6 +248,9 @@ From the last measurements in [linux.md](linux.md).
 
 ## 680x0
 
+- [ ] Documents: @docs/motorola
+- [ ] https://fr.wikipedia.org/wiki/Amiga_3000
+- [ ] https://fr.wikipedia.org/wiki/Motorola_68881
 - [ ] **The 680x0 frontend**, which is the only one that has not been
       started. The first step is to read the manuals and write a
       description of what the guest sees, and what the host must do to
