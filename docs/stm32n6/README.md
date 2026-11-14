@@ -9,6 +9,31 @@ through ST-LINK_gdbserver on access port 1, which the vendor's
 programmer CLI does not reach. The JIT's code buffer and dispatch path
 live in ITCM ([itcm.md](itcm.md)).
 
+**Measured like the F746**: `BOARD_PLATFORM=stm32n6
+EMU_PROBE=0483:3754:<serial> scripts/board-measure.sh ...` and
+`board-ab.sh` load through the build's `flash` target, which starts the
+firmware, so `board-run.py` drains the ST-LINK V3's console before and
+reads it while the load runs. There is no `EMU_LAYOUT_PAD` here
+(`BOARD_AB_PADS=0`), and a mute console wants `usbreset 0483:3754` as
+the F746's does.
+
+The JIT work of 2026-11-14 -- the hot threshold, the computed jumps'
+stub, four chain slots -- and ARMv7-M's two loop tests, against
+7495445, host cycles an instruction, CRCs the same:
+
+| | before | after | |
+|---|---|---|---|
+| RV32 CoreMark, JIT | 17.80 | 14.71 | -17.4% |
+| ARMv7-M CoreMark, JIT | 23.72 | 19.99 | -15.7% |
+| PowerPC CoreMark, JIT | 29.49 | 24.74 | -16.1% |
+| G4MH CoreMark, JIT | 29.85 | 25.71 | -13.9% |
+| ARMv7-M, interpreted | 177.07 | 169.89 | -4.1% |
+| RV32, PowerPC, G4MH, interpreted | 116.32, 172.87, 105.60 | 116.24, 173.43, 104.83 | within 0.7% |
+
+G4MH's retired count differs by 405: its CoreMark times itself by the
+LTSC, which follows the host's clock, and the faster run prints a
+different line -- the same CRC.
+
 What follows is what the port rests on, established from RM0486, PM0273
 and UM3417 in `docs/st/stm32n6/` and from ST's own Nucleo projects
 before a line of it was written, and then the plan it was written to --

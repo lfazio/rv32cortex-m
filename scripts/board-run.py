@@ -43,8 +43,12 @@ the board in the middle of a run, as scripts/check-nmi-button.sh
 presses the user button through the probe. Its exit status is reported
 after WALL, as `AT SECS rc=N`, and its output goes to stderr.
 
-The N6 is not covered: it loads through scripts/n6-load.sh, not a
-probe-rs flash. Needs pyserial and probe-rs.
+The N6 loads through its build's `flash` target too, which is
+scripts/n6-load.sh -- ST's gdbserver on the M55's access port, which
+probe-rs cannot reach -- and that target *starts* the firmware, so
+there is no reset after it: the console is drained before the flash
+instead, and the run is whatever follows. Its console is the ST-LINK
+V3's first interface. Needs pyserial, and probe-rs for the others.
 """
 
 import os
@@ -83,43 +87,59 @@ def main():
 
     probe = os.environ.get("BOARD_PROBE") or cache_var(build, "EMU_PROBE")
     platform = cache_var(build, "EMU_PLATFORM")
+    n6 = platform == "stm32n6"
     chip = os.environ.get("BOARD_CHIP") or CHIPS.get(platform, "")
-    if not probe or not chip:
+    if not probe or (not chip and not n6):
         sys.exit("board-run: %s names no probe (EMU_PROBE) or no known "
                  "platform (%r); set BOARD_PROBE / BOARD_CHIP" %
                  (build, platform))
     serialno = probe.split(":")[-1]
     console = os.environ.get("BOARD_CONSOLE") or (
-        "/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_%s-if02" %
-        serialno)
+        ("/dev/serial/by-id/usb-STMicroelectronics_STLINK-V3_%s-if01" if n6
+         else "/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_%s-if02")
+        % serialno)
 
     ser = serial.Serial(console, BAUD, timeout=0.01)
+    if n6:
+        ser.reset_input_buffer()  # the flash target starts the run
 
+    loader = None
+    if n6:
+        # In the background: the load starts the firmware before it
+        # returns, and the console has to be read from that moment --
+        # arrival times are the wall clock, and a tty left unread drops.
+        loader = subprocess.Popen(["cmake", "--build", build, "--target",
+                                   "flash"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT,
+                                  universal_newlines=True)
     r = None
-    for _ in range(3):
+    for _ in range(0 if n6 else 3):
         r = subprocess.run(["cmake", "--build", build, "--target", "flash"],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True)
         if r.returncode == 0:
             break
         time.sleep(2)
-    if r.returncode != 0:
+    if r is not None and r.returncode != 0:
         print("FLASH FAILED rc=%d -- the board still runs the PREVIOUS "
               "image" % r.returncode)
         print(r.stdout[-400:])
         sys.exit(3)
 
-    time.sleep(0.5)
-    ser.reset_input_buffer()
-    r = subprocess.run(["probe-rs", "reset", "--chip", chip,
-                        "--connect-under-reset", "--probe", probe],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       universal_newlines=True)
-    if r.returncode != 0:
-        print("RESET FAILED rc=%d" % r.returncode)
-        print(r.stdout[-400:])
-        sys.exit(3)
-    print("flash rc=0 (and reset)")
+    if n6:
+        pass  # the load's result is read after the capture
+    else:
+        time.sleep(0.5)
+        ser.reset_input_buffer()
+        r = subprocess.run(["probe-rs", "reset", "--chip", chip,
+                            "--connect-under-reset", "--probe", probe],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True)
+        if r.returncode != 0:
+            print("RESET FAILED rc=%d" % r.returncode)
+            print(r.stdout[-400:])
+            sys.exit(3)
+        print("flash rc=0 (and reset)")
 
     at_secs, _, at_cmd = os.environ.get("BOARD_AT", "").partition(":")
     at_proc = None
@@ -152,6 +172,15 @@ def main():
             if (last >= 0 and buf.find(b"emu-result", last) >= 0 and
                     time.time() + 1.0 < end):
                 end = time.time() + 1.0
+
+    if loader is not None:
+        out, _ = loader.communicate()
+        if loader.returncode != 0:
+            print("FLASH FAILED rc=%d -- the board still runs the PREVIOUS "
+                  "image" % loader.returncode)
+            print(out[-400:])
+            sys.exit(3)
+        print("flash rc=0 (the load started it)")
 
     def when(off):
         t = None
