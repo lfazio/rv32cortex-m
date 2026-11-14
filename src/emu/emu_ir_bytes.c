@@ -99,6 +99,7 @@ static const char *const k_names[EMU_IR_OP_COUNT] = {
     [EMU_IR_SETPC] = "SETPC",
     [EMU_IR_EXIT] = "EXIT",
     [EMU_IR_EXIT_IF] = "EXIT_IF",
+    [EMU_IR_VOP] = "VOP",
 };
 
 typedef struct {

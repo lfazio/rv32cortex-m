@@ -129,7 +129,14 @@ keeps, and all of data RAM. Then, per target:
   exit -- until a program cleared one FS bit and saw Clean against Off,
   with FP traps differing after. Both backends now mark it where the
   state changes, so it is exact (below). Not the run's own instruction
-  count, which is budget bookkeeping; minstret is compared.
+  count, which is budget bookkeeping; minstret is compared. Built with
+  the vector unit (`scripts/fuzz.sh SECS rv32-vec`, build/fuzz-vec), the
+  32 vector registers a word at a time, `vl`, `vtype`, `vstart`, `vxrm`
+  and `vxsat` too, every register starting from a pattern no operation
+  leaves -- the JIT's inline vsetvli and `EMU_IR_VOP` against rv_vec.c.
+  Its seeds are `seeds/rv32-vec-jit/` (a strip-mined loop, every width
+  and grouping, the helper between lowered operations, vl 0 and a kept
+  vl) and vecbench's text.
 - **ARMv7-M.** The flags translated code keeps in four words are packed
   into xPSR before comparing. The core's own retired count is compared,
   because SysTick counts it -- though SysTick itself cannot be enabled
@@ -991,6 +998,7 @@ Each fix was confirmed by reverting it with its regression in place.
 | ARMv7-M under the JIT ran a block's own later instructions stale after a store into them -- the hit discarded the translations, but the block that made the store went on | `armv7m_ir.c` (`smc_stop`) | `armv7m-jit/smc-store-ahead-in-block`, seed `smc-in-block.S` |
 | the rerun that stops such a block fetched the store again, and a store that had rewritten itself ran as what it wrote (`str r1, [r0]` as `movs r0, #0`) | `armv7m_ir.c` (`finish_imprecise`) | `armv7m-jit/smc-store-rewrites-itself` |
 | the telnet console read IAC IAC as a command with an option byte: the data byte 255 was lost, and the byte after it | `net_telnet.c` | `telnet/iac-iac-is-data` |
+| an OPFVV instruction -- floating point, which Zve32x has not -- lowered as `vadd.vx`, and the block ran on where the interpreter raised illegal instruction: the translator tested funct3 for OPM and read every other value as OPI. Found in four minutes, the first run of `rv32-vec` | `rv_ir.c`, `rv_ir_vop_of` | `rv32-jit/opfvv-lowered-as-vadd-vx` |
 | `ADD.W`/`SUB.W sp, sp, Rm` with a shift the manual calls UNPREDICTABLE raised UNDEFINSTR, where the M7 executes it. **Found by the corpus on the board**, not by a divergence: both of the fuzzer's sides shared the reading | `armv7m_dp_regs_rule` | `test_sp_pc_board_answers`, `spwrite.S` |
 | every write to sp kept bits [1:0], which the M7 drops; only MSR masked them. Found asking the board about the first | the ARMv7-M **interpreter** and translator (`sp_write`, `wreg`) | `test_sp_write_board_answers`, `guest-armv7m-spwrite-both` |
 

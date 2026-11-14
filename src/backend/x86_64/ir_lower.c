@@ -1268,9 +1268,84 @@ static unsigned host_crypto(void)
     return (unsigned)known;
 }
 
+/*
+ * The SIMD this CPU has for EMU_IR_VOP, asked once per thread: SSE2,
+ * which every x86-64 has, and SSE4.1 for the 32-bit multiply and the
+ * minimum and maximum SSE2 lacks. EMU_HOST_SIMD in the environment
+ * narrows it -- 0 for none, so every vector operation keeps the
+ * frontend's helper, 2 for SSE2 alone -- which is how the fallbacks are
+ * tested on a CPU that has everything.
+ */
+#define HOST_SIMD_SSE2 1u
+#define HOST_SIMD_SSE41 2u
+
+static unsigned host_simd(void)
+{
+    static EMU_PER_CORE int known = -1;
+
+    if (known < 0) {
+        const char *const env = getenv("EMU_HOST_SIMD");
+        unsigned m = HOST_SIMD_SSE2;
+
+        if (env != NULL && env[0] == '0') {
+            m = 0u;
+        } else if ((env == NULL || env[0] != '2') &&
+                   __builtin_cpu_supports("sse4.1")) {
+            m |= HOST_SIMD_SSE41;
+        }
+        known = (int)m;
+    }
+    return (unsigned)known;
+}
+
+/*
+ * Which EMU_IR_VOP forms this host lowers. SSE2 has the adds, the
+ * logic, an 8-bit unsigned and a 16-bit signed minimum and maximum, a
+ * 16-bit multiply and the 16- and 32-bit shifts by one count; SSE4.1
+ * the rest of the minimum and maximum and a 32-bit multiply. Not here:
+ * an 8-bit multiply or shift, which x86 has no lane for, and a shift by
+ * a vector of counts, which needs AVX2 -- each keeps the helper.
+ */
+static bool vop_lowerable(uint8_t aux)
+{
+    const unsigned simd = host_simd();
+    const uint32_t sew = EMU_IR_VOP_SEW(aux);
+    const bool sse41 = (simd & HOST_SIMD_SSE41) != 0u;
+
+    if ((simd & HOST_SIMD_SSE2) == 0u || sew > 2u) {
+        return false;
+    }
+    switch (EMU_IR_VOP_OP(aux)) {
+    case EMU_IR_V_ADD:
+    case EMU_IR_V_SUB:
+    case EMU_IR_V_RSUB:
+    case EMU_IR_V_AND:
+    case EMU_IR_V_OR:
+    case EMU_IR_V_XOR:
+    case EMU_IR_V_MV:
+        return true;
+    case EMU_IR_V_MINU:
+    case EMU_IR_V_MAXU:
+        return sew == 0u || sse41;
+    case EMU_IR_V_MIN:
+    case EMU_IR_V_MAX:
+        return sew == 1u || sse41;
+    case EMU_IR_V_MUL:
+        return sew == 1u || (sew == 2u && sse41);
+    case EMU_IR_V_SLL:
+    case EMU_IR_V_SRL:
+    case EMU_IR_V_SRA:
+        return sew != 0u && EMU_IR_VOP_VX(aux);
+    default:
+        return false;
+    }
+}
+
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
     switch (op) {
+    case EMU_IR_VOP:
+        return vop_lowerable(aux);
     /*
      * The immediate ALU forms, which pass_fuse asks about before
      * rewriting a register operation into one. Answering the FP class
@@ -1425,6 +1500,125 @@ static void sm4_affine(uint8_t off)
     x86_sse_0f38(X86_PSHUFB, X86_XMM0, X86_XMM2);
     x86_sse_0f38(X86_PSHUFB, X86_XMM4, X86_XMM3);
     x86_pxor(X86_XMM0, X86_XMM4);
+}
+
+/*
+ * 128 bytes of ones then 128 of zeros: sixteen bytes from 128 - k on
+ * are the mask of a register's first k bytes -- none for k <= 0, all for
+ * k >= 16 -- for k from -112 to 128, which is every register of a group
+ * of up to eight against a vl of up to the group's elements.
+ */
+#define VOP_ONES16                                                             \
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,      \
+        0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu
+static const uint8_t k_vop_window[256] = {
+    VOP_ONES16, VOP_ONES16, VOP_ONES16, VOP_ONES16,
+    VOP_ONES16, VOP_ONES16, VOP_ONES16, VOP_ONES16,
+};
+
+/* 66 0F xx or, with 0x100 set, 66 0F 38 xx, by operation and width. */
+static uint32_t vop_opcode(uint32_t op, uint32_t sew)
+{
+    static const uint16_t k[EMU_IR_V_COUNT][3] = {
+        [EMU_IR_V_ADD] = {0xFC, 0xFD, 0xFE},  /* padd b/w/d */
+        [EMU_IR_V_SUB] = {0xF8, 0xF9, 0xFA},  /* psub */
+        [EMU_IR_V_RSUB] = {0xF8, 0xF9, 0xFA},
+        [EMU_IR_V_AND] = {0xDB, 0xDB, 0xDB},  /* pand */
+        [EMU_IR_V_OR] = {0xEB, 0xEB, 0xEB},   /* por */
+        [EMU_IR_V_XOR] = {0xEF, 0xEF, 0xEF},  /* pxor */
+        [EMU_IR_V_MINU] = {0xDA, 0x13A, 0x13B}, /* pminub; pminuw, pminud */
+        [EMU_IR_V_MIN] = {0x138, 0xEA, 0x139},  /* pminsb; pminsw; pminsd */
+        [EMU_IR_V_MAXU] = {0xDE, 0x13E, 0x13F}, /* pmaxub; pmaxuw, pmaxud */
+        [EMU_IR_V_MAX] = {0x13C, 0xEE, 0x13D},  /* pmaxsb; pmaxsw; pmaxsd */
+        [EMU_IR_V_MUL] = {0, 0xD5, 0x140},      /* pmullw; pmulld */
+        [EMU_IR_V_SLL] = {0, 0xF1, 0xF2},       /* psll w/d by xmm */
+        [EMU_IR_V_SRL] = {0, 0xD1, 0xD2},       /* psrl */
+        [EMU_IR_V_SRA] = {0, 0xE1, 0xE2},       /* psra */
+    };
+
+    return k[op][sew];
+}
+
+static void vop_apply(uint32_t code, int dst, int src)
+{
+    if (code >= 0x100u) {
+        x86_sse_0f38((uint8_t)code, dst, src);
+    } else {
+        x86_sse_66((uint8_t)code, dst, src);
+    }
+}
+
+/*
+ * EMU_IR_VOP, a register of the group at a time: vs2 into xmm0, the
+ * second operand in xmm1 (vs1's register, or the scalar in every lane --
+ * a shift's count in its low quadword), the operation into xmm0, then
+ * vd's old bytes kept past vl through the window's mask in xmm3:
+ * (new & mask) | (old & ~mask), stored. vl's bytes stay in edx for the
+ * whole group. RSUB works in xmm4 so the scalar survives to the next
+ * register.
+ */
+static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    const uint32_t sew = EMU_IR_VOP_SEW(in->aux);
+    const bool vx = EMU_IR_VOP_VX(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+    const bool shift =
+        op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
+    const uint32_t code = vop_opcode(op, sew);
+
+    ld_operand(T2, in->b);
+    if (sew != 0u) {
+        x86_shift_imm(T2, X86_SHL, sew); /* vl in bytes */
+    }
+    if (vx) {
+        ld_operand(T0, in->a);
+        if (shift) {
+            x86_alu_imm32(4u, T0, (8u << sew) - 1u); /* and: the count */
+            x86_movd_to_xmm(X86_XMM1, T0);
+        } else {
+            if (sew == 0u) {
+                x86_alu_imm32(4u, T0, 0xFFu);
+                x86_imul_imm32(T0, 0x01010101u);
+            } else if (sew == 1u) {
+                x86_alu_imm32(4u, T0, 0xFFFFu);
+                x86_imul_imm32(T0, 0x00010001u);
+            }
+            x86_movd_to_xmm(X86_XMM1, T0);
+            x86_pshufd(X86_XMM1, X86_XMM1, 0x00u);
+        }
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        const uint32_t od = t->vreg_offset(vd + r);
+
+        if (!vx) {
+            x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs1 + r));
+        }
+        if (op == EMU_IR_V_MV) {
+            x86_sse_66(0x6Fu, X86_XMM0, X86_XMM1); /* movdqa */
+        } else {
+            x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + r));
+            if (op == EMU_IR_V_RSUB) {
+                x86_sse_66(0x6Fu, X86_XMM4, X86_XMM1);
+                vop_apply(code, X86_XMM4, X86_XMM0);
+                x86_sse_66(0x6Fu, X86_XMM0, X86_XMM4);
+            } else {
+                vop_apply(code, X86_XMM0, X86_XMM1);
+            }
+        }
+        /* The mask of this register's first (vl bytes - 16r) bytes. */
+        x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
+        x86_sub64_rr(T0, T2);
+        x86_movdqu_ld_reg(X86_XMM3, T0);
+        x86_movdqu_ld_cpu(X86_XMM2, od);
+        x86_sse_66(0xDBu, X86_XMM0, X86_XMM3); /* pand */
+        x86_sse_66(0xDFu, X86_XMM3, X86_XMM2); /* pandn: old & ~mask */
+        x86_sse_66(0xEBu, X86_XMM0, X86_XMM3); /* por */
+        x86_movdqu_st_cpu(od, X86_XMM0);
+    }
 }
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -2444,6 +2638,13 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         st_slot(rd, in->dst);
         break;
     }
+
+    case EMU_IR_VOP:
+        if (!emu_ir_can_lower(EMU_IR_VOP, in->aux) || t->vreg_offset == NULL) {
+            return false;
+        }
+        lower_vop(in, t);
+        break;
 
     /*
      * The AES S-box: the byte in all sixteen lanes, then AESENCLAST (or

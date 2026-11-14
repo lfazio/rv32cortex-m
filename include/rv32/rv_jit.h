@@ -148,6 +148,15 @@ static inline uint64_t rv_jit_ctx_key(const rv_hart_t *h)
 #if RV_EXT_U
     key |= (uint64_t)rv_hart_data_priv(h) << 36;
 #endif
+#if RV_EXT_ZVE32X
+    /*
+     * Bit 40: VS off, for the same reason as FS. A block that lowered a
+     * vsetvli inline assumed the unit was on, and the inline form has no
+     * test of its own; a CSR write that turns VS off is an instruction
+     * the translator declines, and the interpreter refreshes this.
+     */
+    key |= (uint64_t)(((h->mstatus & MSTATUS_VS_MASK) == 0u) ? 1u : 0u) << 40;
+#endif
     return key;
 }
 

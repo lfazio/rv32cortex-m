@@ -1363,6 +1363,14 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_POPCNT:
         return false;
 
+    /*
+     * The guest's vector registers: not lowered here yet, so the RV32
+     * translator keeps its helper. Listed, because the default below
+     * would have promised it and lost every block holding one.
+     */
+    case EMU_IR_VOP:
+        return false;
+
     default:
         return true;
     }

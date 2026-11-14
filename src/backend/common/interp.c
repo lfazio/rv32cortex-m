@@ -407,6 +407,11 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
                 return false;
             }
             break;
+        case EMU_IR_VOP:
+            if (t->vreg_offset == NULL) {
+                return false;
+            }
+            break;
         case EMU_IR_OP_COUNT:
             return false;
         default:
@@ -942,6 +947,21 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
                 return IR_RUN_DONE;
             }
             break;
+
+        /*
+         * The registers are bytes in the cpu, and each operand is the
+         * first register of its group: emu_ir_vop_ref reads them where
+         * they are, which is where the lowerings read them too.
+         */
+        case EMU_IR_VOP: {
+            uint8_t *const base = (uint8_t *)cpu;
+
+            emu_ir_vop_ref(base + t->vreg_offset(EMU_IR_VOP_VD(in->imm)),
+                           base + t->vreg_offset(EMU_IR_VOP_VS2(in->imm)),
+                           base + t->vreg_offset(EMU_IR_VOP_VS1(in->imm)), a,
+                           in->aux, EMU_IR_VOP_NREGS(in->imm), bv);
+            continue;
+        }
 
         default:
             return IR_RUN_DECLINED; /* interp_models said so first */

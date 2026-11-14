@@ -1377,6 +1377,215 @@ static void test_lower_crypto_ops(void)
  * silent drop it ends at the block's fall-through address with the
  * marker written, having run straight past a branch that was taken.
  */
+/*
+ * EMU_IR_VOP, lowered and run, against two readings: emu_ir_vop_ref --
+ * the IR interpreter's -- and the one below, element by element through
+ * C's own int8_t, int16_t and int32_t, which shares no code with it.
+ * Every operation, width and form the host says it lowers, groups of
+ * 1 to 8, vl from 0 to the group's end with the boundaries in between
+ * (a register's last lane, the next's first), and scalars at the edges:
+ * 0, -1, the sign bit, a shift count past the width. vd starts as a
+ * pattern no operation produces, so a tail written over is seen.
+ */
+typedef struct {
+    uint32_t pc; /* where the block's exit writes: not over v0 */
+    uint32_t pad[3];
+    uint8_t v[32][EMU_IR_VREG_BYTES];
+} vop_cpu_t;
+
+static uint32_t vop_reg_offset(uint32_t n)
+{
+    (void)n;
+    return 0u; /* no GET or PUT in these blocks */
+}
+
+static uint32_t vop_vreg_offset(uint32_t n)
+{
+    return (uint32_t)offsetof(vop_cpu_t, v) + n * EMU_IR_VREG_BYTES;
+}
+
+static const emu_ir_target_t g_vop_target = {
+    .reg_offset = vop_reg_offset,
+    .vreg_offset = vop_vreg_offset,
+    .pc_offset = (uint32_t)offsetof(vop_cpu_t, pc),
+};
+
+static int64_t vop_lane(const uint8_t *p, uint32_t w, bool sign)
+{
+    if (w == 1u) {
+        return sign ? (int64_t)(int8_t)p[0] : (int64_t)p[0];
+    }
+    if (w == 2u) {
+        const uint16_t u = (uint16_t)(p[0] | (p[1] << 8));
+
+        return sign ? (int64_t)(int16_t)u : (int64_t)u;
+    }
+    const uint32_t u = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+
+    return sign ? (int64_t)(int32_t)u : (int64_t)u;
+}
+
+static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
+                     uint32_t scalar, uint32_t vd, uint32_t vs2, uint32_t vs1,
+                     uint32_t vl)
+{
+    const uint8_t *const a = c->v[vs2];
+    const uint8_t *const b = c->v[vs1];
+    uint8_t *const d = c->v[vd];
+    const uint64_t m = (w == 4u) ? 0xFFFFFFFFull : ((1ull << (8u * w)) - 1u);
+
+    for (uint32_t i = 0; i < vl; i++) {
+        const int64_t sa = vop_lane(a + i * w, w, true);
+        const int64_t ua = vop_lane(a + i * w, w, false);
+        uint8_t sbuf[4] = {(uint8_t)scalar, (uint8_t)(scalar >> 8),
+                           (uint8_t)(scalar >> 16), (uint8_t)(scalar >> 24)};
+        const uint8_t *const bp = vx ? sbuf : b + i * w;
+        const int64_t sb = vop_lane(bp, w, true);
+        const int64_t ub = vop_lane(bp, w, false);
+        const unsigned cnt = (unsigned)(ub & (8u * w - 1u));
+        int64_t r;
+
+        switch (op) {
+        case EMU_IR_V_ADD: r = ua + ub; break;
+        case EMU_IR_V_SUB: r = ua - ub; break;
+        case EMU_IR_V_RSUB: r = ub - ua; break;
+        case EMU_IR_V_AND: r = ua & ub; break;
+        case EMU_IR_V_OR: r = ua | ub; break;
+        case EMU_IR_V_XOR: r = ua ^ ub; break;
+        case EMU_IR_V_MINU: r = (ua < ub) ? ua : ub; break;
+        case EMU_IR_V_MIN: r = (sa < sb) ? sa : sb; break;
+        case EMU_IR_V_MAXU: r = (ua > ub) ? ua : ub; break;
+        case EMU_IR_V_MAX: r = (sa > sb) ? sa : sb; break;
+        case EMU_IR_V_MUL: r = (int64_t)((uint64_t)ua * (uint64_t)ub); break;
+        case EMU_IR_V_SLL: r = (int64_t)((uint64_t)ua << cnt); break;
+        case EMU_IR_V_SRL: r = ua >> cnt; break;
+        case EMU_IR_V_SRA: r = sa >> cnt; break;
+        default: r = ub; break;
+        }
+        for (uint32_t k = 0; k < w; k++) {
+            d[i * w + k] = (uint8_t)(((uint64_t)r & m) >> (8u * k));
+        }
+    }
+}
+
+static bool vop_run(vop_cpu_t *c)
+{
+    static uint8_t *exec;
+
+    if (exec == NULL) {
+        void *const p =
+            mmap(NULL, IR_TEST_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            return false;
+        }
+        exec = (uint8_t *)p;
+    }
+    emu_ir_optimise(&g_b, &g_vop_target, EMU_IR_F_ALL, NULL);
+    emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
+    if (!emu_ir_lower(&g_b, &g_vop_target) || emu_jit_overflowed()) {
+        return false;
+    }
+    ((uint32_t (*)(void *))(void *)exec)(c);
+    return true;
+}
+
+static void test_lower_vop(void)
+{
+    static const uint32_t k_scalars[] = {0u, 1u, 0xFFFFFFFFu, 0x80u,
+                                         0x8000u, 0x80000000u, 7u, 33u};
+    uint32_t seed = 0x9E3779B9u;
+    unsigned ran = 0u;
+    unsigned lowerable = 0u;
+    unsigned bad = 0u;
+
+    for (uint32_t op = 0; op < EMU_IR_V_COUNT; op++) {
+        for (uint32_t sew = 0; sew < 3u; sew++) {
+            for (uint32_t vx = 0; vx < 2u; vx++) {
+                const uint8_t aux = EMU_IR_VOP_AUX(op, sew, vx != 0u);
+
+                if (!emu_ir_can_lower(EMU_IR_VOP, aux)) {
+                    continue;
+                }
+                lowerable++;
+                for (uint32_t lg = 0; lg < 4u; lg++) {
+                    const uint32_t nregs = 1u << lg;
+                    const uint32_t w = 1u << sew;
+                    const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
+                    const uint32_t k_vls[] = {0u, 1u, EMU_IR_VREG_BYTES / w - 1u,
+                                              EMU_IR_VREG_BYTES / w,
+                                              EMU_IR_VREG_BYTES / w + 1u,
+                                              lanes / 2u + 1u, lanes - 1u, lanes};
+
+                    for (uint32_t vi = 0; vi < 8u; vi++) {
+                        const uint32_t vl = (k_vls[vi] > lanes) ? lanes : k_vls[vi];
+                        const uint32_t scalar = k_scalars[(op + vi + lg) % 8u];
+                        /* vd, vs2, vs1 each the start of its own group */
+                        const uint32_t vd = 0u, vs2 = 8u, vs1 = 16u;
+                        vop_cpu_t got, want, ref;
+
+                        got.pc = 0u;
+                        memset(got.pad, 0, sizeof(got.pad));
+                        for (uint32_t i = 0; i < sizeof(got.v); i++) {
+                            seed = seed * 1103515245u + 12345u;
+                            uint8_t x = (uint8_t)(seed >> 16);
+                            /* the edges, often */
+                            if ((i % 7u) == 0u) {
+                                x = (uint8_t)((i & 8u) ? 0x80u : 0x7Fu);
+                            } else if ((i % 11u) == 0u) {
+                                x = 0xFFu;
+                            }
+                            ((uint8_t *)got.v)[i] = x;
+                        }
+                        for (uint32_t i = 0; i < nregs * EMU_IR_VREG_BYTES; i++) {
+                            got.v[vd][i] = 0xA5u; /* no result is all A5 */
+                        }
+                        want = got;
+                        want.pc = 0x1000u; /* the exit's */
+                        ref = want;
+                        vop_mine(&want, op, w, vx != 0u, scalar, vd, vs2, vs1, vl);
+                        emu_ir_vop_ref(ref.v[vd], ref.v[vs2], ref.v[vs1], scalar,
+                                       aux, nregs, vl);
+
+                        emu_ir_reset(&g_b);
+                        const uint16_t tv = emu_ir_const(&g_b, vl);
+                        const uint16_t ts =
+                            vx ? emu_ir_const(&g_b, scalar) : EMU_IR_NO_TEMP;
+                        (void)emu_ir_emit(&g_b, EMU_IR_VOP, aux, ts, tv,
+                                          EMU_IR_VOP_IMM(vd, vs2, vs1, lg), 0u);
+                        /* Not to pc 0, the block's own start: that is a loop. */
+                        (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                                          EMU_IR_NO_TEMP, 0x1000u, 0u);
+                        if (!vop_run(&got)) {
+                            bad++;
+                            continue;
+                        }
+                        ran++;
+                        if (memcmp(&got, &want, sizeof(got)) != 0 ||
+                            memcmp(&ref, &want, sizeof(ref)) != 0) {
+                            if (bad++ < 4u) {
+                                printf("  vop op %u sew %u vx %u nregs %u vl %u "
+                                       "scalar %08x: lowered %s, ref %s\n",
+                                       op, sew, vx, nregs, vl, scalar,
+                                       memcmp(&got, &want, sizeof(got)) ? "WRONG"
+                                                                         : "ok",
+                                       memcmp(&ref, &want, sizeof(ref)) ? "WRONG"
+                                                                         : "ok");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CHECK_EQ(bad, 0u);
+    /* SSE2 alone lowers 36 of the 90 forms; nothing here may have been
+     * skipped into a pass. */
+    CHECK(lowerable >= 36u);
+    CHECK_EQ(ran, lowerable * 4u * 8u);
+}
+
 static void test_lower_more_exits_than_the_table(void)
 {
     enum { NEXITS = 70 };
@@ -3083,6 +3292,7 @@ void test_ir(void)
     test_lower_add();
     test_unkept_counted();
     test_lower_crypto_ops();
+    test_lower_vop();
     test_lower_zero_register();
     test_lower_more_exits_than_the_table();
     test_zero_register_write_then_read();

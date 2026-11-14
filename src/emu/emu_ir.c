@@ -23,6 +23,60 @@
 /* Building                                                            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * EMU_IR_VOP's meaning (emu_ir.h). Element i of a group is bytes
+ * i * w to i * w + w - 1 from the group's first register, little-endian.
+ */
+void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                    uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl)
+{
+    const uint32_t w = 1u << EMU_IR_VOP_SEW(aux);
+    const uint32_t bits = 8u * w;
+    const uint32_t mask = (bits == 32u) ? 0xFFFFFFFFu : ((1u << bits) - 1u);
+    const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
+    const uint32_t n = (vl < lanes) ? vl : lanes;
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t a = 0u;
+        uint32_t b = 0u;
+
+        for (uint32_t k = w; k-- > 0u;) {
+            a = (a << 8) | vs2[i * w + k];
+            b = (b << 8) | vs1[i * w + k];
+        }
+        if (EMU_IR_VOP_VX(aux)) {
+            b = scalar & mask;
+        }
+        /* Sign-extended copies, for the signed forms. */
+        const uint32_t sh = 32u - bits;
+        const int32_t sa = (int32_t)(a << sh) >> sh;
+        const int32_t sb = (int32_t)(b << sh) >> sh;
+        const uint32_t amt = b & (bits - 1u);
+        uint32_t r;
+
+        switch (EMU_IR_VOP_OP(aux)) {
+        case EMU_IR_V_ADD: r = a + b; break;
+        case EMU_IR_V_SUB: r = a - b; break;
+        case EMU_IR_V_RSUB: r = b - a; break;
+        case EMU_IR_V_AND: r = a & b; break;
+        case EMU_IR_V_OR: r = a | b; break;
+        case EMU_IR_V_XOR: r = a ^ b; break;
+        case EMU_IR_V_MINU: r = (a < b) ? a : b; break;
+        case EMU_IR_V_MIN: r = (sa < sb) ? a : b; break;
+        case EMU_IR_V_MAXU: r = (a > b) ? a : b; break;
+        case EMU_IR_V_MAX: r = (sa > sb) ? a : b; break;
+        case EMU_IR_V_MUL: r = a * b; break;
+        case EMU_IR_V_SLL: r = a << amt; break;
+        case EMU_IR_V_SRL: r = a >> amt; break;
+        case EMU_IR_V_SRA: r = (uint32_t)(sa >> amt); break;
+        default: r = b; break; /* EMU_IR_V_MV */
+        }
+        for (uint32_t k = 0; k < w; k++) {
+            vd[i * w + k] = (uint8_t)(r >> (8u * k));
+        }
+    }
+}
+
 void emu_ir_reset(emu_ir_block_t *b)
 {
     b->count = 0u;

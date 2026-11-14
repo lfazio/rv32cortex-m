@@ -94,14 +94,15 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|elf|upload|gdb|virtio|telnet|all]
+./scripts/fuzz.sh SECS [ISA|rv32-vec|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|elf|upload|gdb|virtio|telnet|all]
                                 # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; `ir`: random
                                 # IR blocks, before the passes against the
                                 # compiled code; `rv32-mmu`: Sv32, PMP and
                                 # the data TLB against a walk from the spec;
                                 # `rv32-vm`: the same in S/U code, fetch and
-                                # the JIT's probe; `*-mpu`, `ppc-tlb`: an
+                                # the JIT's probe; `rv32-vec`: rv32 with
+                                # the vector unit; `*-mpu`, `ppc-tlb`: an
                                 # MPU or TLB against its manual, one
                                 # instruction a step; `elf`, `upload`,
                                 # `gdb`, `virtio`: what arrives from outside
@@ -615,6 +616,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   `test_it_board_answers`), and ask dangerous encodings last -- or
   resume past them (`run.py --resume`): a case after which the board
   says nothing more is an answer too.
+- **An `else` after the cases you lower takes every case you did not
+  list**: the vector translator tested funct3 for OPM and read every
+  other value as OPI, so an OPFVV ran as `vadd.vx`
+  (`rv32-jit/opfvv-lowered-as-vadd-vx`, four minutes of `rv32-vec`).
+  Name the values a table is for.
 - **A register field reused as an opcode extension will not tell you**
   (G4MH `reg2 == 0`, five instances, the last stopping every C guest);
   check every instruction sharing the opcode, and its width.

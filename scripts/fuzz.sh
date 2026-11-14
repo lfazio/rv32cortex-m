@@ -55,9 +55,9 @@ T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio | telnet | all) ;;
+rv32 | rv32-vec | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio | telnet | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm, elf, upload, gdb, virtio, telnet or all)"
+    echo "fuzz: no target '$T' (rv32, rv32-vec, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm, elf, upload, gdb, virtio, telnet or all)"
     exit 2
     ;;
 esac
@@ -75,6 +75,8 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz}
 # The binary, and the name its corpus and regressions go under.
 BIN=fuzz-$T-jit
 SET=$T-jit
+# The hand-written seeds: seeds/<ISA>-jit, or a set of the target's own.
+SEEDS=$T-jit
 # The longest input libFuzzer makes. An image is longer than an
 # instruction stream: the guests that seed fuzz-elf are tens of KB.
 MAXLEN=1024
@@ -91,6 +93,15 @@ if [ "$T" = g4mh-smp ]; then
     EXTRA=-DG4MH_PE_COUNT=3
     B=${FUZZ_SMP_BUILD:-$ROOT/build/fuzz-smp}
 fi
+# The RV32 fuzzer with the vector unit built in (-DRV32_EXT_ZVE32X=ON):
+# the JIT's inline vsetvli and EMU_IR_VOP against rv_vec.c, from the
+# vector seeds (seeds/rv32-vec-jit) and vecbench.
+if [ "$T" = rv32-vec ]; then
+    ISA=rv32
+    BIN=fuzz-rv32-jit
+    EXTRA=-DRV32_EXT_ZVE32X=ON
+    B=${FUZZ_VEC_BUILD:-$ROOT/build/fuzz-vec}
+fi
 
 mkdir -p "$B"
 # shellcheck disable=SC2086 # EXTRA is empty or one word
@@ -101,6 +112,7 @@ if ! CC=${CC:-clang} cmake -S "$ROOT" -B "$B" -DEMU_FUZZ=ON $EXTRA \
 fi
 case $T in
 rv32 | elf) GUESTS="guest-isatest guest-coremark guest-dhrystone" ;;
+rv32-vec) GUESTS="guest-vecbench" ;;
 armv7m) GUESTS="guest-armv7m-coremark guest-armv7m-dhrystone guest-armv7m-crypto" ;;
 ppc) GUESTS="guest-ppc-coremark guest-ppc-dhrystone guest-ppc-alu" ;;
 *) GUESTS="" ;;
@@ -167,6 +179,10 @@ asm() {
         CC_SEED=$(grep -m1 '^RISCV_GCC:' "$B/CMakeCache.txt" | cut -d= -f2)
         FLAGS="-march=rv32imac_zicsr -mabi=ilp32"
         ;;
+    rv32-vec)
+        CC_SEED=$(grep -m1 '^RISCV_GCC:' "$B/CMakeCache.txt" | cut -d= -f2)
+        FLAGS="-march=rv32imac_zicsr_zve32x -mabi=ilp32"
+        ;;
     armv7m)
         CC_SEED=$(command -v arm-none-eabi-gcc || true)
         FLAGS="-mcpu=cortex-m7 -mthumb"
@@ -181,7 +197,7 @@ asm() {
     # Assembled by the driver, linked by ld itself: the drivers' default
     # link scripts carry a `flash` region that 0x2000_0000 is not in.
     LD_EMU=
-    [ "$T" = rv32 ] && LD_EMU="-m elf32lriscv"
+    [ "$T" = rv32 ] || [ "$T" = rv32-vec ] && LD_EMU="-m elf32lriscv"
     [ "$T" = ppc ] && LD_EMU="-m elf32ppc"
     # Where the target runs its program: ARMv7-M's is the M7's flash.
     TEXT=0x20000000
@@ -196,7 +212,7 @@ asm() {
 # without being shown the way (scripts/fuzz-mutant.sh).
 seeds() {
     [ -z "${FUZZ_NO_DEVICE_SEEDS:-}" ] || return 0
-    for src in "$ROOT"/tests/fuzz/seeds/"$ISA"-jit/*.S; do
+    for src in "$ROOT"/tests/fuzz/seeds/"$SEEDS"/*.S; do
         [ -f "$src" ] || continue
         n=$(basename "$src" .S)
         if asm "$src" "$B/corpus/$n.bin"; then
@@ -209,6 +225,11 @@ seeds() {
 
 Z='\000\000\000\000'
 case $T in
+rv32-vec)
+    text "$B/guest/vecbench.elf" "$B/corpus/vecbench.text" &&
+        seed "$B/corpus/vecbench.text" vecbench
+    seeds
+    ;;
 rv32)
     for g in isatest coremark dhrystone; do
         text "$B/guest/$g.elf" "$B/corpus/$g.text" && seed "$B/corpus/$g.text" "$g"

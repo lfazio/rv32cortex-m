@@ -86,9 +86,36 @@ which every host here is, where they were a byte loop. Together, on
 vecbench: interpreted 278.5M host instructions to 122.9M, under the JIT
 225.4M to 69.7M -- 3.6x fewer than the JIT that declined.
 
-What is left under the JIT is the arithmetic's element loops, 70% of
-the run; lowering it with the host's SIMD is the next step
-([TODO](../TODO.md)).
+**The arithmetic is lowered with the host's SIMD** where the block
+knows vtype: after a `vsetvli` or `vsetivli` it lowered itself, which
+puts vl, vtype and a zero vstart in the hart and vl in rd as IR
+operations (`rv_ir_vset`; vl = AVL less `(AVL - VLMAX) & -(AVL >
+VLMAX)`, RISC-V having no select). From there to the block's end
+nothing can change vtype -- it has no CSR write, a CSR write ends the
+block, and the helper's `vsetvl` makes the block forget it -- and
+vstart stays 0. Unmasked `vadd`, `vsub`, `vrsub`, `vand`, `vor`,
+`vxor`, `vminu`, `vmin`, `vmaxu`, `vmax`, `vmul`, `vsll`, `vsrl`,
+`vsra` and `vmv.v` become `EMU_IR_VOP` when the backend says it lowers
+that form (`emu_ir_can_lower`), and VS is marked Dirty at the block's
+first; the rest stays the helper. VS off is in the block's context
+(`rv_jit_ctx_key` bit 40), as FS off is, because the inline vsetvli has
+no test of its own. The x86-64 lowering is SSE2 and SSE4.1
+([backend/x86_64.md](../backend/x86_64.md#the-guests-vector-registers-sse2-and-sse41));
+Thumb-2 declines every form for now.
+
+vecbench under the JIT, one binary, callgrind: the helper alone
+(`EMU_HOST_SIMD=0`) 67.6M host instructions, SSE2 64.6M, SSE4.1 59.0M,
+the same checksum each. What is left is the helper's: the loads and
+stores, a call each, and the forms not lowered -- the averaging add, the
+multiply-adds, widening and narrowing ([TODO](../TODO.md)).
+
+`fuzz-rv32-jit` built with the unit (`scripts/fuzz.sh SECS rv32-vec`)
+compares the vector registers and CSRs; its first four minutes found an
+OPFVV instruction lowered as `vadd.vx` (above, in
+[fuzzing.md](../fuzzing.md#what-it-found)), and ten more minutes, 242,141
+programs compared, nothing. Its seeds find three mutants in seconds:
+the SSE tail mask a byte late, vl left unclamped to VLMAX, a `.vi`
+immediate taken unsigned (`scripts/fuzz-mutant.sh`).
 
 ## How it is checked
 

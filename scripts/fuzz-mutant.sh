@@ -9,7 +9,7 @@
 # the fuzz target through scripts/fuzz.sh in build/fuzz-mutant
 # (FUZZ_BUILD overrides), fuzzes for SECS seconds from a fresh corpus --
 # so one mutant's finds cannot help the next -- and puts FILE back.
-# TARGET is any of fuzz.sh's: rv32, armv7m, g4mh, g4mh-smp, ppc.
+# TARGET is any of fuzz.sh's: rv32, rv32-vec, armv7m, g4mh, g4mh-smp, ppc.
 # FUZZ_NO_DEVICE_SEEDS=1 leaves the hand-written device seeds out, to ask
 # whether fuzzing reaches the mutant without being shown the way, and
 # FUZZ_NO_DICT=1 the dictionary of device instructions (fuzz.sh).
@@ -50,7 +50,8 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 }
 SECS=$1 T=$2 FILE=$3 OLD=$4 NEW=$5
 shift 5
-ISA=${T%-smp} # the binary: g4mh-smp is fuzz-g4mh-jit
+ISA=${T%-smp} # the binary: g4mh-smp is fuzz-g4mh-jit, rv32-vec fuzz-rv32-jit
+ISA=${ISA%-vec}
 B=${FUZZ_BUILD:-$ROOT/build/fuzz-mutant}
 LOG=$B.$T.log
 NAME=fuzz-$ISA-jit
@@ -95,7 +96,7 @@ mkdir -p "$B" # and its parent, where the log goes: a fresh checkout has no buil
 rm -rf "$B/corpus/$SET" "$ART"
 start=$(date +%s)
 status=0
-FUZZ_BUILD=$B FUZZ_SMP_BUILD=$B "$ROOT/scripts/fuzz.sh" "$SECS" "$T" "$@" \
+FUZZ_BUILD=$B FUZZ_SMP_BUILD=$B FUZZ_VEC_BUILD=$B "$ROOT/scripts/fuzz.sh" "$SECS" "$T" "$@" \
     >"$LOG" 2>&1 || status=$?
 end=$(date +%s)
 

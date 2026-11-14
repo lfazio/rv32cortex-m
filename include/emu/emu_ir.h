@@ -88,6 +88,55 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------ */
+/* Guest vector registers: EMU_IR_VOP                                  */
+/* ------------------------------------------------------------------ */
+
+/* Bytes a guest vector register holds: RISC-V's VLEN 128. */
+#define EMU_IR_VREG_BYTES 16u
+
+/* EMU_IR_VOP's operations, element by element: d = s2 op s1. */
+#define EMU_IR_V_ADD 0u
+#define EMU_IR_V_SUB 1u
+#define EMU_IR_V_RSUB 2u /* s1 - s2 */
+#define EMU_IR_V_AND 3u
+#define EMU_IR_V_OR 4u
+#define EMU_IR_V_XOR 5u
+#define EMU_IR_V_MINU 6u
+#define EMU_IR_V_MIN 7u
+#define EMU_IR_V_MAXU 8u
+#define EMU_IR_V_MAX 9u
+#define EMU_IR_V_MUL 10u /* the low half */
+#define EMU_IR_V_SLL 11u /* by s1's low log2(bits) bits */
+#define EMU_IR_V_SRL 12u
+#define EMU_IR_V_SRA 13u
+#define EMU_IR_V_MV 14u /* d = s1 */
+#define EMU_IR_V_COUNT 15u
+
+#define EMU_IR_VOP_AUX(op, sew, vx)                                            \
+    ((uint8_t)((op) | ((uint32_t)(sew) << 4) | ((vx) ? 0x80u : 0u)))
+#define EMU_IR_VOP_OP(aux) ((uint32_t)(aux) & 15u)
+#define EMU_IR_VOP_SEW(aux) (((uint32_t)(aux) >> 4) & 3u) /* log2 bytes */
+#define EMU_IR_VOP_VX(aux) (((uint32_t)(aux) & 0x80u) != 0u)
+
+#define EMU_IR_VOP_IMM(vd, vs2, vs1, lg)                                       \
+    ((uint32_t)(vd) | ((uint32_t)(vs2) << 5) | ((uint32_t)(vs1) << 10) |       \
+     ((uint32_t)(lg) << 15))
+#define EMU_IR_VOP_VD(imm) ((uint32_t)(imm) & 31u)
+#define EMU_IR_VOP_VS2(imm) (((uint32_t)(imm) >> 5) & 31u)
+#define EMU_IR_VOP_VS1(imm) (((uint32_t)(imm) >> 10) & 31u)
+#define EMU_IR_VOP_NREGS(imm) (1u << (((uint32_t)(imm) >> 15) & 3u))
+
+/*
+ * EMU_IR_VOP in C: the group at vd, from the groups at vs2 and vs1 (vs1
+ * ignored for a .vx form, whose operand is `scalar`), its first vl
+ * elements. The registers are little-endian bytes, as every host here
+ * holds them. The reference every lowering is held to, and the IR
+ * interpreter's implementation.
+ */
+void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                    uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl);
+
+/* ------------------------------------------------------------------ */
 /* Guest condition flags                                               */
 /* ------------------------------------------------------------------ */
 
@@ -477,6 +526,35 @@ typedef enum emu_ir_op {
 
     EMU_IR_EXIT,
     EMU_IR_EXIT_IF,
+
+    /*
+     * An operation on whole guest vector registers, element by element.
+     *
+     * **A vector register is a place, not a value**: every IR value is
+     * 32 bits, and these live in the guest's state at
+     * emu_ir_target_t::vreg_offset, EMU_IR_VREG_BYTES each, where the
+     * backend reads and writes them -- with the host's SIMD where it has
+     * the operation (emu_ir_can_lower(EMU_IR_VOP, aux)), and a frontend
+     * whose host has not keeps its helper.
+     *
+     *   aux  EMU_IR_VOP_AUX(op, sew, vx): the operation (EMU_IR_V_*),
+     *        log2 of the element's bytes (0-2), and whether the second
+     *        operand is the scalar `a` rather than the register vs1
+     *   imm  EMU_IR_VOP_IMM(vd, vs2, vs1, lg): the registers, and log2 of
+     *        how many a group holds (0-3); vd, vs2 and vs1 are each the
+     *        first of a group, and two groups are the same or disjoint
+     *   a    the scalar operand, taken at the element's width (and for a
+     *        shift, its low log2(bits) bits), or EMU_IR_NO_TEMP
+     *   b    vl: element i is written only for i < vl, every other
+     *        element of vd left as it was. vl is at most the group's
+     *        element count.
+     *
+     * Reads and writes nothing else -- no guest register, no flag, no
+     * memory -- so no pass need treat it as an observer: it is ordered
+     * against the helpers that read vector state by being before them.
+     * emu_ir_vop_ref is its meaning, in C.
+     */
+    EMU_IR_VOP,
 
     EMU_IR_OP_COUNT
 } emu_ir_op_t;
@@ -1052,6 +1130,11 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
 typedef struct emu_ir_target {
     /* Byte offset of guest register `n` within emu_cpu_t. */
     uint32_t (*reg_offset)(uint32_t n);
+    /*
+     * Where guest vector register n starts in the cpu state, for
+     * EMU_IR_VOP; NULL for a guest that has none, which then emits none.
+     */
+    uint32_t (*vreg_offset)(uint32_t n);
 
     /* Byte offset of the word holding the guest's condition flags. */
     uint32_t flags_offset;

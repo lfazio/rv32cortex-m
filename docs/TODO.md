@@ -209,12 +209,16 @@ From the last measurements in [linux.md](linux.md).
       Zve32f, then Zve64x/f/d, then V and its `misa` bit
       ([frontend/rv32-vector.md](frontend/rv32-vector.md)). The UDB and
       Sail configurations wait for an arch-test pin with vector suites.
-- [ ] **Vector arithmetic lowered with the host's SIMD**: every vector
-      instruction is a helper call under the JIT now, and accesses to
-      plain RAM are copies, but the arithmetic is rv_vec.c's element
-      loops -- 70% of vecbench under the JIT. SSE2/SSE4.1 on x86-64 and
-      the DSP extension's 8- and 16-bit SIMD on the M7, with the vector
-      unit in the JIT fuzzer ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
+- [ ] **The vector unit's SIMD lowering, past its first set**: unmasked
+      single-width integer operations lower to SSE2/SSE4.1 on x86-64
+      after an inline vsetvli (`EMU_IR_VOP`). Next: the same set on
+      Thumb-2 with the DSP extension's 8- and 16-bit SIMD (UADD8,
+      USUB16, SEL...), measured on the F746 with vecbench and `EMU_IR_VOP`
+      in fuzz-ir so `ir-board.sh` reaches it; unit-stride loads and stores
+      inline through the RAM window; the multiply-adds; `vaaddu` and
+      `vaadd` under `rnu` as `pavgb`/`pavgw` (vxrm in the context);
+      masked forms; the N6's MVE (Helium), a 128-bit unit
+      ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
       under the x86-64 JIT now, AES's S-box between two maps of two
       `pshufb` each ([backend/x86_64.md](backend/x86_64.md#aes-ni-and-pclmulqdq));

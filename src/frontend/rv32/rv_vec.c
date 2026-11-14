@@ -90,6 +90,11 @@ static uint32_t vlmax_of(uint32_t vt)
     return (RV_VLEN / sew) >> (uint32_t)(-lg);
 }
 
+uint32_t rv_vec_vlmax(uint32_t vtype)
+{
+    return vlmax_of(vtype);
+}
+
 static rv_exc_t vsetvl(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 {
     const uint32_t rd = (insn >> 7) & 31u;

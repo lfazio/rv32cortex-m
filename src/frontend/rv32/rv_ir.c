@@ -244,12 +244,29 @@ static bool rv_ir_dtlb(emu_cpu_t *cpu, emu_ir_dtlb_t *out)
  * register is written.
  */
 #define RV_IR_MSTATUS 32u
+#if RV_EXT_ZVE32X
+/* The vector unit's state an inline vsetvli writes and its operations read. */
+#define RV_IR_VL 33u
+#define RV_IR_VTYPE 34u
+#define RV_IR_VSTART 35u
+#endif
 
 static uint32_t rv_reg_offset(uint32_t n)
 {
     if (n == RV_IR_MSTATUS) {
         return (uint32_t)offsetof(rv_hart_t, mstatus);
     }
+#if RV_EXT_ZVE32X
+    if (n == RV_IR_VL) {
+        return (uint32_t)offsetof(rv_hart_t, vl);
+    }
+    if (n == RV_IR_VTYPE) {
+        return (uint32_t)offsetof(rv_hart_t, vtype);
+    }
+    if (n == RV_IR_VSTART) {
+        return (uint32_t)offsetof(rv_hart_t, vstart);
+    }
+#endif
     return (uint32_t)offsetof(rv_hart_t, x) + n * 4u;
 }
 
@@ -258,6 +275,16 @@ static bool rv_reg_zero(uint32_t n)
 {
     return n == 0u;
 }
+
+#if RV_EXT_ZVE32X
+_Static_assert(RV_VLENB == EMU_IR_VREG_BYTES,
+               "EMU_IR_VOP's registers are VLEN 128's");
+
+static uint32_t rv_vreg_offset(uint32_t n)
+{
+    return (uint32_t)offsetof(rv_hart_t, v) + n * RV_VLENB;
+}
+#endif
 
 #if RV_EXT_F
 static uint32_t rv_freg_offset(uint32_t n)
@@ -777,6 +804,9 @@ static uint16_t rv_ir_unary(emu_ir_block_t *b, emu_ir_op_t op, uint16_t x)
 
 const emu_ir_target_t rv_ir_target = {
     .reg_offset = rv_reg_offset,
+#if RV_EXT_ZVE32X
+    .vreg_offset = rv_vreg_offset,
+#endif
     /*
      * No condition flags at all. flags_offset is unused while every
      * flag_bit is zero, and nothing this file emits reads or writes
@@ -1105,6 +1135,206 @@ static bool rv_ir_crypto(emu_ir_block_t *b, uint32_t insn)
 }
 #endif
 
+#if RV_EXT_ZVE32X
+/*
+ * The vector instructions a block lowers inline, and the vtype it knows.
+ *
+ * **vtype is known only after a vsetvli this block lowered**: the
+ * immediate form names it, and from there to the block's end nothing
+ * else in a block can change it -- vtype has no CSR write, and the
+ * helper's vsetvl forgets it (RV_IR_VT_UNKNOWN). Nothing a block is
+ * specialised on is vtype, so a block entered with another vtype from
+ * outside never assumed one. vstart is 0 there too: vset clears it, an
+ * access that completes leaves it 0, one that faults leaves the block,
+ * and a CSR write ends the block before it.
+ *
+ * The rest goes to the helper: vill, vsetvl, a masked operation, a
+ * register group that is not aligned, a form the host cannot lower
+ * (emu_ir_can_lower), and everything without a mapping below.
+ */
+#define RV_IR_VT_UNKNOWN 0x80000000u /* vill: no vtype a block may assume */
+
+static EMU_PER_CORE uint32_t g_vt;
+static EMU_PER_CORE bool g_vs_marked;
+
+/* VS Dirty at the block's first inline vector instruction, as fput marks
+ * FS: Spike's rule, that every vector instruction that runs marks it. */
+static void vs_mark(emu_ir_block_t *b)
+{
+    if (!g_vs_marked) {
+        g_vs_marked = true;
+        emu_ir_put(b, RV_IR_MSTATUS,
+                   emu_ir_emit(b, EMU_IR_ORI, 0u, emu_ir_get(b, RV_IR_MSTATUS),
+                               EMU_IR_NO_TEMP, MSTATUS_VS_MASK, 0u));
+    }
+}
+
+static bool h_vs_off(const emu_cpu_t *cpu)
+{
+    return (((const rv_hart_t *)cpu)->mstatus & MSTATUS_VS_MASK) == 0u;
+}
+
+/* vsetvli and vsetivli with a vtype this unit holds: vl = min(AVL, VLMAX). */
+static bool rv_ir_vset(emu_ir_block_t *b, uint32_t insn)
+{
+    const uint32_t rd = rv_rd(insn);
+    const uint32_t rs1 = rv_rs1(insn);
+    const bool imm = (insn >> 30) == 3u;
+    uint32_t vt;
+
+    if ((insn >> 31) == 0u) {
+        vt = (insn >> 20) & 0x7FFu;
+    } else if (imm) {
+        vt = (insn >> 20) & 0x3FFu;
+    } else {
+        return false; /* vsetvl: vtype from a register */
+    }
+    const uint32_t vlmax = rv_vec_vlmax(vt);
+
+    if (vlmax == 0u) {
+        return false; /* vill */
+    }
+
+    uint16_t vl;
+
+    if (imm) {
+        vl = emu_ir_const(b, (rs1 < vlmax) ? rs1 : vlmax);
+    } else if (rs1 != 0u) {
+        /* avl - ((avl - vlmax) & -(avl > vlmax)): no select on RISC-V. */
+        const uint16_t avl = emu_ir_get(b, rs1);
+        const uint16_t max = emu_ir_const(b, vlmax);
+        const uint16_t over = emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_GTU, avl,
+                                          max, 0u, 0u);
+        const uint16_t mask = emu_ir_emit(b, EMU_IR_NEG, 0u, over,
+                                          EMU_IR_NO_TEMP, 0u, 0u);
+
+        vl = emu_ir_alu(b, EMU_IR_SUB, avl,
+                        emu_ir_alu(b, EMU_IR_AND,
+                                   emu_ir_alu(b, EMU_IR_SUB, avl, max), mask));
+    } else if (rd != 0u) {
+        vl = emu_ir_const(b, vlmax);
+    } else if (g_vt != RV_IR_VT_UNKNOWN && rv_vec_vlmax(g_vt) == vlmax) {
+        vl = emu_ir_get(b, RV_IR_VL); /* keep vl: VLMAX the same */
+    } else {
+        return false; /* keep vl under a VLMAX this block cannot see */
+    }
+    vs_mark(b);
+    emu_ir_put(b, RV_IR_VL, vl);
+    emu_ir_put(b, RV_IR_VTYPE, emu_ir_const(b, vt));
+    emu_ir_put(b, RV_IR_VSTART, emu_ir_const(b, 0u));
+    if (rd != 0u) {
+        emu_ir_put(b, rd, vl);
+    }
+    g_vt = vt;
+    return true;
+}
+
+/*
+ * An OP-V arithmetic instruction to EMU_IR_VOP: which operation, and
+ * which of .vv (1), .vx (2) and .vi (4) it has -- the same forms
+ * rv_vec.c's opi_forms allows, so a form that does not exist still
+ * reaches the helper and its illegal instruction.
+ */
+static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t *op,
+                         uint32_t *forms)
+{
+    if (f3 == 2u || f3 == 6u) { /* OPMVV, OPMVX */
+        if (f6 == 0x25u) {
+            *op = EMU_IR_V_MUL;
+            *forms = 3u;
+            return true;
+        }
+        return false;
+    }
+    /*
+     * Only OPIVV, OPIVI and OPIVX from here. OPFVV and OPFVF (1 and 5)
+     * share the funct6 values below and are Zve32f's, which this unit
+     * has not: they must reach the helper and its illegal instruction.
+     * fuzz-rv32-jit with the unit built found an OPFVV run as vadd.vx.
+     */
+    if (f3 != 0u && f3 != 3u && f3 != 4u) {
+        return false;
+    }
+    switch (f6) {
+    case 0x00u: *op = EMU_IR_V_ADD; *forms = 7u; return true;
+    case 0x02u: *op = EMU_IR_V_SUB; *forms = 3u; return true;
+    case 0x03u: *op = EMU_IR_V_RSUB; *forms = 6u; return true;
+    case 0x04u: *op = EMU_IR_V_MINU; *forms = 3u; return true;
+    case 0x05u: *op = EMU_IR_V_MIN; *forms = 3u; return true;
+    case 0x06u: *op = EMU_IR_V_MAXU; *forms = 3u; return true;
+    case 0x07u: *op = EMU_IR_V_MAX; *forms = 3u; return true;
+    case 0x09u: *op = EMU_IR_V_AND; *forms = 7u; return true;
+    case 0x0Au: *op = EMU_IR_V_OR; *forms = 7u; return true;
+    case 0x0Bu: *op = EMU_IR_V_XOR; *forms = 7u; return true;
+    case 0x17u: *op = EMU_IR_V_MV; *forms = 7u; return true; /* vmv.v */
+    case 0x25u: *op = EMU_IR_V_SLL; *forms = 7u; return true;
+    case 0x28u: *op = EMU_IR_V_SRL; *forms = 7u; return true;
+    case 0x29u: *op = EMU_IR_V_SRA; *forms = 7u; return true;
+    default: return false;
+    }
+}
+
+static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
+{
+    const uint32_t f3 = (insn >> 12) & 7u;
+    const uint32_t f6 = insn >> 26;
+    const bool vm = ((insn >> 25) & 1u) != 0u;
+    const uint32_t vs2 = (insn >> 20) & 31u;
+    const uint32_t r1 = (insn >> 15) & 31u;
+    const uint32_t vd = (insn >> 7) & 31u;
+
+    if (h_vs_off(cpu)) {
+        return false;
+    }
+    if (f3 == 7u) {
+        return rv_ir_vset(b, insn);
+    }
+    if (g_vt == RV_IR_VT_UNKNOWN || !vm) {
+        return false;
+    }
+
+    uint32_t vop;
+    uint32_t forms;
+
+    if (!rv_ir_vop_of(f3, f6, &vop, &forms)) {
+        return false;
+    }
+    const uint32_t form = (f3 == 0u || f3 == 2u) ? 1u : (f3 == 3u) ? 4u : 2u;
+    const uint32_t sew = (g_vt >> 3) & 7u; /* log2 bytes: 0-2, vill aside */
+    const int32_t lg = ((g_vt & 7u) >= 4u) ? (int32_t)(g_vt & 7u) - 8
+                                           : (int32_t)(g_vt & 7u);
+    const uint32_t nlg = (lg > 0) ? (uint32_t)lg : 0u;
+    const uint32_t grp = 1u << nlg;
+    const bool shift = vop == EMU_IR_V_SLL || vop == EMU_IR_V_SRL ||
+                       vop == EMU_IR_V_SRA;
+
+    if ((forms & form) == 0u || vd % grp != 0u ||
+        (vop != EMU_IR_V_MV && vs2 % grp != 0u) ||
+        (vop == EMU_IR_V_MV && vs2 != 0u) || (form == 1u && r1 % grp != 0u)) {
+        return false;
+    }
+    const uint8_t aux = EMU_IR_VOP_AUX(vop, sew, form != 1u);
+
+    if (!emu_ir_can_lower(EMU_IR_VOP, aux)) {
+        return false;
+    }
+
+    uint16_t scalar = EMU_IR_NO_TEMP;
+
+    if (form == 2u) {
+        scalar = emu_ir_get(b, r1);
+    } else if (form == 4u) {
+        /* simm5, but a shift's is unsigned: uimm5 */
+        scalar = emu_ir_const(b, shift ? r1
+                                       : (uint32_t)((int32_t)(r1 << 27) >> 27));
+    }
+    vs_mark(b);
+    (void)emu_ir_emit(b, EMU_IR_VOP, aux, scalar, emu_ir_get(b, RV_IR_VL),
+                      EMU_IR_VOP_IMM(vd, vs2, r1, nlg), 0u);
+    return true;
+}
+#endif
+
 static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                       uint32_t pc, uint32_t len, bool *ends_block,
                       bool *counted)
@@ -1138,13 +1368,20 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
      * The vector unit, before the FP group's FS gate: VS gates these,
      * and rv_hart_vec asks it at run time. A trap leaves through the
      * helper's return, so nothing the block holds is assumed past it.
+     * What can be lowered is (rv_ir_vec), and the rest is the helper.
      */
     if (op == 0x57u ||
         ((op == 0x07u || op == 0x27u) && rv_vec_is_mem(insn))) {
+        if (op == 0x57u && rv_ir_vec(cpu, b, insn)) {
+            return true;
+        }
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           pc, 0u);
         (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, emu_ir_const(b, insn),
                           EMU_IR_NO_TEMP, RV_IR_HELPER_VEC, 0u);
+        if (op == 0x57u && f3 == 7u) {
+            g_vt = RV_IR_VT_UNKNOWN; /* the helper's vset: anything */
+        }
         return true;
     }
 #endif
@@ -2112,6 +2349,10 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
 #if RV_EXT_F
     g_fs_marked = false;
+#endif
+#if RV_EXT_ZVE32X
+    g_vt = RV_IR_VT_UNKNOWN;
+    g_vs_marked = false;
 #endif
     b->start_pc = pc;
     b->has_fast = rv_ir_fast_mem(cpu, &b->fast);

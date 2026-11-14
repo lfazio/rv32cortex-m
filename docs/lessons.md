@@ -4918,6 +4918,19 @@ session, and every one of them recurred:
   measured against has changed shape, and read a hot decoder as a cache
   question first.**
 
+- **An `else` after the cases you lower takes every case you did not
+  list.** The first vector lowering in rv_ir.c mapped OP-V's funct6 to
+  an operation: if funct3 was OPMVV or OPMVX it looked up the multiply,
+  and otherwise it read the OPI table -- written for funct3 0, 3 and 4.
+  Funct3 1 and 5 are OPFVV and OPFVF, floating point, which Zve32x does
+  not have and must raise illegal instruction; funct6 0 there is
+  `vfadd`, and it was lowered as `vadd.vx`, the block running on where
+  the interpreter trapped. Every probe passed: they hold the instructions
+  that exist, and asked nothing of the ones that do not. The JIT fuzzer,
+  given the vector unit and four seeds, found it in four minutes.
+  **Name the values a branch is for, and send the rest where the
+  unknown goes.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

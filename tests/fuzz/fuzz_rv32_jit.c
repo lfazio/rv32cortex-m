@@ -182,6 +182,18 @@ static void build(side_t *sd)
         h->f[i] = (i & 1u) ? (0xFFFFFFFF00000000ull | s32) : d64;
     }
     h->mstatus |= FS_INITIAL;
+#if RV_EXT_ZVE32X
+    /*
+     * Every vector register a pattern no operation leaves behind, so a
+     * tail or a masked-off element written over shows; VS is Initial
+     * from reset, and vtype vill until a vset.
+     */
+    for (uint32_t r = 0; r < 32u; r++) {
+        for (uint32_t k = 0; k < RV_VLENB; k++) {
+            h->v[r][k] = (uint8_t)(0x5Au ^ (r * 17u) ^ (k * 29u));
+        }
+    }
+#endif
     h->mtvec = TRAP_BASE;
     h->mie = (1u << RV_INT_M_SOFT) | (1u << RV_INT_M_TIMER);
     rv_clint_init(&sd->clint, h); /* and points h->mtime at its mtime */
@@ -249,6 +261,29 @@ static void compare(void)
         SAME_AT(f, i);
     }
     SAME(fcsr);
+#if RV_EXT_ZVE32X
+    /*
+     * The vector unit: its registers a word at a time, and its CSRs.
+     * Lowered inline under the JIT (EMU_IR_VOP, an inline vsetvli) and
+     * run by rv_vec.c under the interpreter, so a lowering's tail, its
+     * masks of the scalar and its vl are all on this side.
+     */
+    for (unsigned r = 0; r < 32u; r++) {
+        for (unsigned w = 0; w < RV_VLENB / 4u; w++) {
+            uint32_t vi;
+            uint32_t vj;
+
+            memcpy(&vi, &g_interp.hart.v[r][w * 4u], 4u);
+            memcpy(&vj, &g_jit.hart.v[r][w * 4u], 4u);
+            fz_diff(&g_target, "v (register * 4 + word)", r * 4u + w, vi, vj);
+        }
+    }
+    SAME(vl);
+    SAME(vtype);
+    SAME(vstart);
+    SAME(vxrm);
+    SAME(vxsat);
+#endif
     SAME(priv);
     SAME(state);
     SAME(trap_count);

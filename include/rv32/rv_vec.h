@@ -30,4 +30,11 @@ static inline bool rv_vec_is_mem(uint32_t insn)
  */
 rv_exc_t rv_hart_vec(rv_hart_t *h, uint32_t insn, uint32_t *tval);
 
+/*
+ * VLMAX for a vtype, or 0 for one this unit cannot hold -- which vset
+ * answers with vill. One definition for the vector unit and for the
+ * translator, which resolves a vsetvli's at translation.
+ */
+uint32_t rv_vec_vlmax(uint32_t vtype);
+
 #endif /* RV32_RV_VEC_H */
