@@ -185,7 +185,91 @@ interrupt between the return and the next block forgets the block
 same bound a self-loop does — `EMU_JIT_LOOP_CAP` retired instructions —
 or nothing would check for a pending interrupt; an instruction that
 must reach the dispatcher at once, as G4MH's EI must for what it
-unmasks, exits to a target held in a value, which never chains.
+unmasks, exits to a target held in a value, which never chains -- and
+is not marked a plain jump, so the stub below does not send it on.
+
+### Computed jumps: the stub (`emu_jit_ibtc`)
+
+**A return cannot be chained, and returns were most of the
+dispatching.** On the host, the share of block entries that came back
+through a computed exit -- a `jalr`, `blr`, `bx lr`, `jmp [lp]` -- was
+200,168 of RV32 Dhrystone's 220,672, 201,063 of ARMv7-M's 241,530,
+220,169 of PowerPC's 262,958, and 483,056 of G4MH CoreMark's 801,786.
+
+So a translator marks the computed exits that are plain jumps
+(`EMU_IR_EXIT_JUMP`: RV32's JALR; G4MH's JARL [reg1], JMP [reg1], JMP
+disp32[reg1] and DISPOSE's return; PowerPC's `bclr` and `bcctr`;
+ARMv7-M's interworking BX, POP and LDR pc, and TBB/TBH), and a backend
+sends a chainable block's marked exit, its frame given back as a chained
+exit's is, to a stub of its own: one per core on x86-64, in the memory
+stubs' page; beside `t2_mem_stub` in ITCM on Thumb-2, reached as r11
+plus a constant. The stub hashes the target into a 64-entry table
+(multiply, top six bits), compares the entry's pc with the target and
+its context with the core's own -- read from the core's state, as the
+dispatcher reads it, so a block that changed its context on the way out
+finds nothing -- and the retired count with `EMU_JIT_LOOP_CAP`, as a
+chained exit does. On a match it bumps the entry's block's hit count,
+saturating, records the block, and jumps to its chain entry; otherwise
+it returns as the block's tail would, and marks the table to be filled.
+
+- **Opt in, never out.** Every computed exit meant "back to the
+  dispatcher" before this existed, and some still must: G4MH's EI and
+  ARMv7-M's ISB leave through one so that the interrupt they let in is
+  taken before the next instruction, and ARMv7-M reads the pc back after
+  the interpreter ran an instruction it cannot see into. Marked as jumps
+  and sent on, EI's interrupt was taken a block late (test_g4mh's "EI
+  four times").
+- **Filled only after a miss.** The dispatcher fills the entry for the
+  block it runs next after the stub's return said it missed. Filled at
+  every dispatch, PowerPC CoreMark paid 362,586 fills for 85,851
+  computed exits, and on the F746 a build whose PowerPC jumps were not
+  even marked ran 6.8% slower (21.26 host cycles an instruction against
+  19.91): the fill and the hash were calls out of the dispatcher.
+- **Hit counts and the link search.** Compaction keeps blocks by the
+  entries counted at lookup, and a block entered only from the stub
+  would read as cold; the stub counts its entries too. And an unlinked
+  exit in a block the stub entered is found only by a search starting
+  there, so the dispatcher starts `link_exit` from the last such block.
+- **Emptied wherever a block moves or goes**: a flush, a compaction, a
+  retirement, an unchaining -- every empty entry aimed at the stub's own
+  return, so even a false match only returns. And filled only for a
+  block after the first of a call, so a caller running one block a call
+  -- the gdb stub, unchained -- runs one block.
+
+Host, after the change (block entries; the jumps the stub sent on):
+
+| | entries before | after | sent on |
+|---|---|---|---|
+| RV32 Dhrystone | 220,672 | 70,611 | 190,049 |
+| ARMv7-M CoreMark | 318,175 | 209,482 | 116,540 |
+| PowerPC CoreMark | 286,144 | 205,029 | 82,645 |
+| G4MH CoreMark | 801,783 | 351,543 | 458,907 |
+
+On the F746 against 3ca1c74, host cycles an instruction under the JIT
+at two `.text` layouts, the retired counts and CRCs the same:
+
+| | before | after | |
+|---|---|---|---|
+| RV32 CoreMark x120 | 13.10 / 13.11 | 12.50 / 12.50 | -4.6% |
+| ARMv7-M CoreMark x200 | 16.60 / 16.72 | 15.53 / 15.52 | -6.5%, -7.2% |
+| PowerPC CoreMark | 20.06 / 20.06 | 19.97 / 19.97 | -0.45% |
+| G4MH CoreMark | 22.00 / 22.02 | 20.37 / 20.36 | -7.4%, -7.5% |
+| RV32 Dhrystone | 16.21 | 14.78 | -8.8% (entries 220,674 to 70,616) |
+| ARMv7-M Dhrystone | 21.65 | 20.32 | -6.1% |
+| PowerPC Whetstone | 35.01 | 34.69 | -0.9% |
+| RV32 Whetstone | 26.86 | 26.35 | -1.9% |
+
+CoreMark x650 at 32 KB, the run that compacts, 23.5 s and valid
+(`crcfinal 0x25e3`), 1,115,988 jumps sent on.
+
+The stats line reports it at the end of `blk entr` (`ibtc N`), and the
+fuzzers' summary as "computed jumps sent on". No fuzzer's random words
+reached it once filling waited for a miss; a seed in each frontend's
+directory (`calls-and-returns`) does, and `returns-sharing-a-slot.S` puts two
+return sites in one entry, which is the only way a stub that skipped
+the pc compare shows. `isbpend.S` (`guest-armv7m-isbpend-both`) holds
+ARMv7-M's ISB to the dispatcher; the fuzzers cannot, since they set
+aside every run whose interrupt may land at different places.
 
 An interrupt the dispatcher takes is counted as a retired instruction
 only where the frontend's interpreter counts one: RV32's and PowerPC's

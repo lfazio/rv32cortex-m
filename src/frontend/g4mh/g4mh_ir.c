@@ -591,7 +591,8 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         emu_ir_put(b, ((uint32_t)w1 >> 11) & 0x1Fu, emu_ir_const(b, pc + 4u));
         (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           0u, 0u);
-        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP, tgt,
+                              EMU_IR_NO_TEMP, 0u, 0u);
         *counted = true;
         *ends = true;
         return true;
@@ -704,7 +705,8 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
 
             (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
                               EMU_IR_NO_TEMP, 0u, 0u);
-            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+            (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP, tgt,
+                              EMU_IR_NO_TEMP, 0u, 0u);
             *ends = true;
             return true;
         }
@@ -1321,7 +1323,8 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
                                       emu_ir_const(b, d)),
                            emu_ir_const(b, ~1u));
 
-            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+            (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP, tgt,
+                              EMU_IR_NO_TEMP, 0u, 0u);
         }
         *counted = true;
         *ends = true;
@@ -1641,7 +1644,8 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
 
             (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
                               EMU_IR_NO_TEMP, 0u, 0u);
-            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+            (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP, tgt,
+                              EMU_IR_NO_TEMP, 0u, 0u);
             *counted = true;
             *ends = true;
         }

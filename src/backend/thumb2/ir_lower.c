@@ -465,7 +465,85 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    pop     {r0, pc}\n"
         "    .ltorg\n"
         "    .size t2_mem_stub, . - t2_mem_stub\n"
+        /*
+         * The computed exits' stub (emu_jit_ibtc), in the same section so
+         * that a block reaches it as r11 plus a constant. Entered with the
+         * target pc in r0, the core in r4, the count in r5 and the block's
+         * frame given back, as a chained exit leaves them; r1-r3 and r12
+         * are free. The return is any block's: every block pushes r4-r11
+         * and lr (emu_ir_lower checks), and this pops them.
+         */
+        "    .p2align 2\n"
+        "    .global t2_ibtc_stub\n"
+        "    .thumb_func\n"
+        "    .type t2_ibtc_stub, %function\n"
+        "t2_ibtc_stub:\n"
+        "    ldr     r3, =emu_jit_ibtc_state\n"
+        "    cmp     r5, #128\n"          /* EMU_JIT_LOOP_CAP */
+        "    bhs     9f\n"
+        "    ldr     r1, =0x9E3779B1\n"   /* emu_jit_ibtc_index */
+        "    mul     r1, r0, r1\n"
+        "    lsrs    r1, r1, #26\n"       /* 32 - EMU_JIT_IBTC_BITS */
+        "    ldr     r12, =emu_jit_ibtc\n"
+        "    add     r12, r12, r1, lsl #5\n"
+        "    ldr     r1, [r12]\n"         /* the entry's pc */
+        "    cmp     r1, r0\n"
+        "    bne     9f\n"
+        "    ldr     r2, [r3, #8]\n"      /* ctx_off */
+        "    add     r2, r2, r4\n"
+        "    ldrd    r0, r1, [r2]\n"      /* the core's context */
+        "    ldr     r2, [r12, #8]\n"
+        "    cmp     r2, r0\n"
+        "    bne     9f\n"
+        "    ldr     r2, [r12, #12]\n"
+        "    cmp     r2, r1\n"
+        "    bne     9f\n"
+        "    ldr     r2, [r12, #20]\n"    /* hits, saturating */
+        "    ldrh    r1, [r2]\n"
+        "    adds    r1, r1, #1\n"
+        "    usat    r1, #16, r1\n"
+        "    strh    r1, [r2]\n"
+        "    ldr     r1, [r12, #4]\n"     /* block: the state's last */
+        "    ldr     r2, [r3, #4]\n"
+        "    adds    r2, r2, #1\n"        /* and its hit count */
+        "    strd    r1, r2, [r3]\n"
+        "    ldr     r12, [r12, #16]\n"   /* entry, Thumb bit set */
+        "    bx      r12\n"
+        "    .global t2_ibtc_miss\n"
+        "    .thumb_func\n"
+        "    .type t2_ibtc_miss, %function\n"
+        "t2_ibtc_miss:\n"
+        "9:\n"
+        "    movs    r2, #1\n"            /* missed: the dispatcher fills */
+        "    str     r2, [r3, #12]\n"
+        "    mov     r0, r5\n"
+        "    pop     {r4-r11, pc}\n"
+        "    .ltorg\n"
+        "    .size t2_ibtc_stub, . - t2_ibtc_stub\n"
         ".popsection\n");
+
+_Static_assert(EMU_JIT_LOOP_CAP == 128u && EMU_JIT_IBTC_BITS == 6u &&
+                   EMU_JIT_IBTC_SHIFT == 5u,
+               "t2_ibtc_stub's constants");
+_Static_assert(offsetof(emu_jit_ibtc_t, block) == 4u &&
+                   offsetof(emu_jit_ibtc_t, context) == 8u &&
+                   offsetof(emu_jit_ibtc_t, entry) == 16u &&
+                   offsetof(emu_jit_ibtc_t, hits) == 20u &&
+                   sizeof(emu_jit_ibtc_t) == 32u,
+               "t2_ibtc_stub's offsets into an entry");
+_Static_assert(offsetof(emu_jit_ibtc_state_t, hits) == 4u &&
+                   offsetof(emu_jit_ibtc_state_t, ctx_off) == 8u &&
+                   offsetof(emu_jit_ibtc_state_t, missed) == 12u,
+               "t2_ibtc_stub's offsets into the state");
+
+/*
+ * Whether this block's computed jumps may go to t2_ibtc_stub, and r11's
+ * distance to it: only where the push list is the one the stub pops and
+ * the distance fits ADDW's twelve bits.
+ */
+static EMU_PER_CORE bool g_ibtc_ok;
+static EMU_PER_CORE uint32_t g_ibtc_delta;
+static EMU_PER_CORE bool g_ibtc_armed;
 
 /*
  * rd = rn + imm, for an access's address. ADDW/SUBW take any 12-bit
@@ -2045,6 +2123,23 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_imm32(T2_R0, in->imm);
         }
         t2_str_imm(rp, T2_CPU, t->pc_offset);
+        /*
+         * A plain jump through a register goes to the stub, which finds
+         * most of them a block to jump to (emu_jit_ibtc): the target in
+         * r0, the frame given back, `ADDW r12, r11, #delta ; BX r12`.
+         */
+        if (in->op == (uint8_t)EMU_IR_EXIT && !emu_ir_exit_is_const(in) &&
+            (in->aux & EMU_IR_EXIT_JUMP) != 0u && emu_jit_layout.chainable &&
+            g_ibtc_ok) {
+            if (rp != T2_R0) {
+                t2_mov(T2_R0, rp);
+            }
+            emit_frame_release(g_frame);
+            t2_addw(T2_R12, T2_STUB, (uint16_t)g_ibtc_delta);
+            t2_emit16((uint16_t)(0x4700u | (T2_R12 << 3))); /* BX r12 */
+            g_r0_holds = EMU_IR_NO_TEMP;
+            break;
+        }
         if (in->op == (uint8_t)EMU_IR_EXIT) {
             /*
              * A computed target cannot be matched against the block's
@@ -2546,6 +2641,25 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     for (uint32_t i = 0; i < g_nsaved; i++) {
         list |= 1u << t2_alloc_regs[i];
+    }
+
+    /*
+     * The computed jumps' stub pops r4-r11 and pc, whatever block it
+     * returns for; a block that pushed anything else must not go there.
+     * Its empty entries are aimed at its return once, here, before the
+     * first block that can use it exists.
+     */
+    {
+        const uintptr_t delta =
+            (uintptr_t)t2_ibtc_stub - (uintptr_t)t2_mem_stub;
+
+        g_ibtc_ok = list == 0x0FF0u && delta < 4096u &&
+                    ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
+        g_ibtc_delta = (uint32_t)delta;
+        if (g_ibtc_ok && !g_ibtc_armed) {
+            g_ibtc_armed = true;
+            emu_jit_ibtc_set_miss((const void *)t2_ibtc_miss);
+        }
     }
 
     /* What r11 will hold, and what the stub it names will call. */

@@ -279,6 +279,16 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-armv7m-spwrite-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # An ISB is where a pended exception is taken, under the JIT's
+    # computed jumps' stub too (isbpend.S).
+    if(TARGET guest-armv7m-isbpend)
+        add_test(NAME guest-armv7m-isbpend-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-isbpend.bin"
+                         ISBPEND-OK --frontend armv7m --max-insn 100000)
+        set_tests_properties(guest-armv7m-isbpend-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(TARGET guest-armv7m-faulthead)
         add_test(NAME guest-armv7m-faulthead-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

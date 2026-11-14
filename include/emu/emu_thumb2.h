@@ -238,6 +238,14 @@ extern const uint32_t t2_alloc_regs[T2_ALLOC_REGS];
  */
 void t2_mem_stub(void);
 
+/*
+ * Where a computed exit marked EMU_IR_EXIT_JUMP goes (emu_jit_ibtc),
+ * reached as r11 plus its distance from t2_mem_stub; and the return it
+ * makes when the table has nothing, which an empty entry names too.
+ */
+void t2_ibtc_stub(void);
+void t2_ibtc_miss(void);
+
 /* BLX to an address in a register. */
 void t2_blx(uint32_t rm);
 

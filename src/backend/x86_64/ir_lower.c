@@ -1021,13 +1021,9 @@ static EMU_PER_CORE unsigned g_mem_stubs;
 static EMU_PER_CORE uint8_t *g_mem_stub_page;
 static EMU_PER_CORE bool g_mem_stub_tried;
 
-static uint8_t *mem_stub(const void *fn, uint32_t spec)
+/* The page the stubs live in, mapped on first use; NULL if it cannot be. */
+static uint8_t *stub_page(void)
 {
-    for (unsigned i = 0u; i < g_mem_stubs; i++) {
-        if (g_mem_stub[i].fn == fn && g_mem_stub[i].spec == spec) {
-            return g_mem_stub[i].at;
-        }
-    }
     if (!g_mem_stub_tried) {
         g_mem_stub_tried = true;
 #ifdef MAP_32BIT
@@ -1040,7 +1036,17 @@ static uint8_t *mem_stub(const void *fn, uint32_t spec)
         }
 #endif
     }
-    if (g_mem_stub_page == NULL || g_mem_stubs == MEM_STUBS) {
+    return g_mem_stub_page;
+}
+
+static uint8_t *mem_stub(const void *fn, uint32_t spec)
+{
+    for (unsigned i = 0u; i < g_mem_stubs; i++) {
+        if (g_mem_stub[i].fn == fn && g_mem_stub[i].spec == spec) {
+            return g_mem_stub[i].at;
+        }
+    }
+    if (stub_page() == NULL || g_mem_stubs == MEM_STUBS) {
         return NULL;
     }
     uint8_t *const s = g_mem_stub_page + 20u * g_mem_stubs;
@@ -1064,6 +1070,132 @@ static uint8_t *mem_stub(const void *fn, uint32_t spec)
     g_mem_stub[g_mem_stubs].spec = spec;
     g_mem_stub[g_mem_stubs].at = s;
     g_mem_stubs++;
+    return s;
+}
+
+/*
+ * The computed exits' stub (emu_jit_ibtc), in the same page past the
+ * memory stubs' 64 x 20 bytes: entered with the target pc in eax, the
+ * core in rbx, the count in ebp and the block's frame given back --
+ *
+ *     movabs rsi, state ; cmp ebp, CAP ; jae miss
+ *     mov edx, eax ; imul edx, edx, K ; shr edx, 32 - BITS ; shl edx, 5
+ *     movabs rcx, table ; add rcx, rdx ; cmp [rcx], eax ; jne miss
+ *     mov edx, [rsi + 8] ; mov rdx, [rbx + rdx]
+ *     cmp rdx, [rcx + 8] ; jne miss
+ *     mov rdx, [rcx + 24] ; add word [rdx], 1 ; sbb word [rdx], 0
+ *     mov edx, [rcx + 4] ; mov [rsi], edx ; inc dword [rsi + 4]
+ *     jmp [rcx + 16]
+ *   miss: mov dword [rsi + 12], 1 ; the epilogue every block ends with
+ *
+ * -- written once a core. The table and the state are that core's: the
+ * page is too. The epilogue is any block's, because every block pushes
+ * the same registers (x86_prologue's uniform save set).
+ */
+#define IBTC_STUB_AT 2048u
+
+_Static_assert(offsetof(emu_jit_ibtc_t, block) == 4u &&
+                   offsetof(emu_jit_ibtc_t, context) == 8u &&
+                   offsetof(emu_jit_ibtc_t, entry) == 16u &&
+                   offsetof(emu_jit_ibtc_t, hits) == 24u &&
+                   sizeof(emu_jit_ibtc_t) == (1u << EMU_JIT_IBTC_SHIFT),
+               "the stub's offsets into an entry");
+_Static_assert(offsetof(emu_jit_ibtc_state_t, hits) == 4u &&
+                   offsetof(emu_jit_ibtc_state_t, ctx_off) == 8u &&
+                   offsetof(emu_jit_ibtc_state_t, missed) == 12u,
+               "the stub's offsets into the state");
+_Static_assert(MEM_STUBS * 20u <= IBTC_STUB_AT, "stubs overlap");
+
+static EMU_PER_CORE uint8_t *g_ibtc_stub;
+static EMU_PER_CORE bool g_ibtc_stub_tried;
+
+static uint8_t *ibtc_stub(void)
+{
+    if (g_ibtc_stub_tried) {
+        return g_ibtc_stub;
+    }
+    g_ibtc_stub_tried = true;
+    if (stub_page() == NULL) {
+        return NULL;
+    }
+
+    uint8_t *const s = g_mem_stub_page + IBTC_STUB_AT;
+    uint32_t n = 0u;
+    uint32_t to_miss[3];
+    uint32_t nmiss = 0u;
+#define B(x) (s[n++] = (uint8_t)(x))
+#define B32(x)                                                                 \
+    do {                                                                       \
+        const uint32_t v_ = (uint32_t)(x);                                     \
+        for (unsigned i_ = 0u; i_ < 4u; i_++) {                                \
+            B(v_ >> (8u * i_));                                                \
+        }                                                                      \
+    } while (0)
+#define B64(x)                                                                 \
+    do {                                                                       \
+        const uint64_t v_ = (uint64_t)(x);                                     \
+        for (unsigned i_ = 0u; i_ < 8u; i_++) {                                \
+            B(v_ >> (8u * i_));                                                \
+        }                                                                      \
+    } while (0)
+#define TO_MISS()                                                              \
+    do {                                                                       \
+        to_miss[nmiss++] = n;                                                  \
+        B32(0u);                                                               \
+    } while (0)
+
+    B(0x48); B(0xBE); B64((uintptr_t)&emu_jit_ibtc_state); /* movabs rsi */
+    B(0x81); B(0xFD); B32(EMU_JIT_LOOP_CAP);             /* cmp ebp, CAP */
+    B(0x0F); B(0x83); TO_MISS();                         /* jae miss */
+    B(0x89); B(0xC2);                                    /* mov edx, eax */
+    B(0x69); B(0xD2); B32(0x9E3779B1u);                  /* imul edx, K */
+    B(0xC1); B(0xEA); B(32u - EMU_JIT_IBTC_BITS);        /* shr edx, n */
+    B(0xC1); B(0xE2); B(EMU_JIT_IBTC_SHIFT);             /* shl edx, 5 */
+    B(0x48); B(0xB9); B64((uintptr_t)emu_jit_ibtc);      /* movabs rcx */
+    B(0x48); B(0x01); B(0xD1);                           /* add rcx, rdx */
+    B(0x39); B(0x01);                                    /* cmp [rcx], eax */
+    B(0x0F); B(0x85); TO_MISS();                         /* jne miss */
+    B(0x8B); B(0x56); B(0x08);                           /* mov edx, [rsi+8] */
+    B(0x48); B(0x8B); B(0x14); B(0x13);                  /* mov rdx, [rbx+rdx] */
+    B(0x48); B(0x3B); B(0x51); B(0x08);                  /* cmp rdx, [rcx+8] */
+    B(0x0F); B(0x85); TO_MISS();                         /* jne miss */
+    B(0x48); B(0x8B); B(0x51); B(0x18);                  /* mov rdx, [rcx+24] */
+    B(0x66); B(0x83); B(0x02); B(0x01);                  /* add word [rdx], 1 */
+    B(0x66); B(0x83); B(0x1A); B(0x00);                  /* sbb word [rdx], 0 */
+    B(0x8B); B(0x51); B(0x04);                           /* mov edx, [rcx+4] */
+    B(0x89); B(0x16);                                    /* mov [rsi], edx */
+    B(0xFF); B(0x46); B(0x04);                           /* inc dword [rsi+4] */
+    B(0xFF); B(0x61); B(0x10);                           /* jmp [rcx+16] */
+
+    const uint32_t miss = n;
+
+    for (uint32_t i = 0u; i < nmiss; i++) {
+        const uint32_t rel = miss - (to_miss[i] + 4u);
+
+        for (unsigned k = 0u; k < 4u; k++) {
+            s[to_miss[i] + k] = (uint8_t)(rel >> (8u * k));
+        }
+    }
+    B(0xC7); B(0x46); B(0x0C); B32(1u);           /* mov dword [rsi+12], 1 */
+    /* x86_epilogue(X86_ALLOC_REGS), byte for byte. */
+    for (uint32_t i = X86_ALLOC_REGS; i-- > 0u;) {
+        if (x86_alloc_regs[i] >= 8) {
+            B(0x41);
+        }
+        B(0x58u + ((unsigned)x86_alloc_regs[i] & 7u));
+    }
+    B(0x89); B(0xE8);                                    /* mov eax, ebp */
+    B(0x48); B(0x83); B(0xC4); B(0x08);                  /* add rsp, 8 */
+    B(0x5D);                                             /* pop rbp */
+    B(0x5B);                                             /* pop rbx */
+    B(0xC3);                                             /* ret */
+#undef B
+#undef B32
+#undef B64
+#undef TO_MISS
+
+    g_ibtc_stub = s;
+    emu_jit_ibtc_set_miss(s + miss);
     return s;
 }
 
@@ -1913,6 +2045,25 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * A computed target cannot be matched against the block's start
          * at translation time, so only the constant form chains.
          */
+        /*
+         * A computed one goes to the stub, which finds most of them a
+         * block to jump to (emu_jit_ibtc). Only from a block that can
+         * chain: one that cannot must leave through its tail.
+         */
+        if (!emu_ir_exit_is_const(in) && (in->aux & EMU_IR_EXIT_JUMP) != 0u &&
+            emu_jit_layout.chainable && ibtc_stub() != NULL) {
+            if (g_frame != 0u) {
+                emu_jit_emit8(0x48);
+                emu_jit_emit8(0x81);
+                emu_jit_emit8(0xC4);
+                emu_jit_emit32(g_frame); /* add rsp, frame */
+            }
+            emu_jit_emit8(0xB9); /* mov ecx, stub: below 4 GB */
+            emu_jit_emit32((uint32_t)(uintptr_t)ibtc_stub());
+            emu_jit_emit8(0xFF);
+            emu_jit_emit8(0xE1); /* jmp rcx */
+            break;
+        }
         if (!emu_ir_exit_is_const(in) ||
             (!loop_back(in->imm) && !chain_exit(in->imm))) {
             note_exit(x86_jmp32());

@@ -85,6 +85,8 @@ if(EMU_GUEST_ARCH_ARMV7M)
         add_armv7m_guest(tcm SOURCES tcm.S)
         # Every way an instruction writes sp, as the M7 answered.
         add_armv7m_guest(spwrite SOURCES spwrite.S)
+        # PendSV taken after an ISB, before what follows, every round.
+        add_armv7m_guest(isbpend SOURCES isbpend.S)
 
         #
         # **The Thumb-2 encoder, as a guest, executing what it emits.**

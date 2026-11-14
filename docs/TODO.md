@@ -157,8 +157,13 @@ measured at.
       ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
       What is left is the block's call into the helper, and beside it
       the dispatcher -- 12.9% of Whetstone's profile, where function
-      returns cannot chain. Discarded: the arithmetic in the block, 19%
-      slower on Thumb-2 for the temps it spent (`wip/ppc-efsmul-in-block`).
+      returns could not chain; most go through the computed jumps' stub
+      now (block entries 425,461 to 346,375, 79,086 sent on,
+      [jit/README.md](jit/README.md#computed-jumps-the-stub-emu_jit_ibtc)),
+      and what remains is blocks out of chain slots and blocks that stop
+      at their length cap without a chainable exit. Discarded: the
+      arithmetic in the block, 19% slower on Thumb-2 for the temps it
+      spent (`wip/ppc-efsmul-in-block`).
 
 ## Linux
 

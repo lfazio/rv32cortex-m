@@ -120,7 +120,7 @@ _Min_Stack_Size = 0x2000;
  * lower half of it, and AXISRAM3..6 stay available for a guest that
  * wants them -- which is what the enable in SystemInit is now for.
  *
- * 216K/295K rather than ST's 255K/256K because their split is sized for
+ * 220K/291K rather than ST's 255K/256K because their split is sized for
  * a blinky: the G4MH build overflows `RAM` by 3144 bytes at 256K. It was
  * 191K/320K until the RV32 build with `isatest` -- the guest image is in
  * ROM -- overflowed it by 1120 bytes; at 191K/320K the RV32 build had
@@ -131,7 +131,9 @@ _Min_Stack_Size = 0x2000;
  * of ROM to spare and G4MH about 41 KB of RAM, until RV32's scalar
  * crypto overflowed ROM by 800 bytes. At 216K/295K RV32 had about 4.4 KB
  * of ROM to spare, and about 1.1 KB once Zkr's RNG driver came in, with
- * 95 KB of RAM; G4MH about 37 KB of RAM. Moving
+ * 95 KB of RAM; G4MH about 37 KB of RAM -- and 160 bytes once the JIT's
+ * computed jumps' stub came in, 32 with four chain slots. At 220K/291K
+ * RV32 has about 4 KB of ROM and 87 KB of RAM. Moving
  * the line is free; the two halves are one bank, and RAM still ends at
  * 0x3420_0000.
  *
@@ -171,8 +173,8 @@ _Min_Stack_Size = 0x2000;
  */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 216K
-  RAM    (xrw)    : ORIGIN = 0x341B6400,   LENGTH = 295K
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 220K
+  RAM    (xrw)    : ORIGIN = 0x341B7400,   LENGTH = 291K
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
   ITCM   (rwx)    : ORIGIN = 0x10000000,   LENGTH = 64K
 }

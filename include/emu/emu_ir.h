@@ -481,6 +481,23 @@ typedef enum emu_ir_op {
     EMU_IR_OP_COUNT
 } emu_ir_op_t;
 
+/*
+ * EMU_IR_EXIT's aux: a computed exit that is a plain jump -- a return,
+ * a call or a jump through a register or a table -- which a backend may
+ * send on to the next block itself (emu_jit_ibtc) rather than back to
+ * the dispatcher.
+ *
+ * **Opt in, never out.** A computed exit without it returns to the
+ * dispatcher, which is what every translator meant by one before this
+ * existed: G4MH's EI and ARMv7-M's ISB leave through a computed exit to
+ * the next instruction precisely so that an interrupt they let in is
+ * taken before it, and a translator that reads the pc back after the
+ * interpreter ran an instruction cannot know what that instruction did.
+ * Marked as jumps and sent on, EI's interrupt was taken a block late
+ * (test_g4mh's "EI four times").
+ */
+#define EMU_IR_EXIT_JUMP 1u
+
 /* How EMU_IR_SETF derives the flags it defines. */
 typedef enum emu_ir_flagsrc {
     EMU_IR_FS_LOGIC = 0, /* Z and S from the result; V and C cleared */

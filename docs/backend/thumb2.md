@@ -61,7 +61,7 @@ the run's own report.
 |---|---|
 | `r4` | the `emu_cpu_t` pointer, callee-saved so it survives a helper |
 | `r5` | the retired count the block returns |
-| `r11` | `t2_mem_stub`, the slow path every load and store shares |
+| `r11` | `t2_mem_stub`, the slow path every load and store shares -- and, `ADDW r12, r11, #delta` away in the same ITCM section, `t2_ibtc_stub`, where a marked computed exit goes ([jit/README.md](../jit/README.md#computed-jumps-the-stub-emu_jit_ibtc)); it returns with `pop {r4-r11, pc}`, which is why every block's save set is the same, and `emu_ir_lower` checks it before sending an exit there |
 | `sp` | the temp frame: every IR value has a home in it |
 | `r0`–`r3`, `r12` | scratch, and the AAPCS argument registers |
 | `r6`–`r10` | handed out by `emu_ir_regalloc`, on top of the frame |

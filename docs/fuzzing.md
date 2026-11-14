@@ -217,6 +217,21 @@ region that `0x2000_0000` is not in, so the first five-minute run was
 seeded with nothing and its stats line said 0 of 37,617 compared runs
 had touched a device. That count is in the line for exactly this.
 
+**A mechanism random words reach by accident stops being reached when
+it changes.** The computed jumps' stub ([jit/README.md](jit/README.md#computed-jumps-the-stub-emu_jit_ibtc))
+was reached by no RV32, ARMv7-M or G4MH input, and by 36,000 PowerPC
+ones only while every dispatch filled its table; once it filled only
+after a miss, PowerPC's fell to 0 too. `calls-and-returns` in each
+frontend's directory calls and returns round a loop, and the summary's
+last field, "computed jumps sent on", says whether a run used the stub
+-- 17,827 RV32, 24,313 ARMv7-M and 26,511 G4MH in 30 s, and 69 of the
+PowerPC seed's 72 returns. Two mutants hold the x86-64 stub to it: its
+context compare dropped, found by RV32's seed in 21 s, which turns the
+FP unit off once before a return that lands on an f write; and its pc
+compare dropped, found in 7 s only once `returns-sharing-a-slot.S` put
+two return sites in one entry -- with every target in an entry of its
+own, a stub that compared nothing still jumped to the right block.
+
 ### Dictionaries
 
 The seeds show the fuzzer whole programs; a dictionary gives it the

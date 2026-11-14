@@ -132,6 +132,9 @@ static struct {
      * tables (docs/fuzzing.md) shows here whether it did. */
     uint64_t compactions;
     uint64_t thrashed;
+    /* Computed jumps the stub sent on (emu_jit_ibtc): 0 means it was
+     * never asked, whatever else agreed. */
+    uint64_t ibtc_hits;
 } fz_stats;
 
 static unsigned fz_diffs;
@@ -170,7 +173,7 @@ static void fz_print_stats(void)
             "an unsynchronised write; "
             "%llu retired, %llu translations, %llu block entries, "
             "%llu interpreted under the JIT, %llu compactions, "
-            "%llu pcs given up\n",
+            "%llu pcs given up, %llu computed jumps sent on\n",
             fz_stats.name, (unsigned long long)fz_stats.inputs,
             (unsigned long long)fz_stats.compared,
             (unsigned long long)fz_stats.with_device,
@@ -183,7 +186,8 @@ static void fz_print_stats(void)
             (unsigned long long)fz_stats.block_entries,
             (unsigned long long)fz_stats.interp_fallbacks,
             (unsigned long long)fz_stats.compactions,
-            (unsigned long long)fz_stats.thrashed);
+            (unsigned long long)fz_stats.thrashed,
+            (unsigned long long)fz_stats.ibtc_hits);
 }
 
 /* Once per process: the JIT's code buffer, and the stats line. */
@@ -375,6 +379,7 @@ static inline bool fz_pair(const fz_target_t *t, fz_side_t *interp,
         after.interp_fallbacks - before.interp_fallbacks;
     fz_stats.compactions += after.compactions - before.compactions;
     fz_stats.thrashed += after.thrashed - before.thrashed;
+    fz_stats.ibtc_hits += after.ibtc_hits - before.ibtc_hits;
     if (fz_show) {
         fprintf(stderr,
                 "%s: %s reason %d retired %llu aside %u devices %u; "

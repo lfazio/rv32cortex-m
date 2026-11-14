@@ -105,6 +105,46 @@
 EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
 EMU_PER_CORE const void *emu_jit_block_arg;
 
+/*
+ * `used`: Thumb-2's stub, in top-level asm, is the reader LTO cannot
+ * see, and without it the table was dropped and the link failed.
+ */
+#if defined(__GNUC__)
+#define JIT_ASM_READ __attribute__((used))
+#else
+#define JIT_ASM_READ
+#endif
+/* Read by every computed jump, so pinned with the core state. */
+JIT_ASM_READ EMU_PER_CORE emu_jit_ibtc_t
+    emu_jit_ibtc[EMU_JIT_IBTC_SIZE] EMU_HOT_DATA;
+JIT_ASM_READ EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state EMU_HOT_DATA;
+
+/* The backend's stub return; NULL, no stub, and nothing filled. */
+static EMU_PER_CORE const uint8_t *g_ibtc_miss;
+/* What an empty entry's hit count points at. */
+static EMU_PER_CORE uint16_t g_ibtc_sink;
+
+/* Every entry empty: an odd pc no block has, aimed at the stub's return. */
+static void ibtc_reset(void)
+{
+    if (g_ibtc_miss == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < EMU_JIT_IBTC_SIZE; i++) {
+        emu_jit_ibtc[i].pc = 1u;
+        emu_jit_ibtc[i].block = 0u;
+        emu_jit_ibtc[i].context = 0u;
+        emu_jit_ibtc[i].entry = g_ibtc_miss;
+        emu_jit_ibtc[i].hits = &g_ibtc_sink;
+    }
+}
+
+void emu_jit_ibtc_set_miss(const void *miss)
+{
+    g_ibtc_miss = (const uint8_t *)miss;
+    ibtc_reset();
+}
+
 typedef struct {
     uint64_t context; /* see emu_jit_hot_t::context. 64 bytes a
                        * block to 72 on Cortex-M: 2 KiB at 256      */
@@ -489,6 +529,7 @@ static bool retire_one(uint32_t index, const emu_jit_ops_t *ops)
     }
 
     unhash(index);
+    ibtc_reset();
     /*
      * Retired, not reclaimed. The bytes stay until compaction, which
      * drops anything unreachable; freeing here would need the code
@@ -864,6 +905,7 @@ void emu_jit_flush(void)
     g_max_span = 0u;
     g_block_count = 0u;
     g_code_used = 0u;
+    ibtc_reset();
     g_stats.flushes++;
     neg_invalidate();
 }
@@ -962,6 +1004,7 @@ static void rebuild_hash(void)
  */
 static void unlink_all(const emu_jit_ops_t *ops)
 {
+    ibtc_reset();
     if (ops->patch_link == NULL) {
         return;
     }
@@ -1265,6 +1308,7 @@ static void compact(const emu_jit_ops_t *ops)
     g_block_count = kept;
     g_code_used = (uint32_t)(dst - g_code);
     rebuild_hash();
+    ibtc_reset(); /* every survivor moved, and its index with it */
 
     /* Every survivor moved, so the whole live range is freshly written. */
     if (ops->sync != NULL) {
@@ -1599,6 +1643,27 @@ static block_fn_t block_entry(const uint8_t *code)
 #endif
 }
 
+/*
+ * The entry for the block about to run, for the computed exits that come
+ * back for its pc (emu_jit_ibtc). Not a block that cannot be chained
+ * into, whose exits must all pass through its tail.
+ */
+static EMU_NOINLINE void ibtc_fill(uint32_t pc, uint64_t context,
+                                    jit_block_t *b)
+{
+    emu_jit_ibtc_t *const e = &emu_jit_ibtc[emu_jit_ibtc_index(pc)];
+
+    if (g_ibtc_miss == NULL || !b->layout.chainable) {
+        return;
+    }
+    e->pc = pc;
+    e->block = (uint32_t)(b - g_blocks) + 1u;
+    e->context = context;
+    e->entry = (const uint8_t *)(uintptr_t)block_entry(
+        b->code + b->layout.chain_entry);
+    e->hits = &b->hits;
+}
+
 #ifdef EMU_JIT_DIFF
 /*
  * Run a block, and where the frontend offers a reference, run that too
@@ -1912,6 +1977,22 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
      * encodes.
      */
     jit_block_t *prev = NULL;
+    /*
+     * Whether a block has run in this call: only then is the next one
+     * entered in emu_jit_ibtc. A caller that runs one block a call --
+     * the gdb stub, unchained -- must not find a later call's block
+     * jumping on into another through the table, which it emptied, and
+     * which only a second block in one call can fill again.
+     */
+    bool ran = false;
+    /* Where the context lies, for the stub; no context, no table. */
+    const bool ibtc_ok = hot.context != NULL;
+
+    if (ibtc_ok) {
+        emu_jit_ibtc_state.ctx_off =
+            (uint32_t)((const uint8_t *)hot.context - (const uint8_t *)cpu);
+    }
+    emu_jit_ibtc_state.missed = 0u; /* a miss of the last call's is stale */
 
     while (done < budget) {
         const uint8_t st = *hot.state;
@@ -2086,14 +2167,32 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 
         const uint32_t charged0 = (hot.charged != NULL) ? *hot.charged : 0u;
 #ifdef EMU_JIT_DIFF
+        (void)ran;
+        (void)ibtc_ok;
         const uint32_t ret = run_block_checked(cpu, b, ops, fresh);
 #else
         (void)fresh; /* read by the differential checker alone */
+        if (EMU_UNLIKELY(emu_jit_ibtc_state.missed != 0u)) {
+            emu_jit_ibtc_state.missed = 0u;
+            if (ran && ibtc_ok) {
+                ibtc_fill(pc, context, b);
+            }
+        }
+        emu_jit_ibtc_state.last = 0u;
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
+        ran = true;
 #endif
         const uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
 
-        prev = (ret & EMU_JIT_RET_UNLINKED) ? b : NULL;
+        /*
+         * The exit to link is in this block or one its links lead to --
+         * or, where the stub entered a block since, in that one or one
+         * its links lead to: the search starts from the last such.
+         */
+        prev = ((ret & EMU_JIT_RET_UNLINKED) == 0u) ? NULL
+               : (emu_jit_ibtc_state.last != 0u)
+                   ? &g_blocks[emu_jit_ibtc_state.last - 1u]
+                   : b;
         g_stats.block_entries++;
 
         /*
@@ -2118,6 +2217,10 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             ops->count(cpu, n);
         }
     }
+
+    /* Counted by the stub, where a stats struct is out of reach. */
+    g_stats.ibtc_hits += emu_jit_ibtc_state.hits;
+    emu_jit_ibtc_state.hits = 0u;
 
     if (retired != NULL) {
         *retired = done;

@@ -959,8 +959,13 @@ static void exit_interwork(T *t, uint16_t v)
     emu_ir_put(b, R_CTX,
                OP(b, EMU_IR_OR, K(b, t->ctx & ~ARMV7M_CTX_T), tbit));
     retire(t);
-    (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, ANDK(b, v, 0xFFFFFFFEu), NOT, 0u,
-                      0u);
+    /*
+     * A plain jump even where T goes clear: the stub compares the
+     * context this block has just written, and no block is made for one
+     * with T clear, so that one still reaches the dispatcher.
+     */
+    (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP,
+                      ANDK(b, v, 0xFFFFFFFEu), NOT, 0u, 0u);
     t->ends = true;
 }
 
@@ -1799,7 +1804,7 @@ static bool lower_branch(T *t, const I *d)
                            half ? SHL(b, idx, 1u) : idx),
                         NOT, 0u, 0u);
         retire(t);
-        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u,
+        (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP,
                           OP(b, EMU_IR_ADD, K(b, t->pc + 4u), SHL(b, e, 1u)), NOT,
                           0u, 0u);
         t->ends = true;

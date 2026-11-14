@@ -182,6 +182,8 @@ typedef struct emu_jit_stats {
      * failing to find the exit.
      */
     uint32_t link_missed;
+    /* Computed exits the stub sent straight on (emu_jit_ibtc). */
+    uint32_t ibtc_hits;
     uint32_t code_used;
     uint32_t code_size;
     /*
@@ -455,6 +457,84 @@ extern EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
  * access. A host that wants nothing ignores it.
  */
 extern EMU_PER_CORE const void *emu_jit_block_arg;
+
+/*
+ * Where a computed exit looks before it goes back to the dispatcher.
+ *
+ * **A return cannot be chained, and returns were most of the
+ * dispatching.** An exit to a constant is patched to jump into its
+ * successor once both exist; a `jalr`, `blr` or `bx lr` goes wherever a
+ * register says, so it came back to emu_jit_run every time: 200,168 of
+ * RV32 Dhrystone's 220,672 block entries on the host, 201,063 of
+ * ARMv7-M's 241,530, 483,056 of G4MH CoreMark's 801,786.
+ *
+ * So a backend that can sends a chainable block's computed exit, its
+ * frame given back as a chained exit's is, to a stub of its own: the
+ * target pc hashed (emu_jit_ibtc_index) into this table, compared with
+ * the entry's pc and its context with the core's own (ctx_off bytes
+ * into its state, as the dispatcher would compare them), the
+ * retired count against EMU_JIT_LOOP_CAP, as a chained exit's is -- and
+ * on a match the entry's hit count bumped, saturating, its block
+ * recorded and the hit counted in emu_jit_ibtc_state, and a jump to
+ * `entry`. Anything else,
+ * the stub's own return, `miss`, as the block's tail would have.
+ *
+ * The stub's return marks `missed`, and the dispatcher fills an entry
+ * for the next block it runs after the first of a call -- the block the
+ * computed exit was looking for, so the table holds what computed exits
+ * came back for. **Only then**: filled at every dispatch, PowerPC
+ * CoreMark paid 362,586 fills for 85,851 computed exits, and with its
+ * jumps not even marked ran 6.8% slower on the F746. The
+ * framework empties it wherever a block moves or goes -- a flush, a
+ * compaction, a retirement, an unchaining -- with every empty entry
+ * aimed at `miss`, so even a false match only returns.
+ *
+ * `hits`, because a block entered only from here would otherwise read as
+ * cold to compaction, which ranks by entries counted at lookup; `block`,
+ * because an exit not yet linked in a block entered from here is found
+ * only by a search that starts there (link_exit). 32 bytes on both
+ * hosts, so the stub indexes with a shift.
+ */
+#ifndef EMU_JIT_IBTC_BITS
+#define EMU_JIT_IBTC_BITS 6u
+#endif
+#define EMU_JIT_IBTC_SIZE (1u << EMU_JIT_IBTC_BITS)
+#define EMU_JIT_IBTC_SHIFT 5u /* log2(sizeof(emu_jit_ibtc_t)) */
+
+typedef struct emu_jit_ibtc {
+    uint32_t pc;
+    uint32_t block; /* its index + 1, for emu_jit_ibtc_last */
+    uint64_t context;
+    const uint8_t *entry; /* chain entry, with the Thumb bit on Thumb */
+    uint16_t *hits;
+#if UINTPTR_MAX == 0xFFFFFFFFu
+    uint32_t pad[2];
+#endif
+} emu_jit_ibtc_t;
+
+extern EMU_PER_CORE emu_jit_ibtc_t emu_jit_ibtc[EMU_JIT_IBTC_SIZE];
+
+/* What the stub reads and writes beside the table, through one base. */
+typedef struct emu_jit_ibtc_state {
+    uint32_t last; /* the block a hit entered, index + 1; 0 before each */
+    uint32_t hits; /* lookups that jumped: the stats line's `ibtc`     */
+    uint32_t ctx_off; /* where the context sits in the core's state    */
+    uint32_t missed; /* set by a lookup that did not jump: fill next   */
+} emu_jit_ibtc_state_t;
+
+extern EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state;
+
+/* The entry for a pc: the top bits of a multiply, which reads them all. */
+static inline uint32_t emu_jit_ibtc_index(uint32_t pc)
+{
+    return (uint32_t)(pc * 0x9E3779B1u) >> (32u - EMU_JIT_IBTC_BITS);
+}
+
+/*
+ * From a backend whose stub exists: where an empty entry sends a lookup,
+ * the stub's own return. Until then, or after NULL, nothing is filled.
+ */
+void emu_jit_ibtc_set_miss(const void *miss);
 
 typedef struct emu_jit_ops {
     const char *name;

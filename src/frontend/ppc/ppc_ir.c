@@ -634,12 +634,14 @@ static void exit_const(T *t, uint32_t target)
     t->ends = true;
 }
 
+/* A branch through LR or CTR: a plain jump (EMU_IR_EXIT_JUMP). */
 static void exit_value(T *t, uint16_t target)
 {
     if (!t->counted) {
         retire(t);
     }
-    (void)emu_ir_emit(t->b, EMU_IR_EXIT, 0u, target, NOT, 0u, 0u);
+    (void)emu_ir_emit(t->b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP, target, NOT, 0u,
+                      0u);
     t->ends = true;
 }
 

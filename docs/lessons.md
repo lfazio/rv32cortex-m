@@ -4839,6 +4839,40 @@ session, and every one of them recurred:
   short. **Profile the fallback by host instructions per guest
   instruction, against the interpreter's own figure.**
 
+- **What every translator meant by a construct is a contract, and a
+  feature that reads it differently opts in.** A computed exit was the
+  way back to the dispatcher, and some translators used one on purpose:
+  G4MH's EI and ARMv7-M's ISB leave through an exit to a value so that
+  the interrupt they let in is taken before the next instruction. The
+  computed jumps' stub first sent every computed exit on, and EI's
+  interrupt came a block late -- caught by a unit test written for EI
+  long before (test_g4mh's "EI four times"). Now a translator marks the
+  plain jumps (`EMU_IR_EXIT_JUMP`) and an unmarked exit means what it
+  always meant. **Before giving an old construct a new meaning, grep for
+  every writer and ask what each meant by it.**
+
+- **A table filled on every dispatch is paid by every frontend, used or
+  not.** The stub's table was first filled for every block the
+  dispatcher ran: PowerPC CoreMark paid 362,586 fills for 85,851
+  computed exits, and a build whose PowerPC jumps were not even marked
+  -- counters identical to the old tree's -- ran 6.8% slower on the
+  F746, the fill and the index two calls out of the dispatcher (the PC
+  profile named both). Filled only after the stub missed, PowerPC's
+  Whetstone is faster where it had been 1.6% slower. **Profile a
+  feature with its users switched off: the cost that remains is the
+  one everyone pays.**
+
+- **A test whose event is caught by something else cannot see the
+  thing under test.** `isbpend.S` pended PendSV with a store and then
+  ran an ISB, to hold the ISB to the dispatcher -- and passed with the
+  ISB's exit marked a plain jump, because the store sat in a block of
+  its own, branched round, whose exit already returned to the
+  dispatcher, which took the interrupt there. With the store made
+  conditional in an IT block, one block with the ISB, the mutant fails.
+  **Run the mutant against the test before believing it reaches the
+  mechanism; and read the counters -- `ibtc 0` said the stub had never
+  run.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

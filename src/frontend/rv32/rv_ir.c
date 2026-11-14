@@ -1638,7 +1638,8 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         emu_ir_put(b, rd, emu_ir_const(b, pc + len));
         (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           0u, 0u);
-        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_EXIT, EMU_IR_EXIT_JUMP, tgt, EMU_IR_NO_TEMP,
+                          0u, 0u);
         *ends_block = true;
         *counted = true;
         return true;
