@@ -22,6 +22,8 @@
 
 #include "rv32/rv_csr.h"
 
+#include "emu/emu_bus.h"
+
 #include <string.h>
 
 #if RV_EXT_ZVE32X
@@ -146,27 +148,66 @@ static rv_exc_t vsetvl(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 /* Elements                                                            */
 /* ------------------------------------------------------------------ */
 
-/* Element i of the group at register vr, eb bytes wide, little-endian. */
+/*
+ * Element i of the group at register vr, eb (1, 2 or 4) bytes wide,
+ * little-endian -- which is the host's order on every host this runs on
+ * (emu_bus.h), so an element is one load. A byte loop was most of what
+ * a vector instruction cost.
+ */
+static uint8_t *el_ptr(rv_hart_t *h, uint32_t vr, uint32_t i, uint32_t eb)
+{
+    return &h->v[0][0] + vr * RV_VLENB + i * eb;
+}
+
 static uint32_t el_get(const rv_hart_t *h, uint32_t vr, uint32_t i,
                        uint32_t eb)
 {
     const uint8_t *p = &h->v[0][0] + vr * RV_VLENB + i * eb;
+
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (eb == 1u) {
+        return p[0];
+    }
+    if (eb == 2u) {
+        uint16_t v;
+
+        memcpy(&v, p, 2u);
+        return v;
+    }
+    uint32_t v;
+
+    memcpy(&v, p, 4u);
+    return v;
+#else
     uint32_t v = 0u;
 
     for (uint32_t k = eb; k-- > 0u;) {
         v = (v << 8) | p[k];
     }
     return v;
+#endif
 }
 
 static void el_set(rv_hart_t *h, uint32_t vr, uint32_t i, uint32_t eb,
                    uint32_t v)
 {
-    uint8_t *p = &h->v[0][0] + vr * RV_VLENB + i * eb;
+    uint8_t *p = el_ptr(h, vr, i, eb);
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (eb == 1u) {
+        p[0] = (uint8_t)v;
+    } else if (eb == 2u) {
+        const uint16_t w = (uint16_t)v;
+
+        memcpy(p, &w, 2u);
+    } else {
+        memcpy(p, &v, 4u);
+    }
+#else
     for (uint32_t k = 0u; k < eb; k++) {
         p[k] = (uint8_t)(v >> (8u * k));
     }
+#endif
 }
 
 /* Mask bit i of register vr. */
@@ -1224,6 +1265,47 @@ static rv_exc_t opm_more(rv_hart_t *h, uint32_t insn, uint32_t f3,
 /* Loads and stores                                                    */
 /* ------------------------------------------------------------------ */
 
+/*
+ * The host address of guest byte lo, where every byte an access can
+ * touch -- [lo, hi) -- is ordinary RAM that nothing can refuse: no PMP
+ * and no translation (data_guard), no trigger, the region's permission
+ * for the direction. NULL otherwise, and the elements go one at a time
+ * through rv_hart_load and rv_hart_store, which say what refused and
+ * where. Inside one RAM region with nothing armed, an element access is
+ * the bytes and nothing else, which is what the per-element path cost
+ * most of a vector loop to establish again for every element.
+ *
+ * A store breaks an LR reservation on any word of the range, as
+ * rv_hart_store breaks one on the word it writes -- at most more often,
+ * which only makes an SC fail that could have succeeded, as SC may.
+ */
+static uint8_t *vmem_direct(rv_hart_t *h, uint64_t lo, uint64_t hi, bool load)
+{
+    if (h->data_guard || h->bus == NULL || hi <= lo ||
+        hi > UINT64_C(0x100000000)) {
+        return NULL;
+    }
+#if RV_EXT_SDTRIG
+    if (h->trig_active) {
+        return NULL;
+    }
+#endif
+    emu_region_t *const r = emu_bus_find(h->bus, (uint32_t)lo);
+
+    if (r == NULL || r->kind != (uint8_t)EMU_MEM_RAM || r->host == NULL ||
+        (r->perm & (load ? EMU_PERM_R : EMU_PERM_W)) == 0u ||
+        hi - r->base > r->size) {
+        return NULL;
+    }
+#if RV_EXT_A
+    if (!load && h->resv_valid && h->resv_addr + 4u > (uint32_t)(lo & ~3u) &&
+        h->resv_addr < hi) {
+        h->resv_valid = false;
+    }
+#endif
+    return (uint8_t *)r->host + ((uint32_t)lo - r->base);
+}
+
 static rv_exc_t vmem(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 {
     const bool load = (insn & 0x7Fu) == 0x07u;
@@ -1340,6 +1422,64 @@ static rv_exc_t vmem(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             }
             eb = eew / 8u;
             evl = h->vl;
+        }
+    }
+
+    /*
+     * Unit-stride and strided accesses whose bytes all lie in plain RAM
+     * go straight to it: one copy where the elements are contiguous and
+     * all active, an element at a time where not. Nothing in RAM can
+     * fault, so what is left of the semantics is which bytes move.
+     * Indexed accesses keep the per-element path: their extent is a pass
+     * over the indices to find.
+     */
+    if (!indexed && h->vstart < evl) {
+        const uint32_t sb = fields * eb; /* bytes a segment */
+        const int64_t stride = (mop == 2u) ? (int64_t)(int32_t)h->x[umop]
+                                           : (int64_t)sb;
+        const int64_t first = (int64_t)base + (int64_t)h->vstart * stride;
+        const int64_t last = (int64_t)base + (int64_t)(evl - 1u) * stride;
+        const int64_t lo = (first < last) ? first : last;
+        const int64_t hi = ((first < last) ? last : first) + (int64_t)sb;
+        uint8_t *mem = NULL;
+
+#if !RV_MISALIGNED_OK
+        if ((base % eb) == 0u && (stride % (int64_t)eb) == 0)
+#endif
+        if (lo >= 0) {
+            mem = vmem_direct(h, (uint64_t)lo, (uint64_t)hi, load);
+        }
+        if (mem != NULL) {
+            if (vm && fields == 1u && stride == (int64_t)eb) {
+                uint8_t *const reg = el_ptr(h, vd, h->vstart, eb);
+                const size_t n = (size_t)(evl - h->vstart) * eb;
+
+                if (load) {
+                    memcpy(reg, mem, n);
+                } else {
+                    memcpy(mem, reg, n);
+                }
+            } else {
+                for (uint32_t i = h->vstart; i < evl; i++) {
+                    if (!vm && !m_get(h, 0u, i)) {
+                        continue;
+                    }
+                    uint8_t *const seg =
+                        mem + ((int64_t)base + (int64_t)i * stride - lo);
+
+                    for (uint32_t f = 0u; f < fields; f++) {
+                        uint8_t *const reg = el_ptr(h, vd + f * fstep, i, eb);
+
+                        if (load) {
+                            memcpy(reg, seg + f * eb, eb);
+                        } else {
+                            memcpy(seg + f * eb, reg, eb);
+                        }
+                    }
+                }
+            }
+            h->vstart = 0u;
+            return RV_EXC_NONE;
         }
     }
 

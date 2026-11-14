@@ -240,6 +240,16 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-stepover-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # The vector kernels (vecbench.c), where the vector unit is built: the
+    # same checksum and count on both backends -- the JIT's lowerings
+    # against rv_vec.c, which the probes hold to Spike.
+    if(TARGET guest-vecbench AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-vecbench-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/vecbench.bin" VECBENCH-END)
+        set_tests_properties(guest-vecbench-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(TARGET guest-ppc-stepover AND EMU_GUEST_ARCH_PPC)
         add_test(NAME guest-ppc-stepover-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

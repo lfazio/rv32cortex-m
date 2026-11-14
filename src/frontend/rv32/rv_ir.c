@@ -37,6 +37,7 @@
 #include "rv32/rv_decode.h"
 #include "rv32/rv_ir.h"
 #include "rv32/rv_jit.h"
+#include "rv32/rv_vec.h"
 
 #include <stddef.h>
 
@@ -662,7 +663,10 @@ static uint32_t rv_ir_csr_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
  * be reached -- the translator declines those instructions -- and is the
  * honest thing to put there if it ever were.
  */
-#if !(RV_EXT_F && RV_EXT_A && (RV_EXT_ZBB || RV_EXT_ZBC))
+/* Wanted by every slot that can be absent: F, A, the bit operations,
+ * the scalar crypto and the vector unit. */
+#if !(RV_EXT_F && RV_EXT_A && (RV_EXT_ZBB || RV_EXT_ZBC) && RV_EXT_ZK && \
+      RV_EXT_ZVE32X)
 static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
                                     uint32_t unused)
 {
@@ -713,15 +717,49 @@ static uint32_t rv_ir_crypto_helper(emu_cpu_t *cpu, uint32_t insn,
 #define RV_IR_H_CRYPTO ((const void *)rv_ir_helper_absent)
 #endif
 
+#if RV_EXT_ZVE32X
+/*
+ * Every vector instruction -- OP-V, and the loads and stores that share
+ * LOAD-FP and STORE-FP -- through the same rv_hart_vec the interpreter
+ * calls: one implementation of the vector unit, held to Spike by the
+ * probes. They were declined, so each ended its block and a vector loop
+ * was a block per instruction; a helper call is a translation.
+ *
+ * Nothing a block is specialised on is vector state: vtype, vl and
+ * vstart are read here, at run time, by rv_hart_vec. Non-zero means it
+ * entered a trap -- an illegal encoding, VS off, an element that
+ * faulted -- and the block must stop; the pc it records is the SETPC's.
+ */
+static uint32_t rv_ir_vec_helper(emu_cpu_t *cpu, uint32_t insn,
+                                 uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    uint32_t tval = 0u;
+    const rv_exc_t e = rv_hart_vec(h, insn, &tval);
+
+    (void)unused;
+    if (e == RV_EXC_NONE) {
+        return 0u;
+    }
+    ir_trap(h, e, tval);
+    return 1u;
+}
+#define RV_IR_H_VEC ((const void *)rv_ir_vec_helper)
+#else
+#define RV_IR_H_VEC ((const void *)rv_ir_helper_absent)
+#endif
+
 static const void *const rv_ir_helpers[] = {
-    RV_IR_H_FP, RV_IR_H_AMO, (const void *)rv_ir_csr_helper,
-    (const void *)rv_ir_muldiv_helper, RV_IR_H_BITOP, RV_IR_H_CRYPTO};
+    RV_IR_H_FP,     RV_IR_H_AMO,   (const void *)rv_ir_csr_helper,
+    (const void *)rv_ir_muldiv_helper, RV_IR_H_BITOP, RV_IR_H_CRYPTO,
+    RV_IR_H_VEC};
 #define RV_IR_HELPER_FP 0u
 #define RV_IR_HELPER_AMO 1u
 #define RV_IR_HELPER_CSR 2u
 #define RV_IR_HELPER_MULDIV 3u
 #define RV_IR_HELPER_BITOP 4u
 #define RV_IR_HELPER_CRYPTO 5u
+#define RV_IR_HELPER_VEC 6u
 
 /* One instruction, handed whole to rv_ir_bitop_helper. */
 static bool rv_ir_bitop_call(emu_ir_block_t *b, uint32_t insn)
@@ -1092,6 +1130,22 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     if ((op == 0x13u || op == 0x33u) && (insn & 0xFFF0707Fu) != 0x08004033u &&
         rv_crypto_is(insn)) {
         return rv_ir_crypto(b, insn);
+    }
+#endif
+
+#if RV_EXT_ZVE32X
+    /*
+     * The vector unit, before the FP group's FS gate: VS gates these,
+     * and rv_hart_vec asks it at run time. A trap leaves through the
+     * helper's return, so nothing the block holds is assumed past it.
+     */
+    if (op == 0x57u ||
+        ((op == 0x07u || op == 0x27u) && rv_vec_is_mem(insn))) {
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, emu_ir_const(b, insn),
+                          EMU_IR_NO_TEMP, RV_IR_HELPER_VEC, 0u);
+        return true;
     }
 #endif
 
