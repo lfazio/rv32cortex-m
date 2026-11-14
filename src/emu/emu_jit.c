@@ -1738,26 +1738,14 @@ static emu_run_reason_t run_interp_batch(emu_cpu_t *cpu,
  * inlined into the dispatcher it cost Dhrystone -- which never thrashes
  * -- 0.8-1.1% on the F746 at three layouts.
  */
-static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
-                                           const emu_jit_ops_t *ops,
-                                           const uint32_t *pcp, uint32_t *done,
-                                           uint32_t budget)
+static EMU_NOINLINE emu_run_reason_t interp_to_jump(emu_cpu_t *cpu,
+                                                    const emu_jit_ops_t *ops,
+                                                    const uint32_t *pcp,
+                                                    uint32_t *done,
+                                                    uint32_t budget)
 {
     emu_run_reason_t r = EMU_RUN_BUDGET;
     uint32_t total = 0u;
-
-    g_stats.thrash_cached++;
-    /*
-     * Forget, after a while, so that code which stopped thrashing -- the
-     * program moved on, or what crowded it out did -- is translated
-     * again. All the marks go together, by the epoch, as a flush takes
-     * them.
-     */
-    if (++g_thrash_interps >= EMU_JIT_THRASH_RETRY) {
-        g_thrash_interps = 0u;
-        g_stats.thrash_retries++;
-        neg_invalidate();
-    }
 
     for (;;) {
         const uint32_t before = *pcp;
@@ -1781,6 +1769,26 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
         ops->after_interp(cpu);
     }
     return r;
+}
+
+static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
+                                           const emu_jit_ops_t *ops,
+                                           const uint32_t *pcp, uint32_t *done,
+                                           uint32_t budget)
+{
+    g_stats.thrash_cached++;
+    /*
+     * Forget, after a while, so that code which stopped thrashing -- the
+     * program moved on, or what crowded it out did -- is translated
+     * again. All the marks go together, by the epoch, as a flush takes
+     * them.
+     */
+    if (++g_thrash_interps >= EMU_JIT_THRASH_RETRY) {
+        g_thrash_interps = 0u;
+        g_stats.thrash_retries++;
+        neg_invalidate();
+    }
+    return interp_to_jump(cpu, ops, pcp, done, budget);
 }
 
 
@@ -1967,15 +1975,18 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
 
             /*
-             * Not hot yet: interpret one instruction and look again. One,
-             * so that the next pc is counted too -- in a loop the head
-             * crosses the threshold first and its block then covers the
-             * body, whose own counts are never consulted again.
+             * Not hot yet: interpret up to the first jump and look again,
+             * as a given-up pc is (interp_to_jump). Only a jump's target
+             * comes back here to be counted -- a block's head -- where one
+             * instruction at a time counted every pc on the way, and the
+             * middle of a block could cross the threshold first and be
+             * translated as a block of its own, overlapping the one from
+             * the real head (docs/jit/tuning.md).
              */
             if (!heat_bump(pc, context)) {
                 const uint32_t before = done;
                 const emu_run_reason_t r =
-                    run_interp_batch(cpu, ops, &done, budget, 1u);
+                    interp_to_jump(cpu, ops, hot.pc, &done, budget);
 
                 g_stats.cold += done - before;
                 prev = NULL;

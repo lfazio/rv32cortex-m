@@ -4813,6 +4813,18 @@ session, and every one of them recurred:
   position-dependent into a block, ask what moves blocks -- and make
   sure some test runs where it does.**
 
+- **An option measured useless may be an option built wrong.** The hot
+  threshold had been measured once and kept off: no workload gained. It
+  interpreted cold code one instruction at a time, so every pc came
+  back to be counted and the middle of a block could cross first --
+  translations *rose* with the threshold (279 to 1,060 on host
+  CoreMark), and Whetstone at 16 KB took twice as long. Interpreting to
+  the first jump, as the given-up pcs already were, counts only block
+  heads: translations fall, CoreMark at 32 KB is a third faster, and
+  the default stays 1 only because a buffer that fits pays a warm-up.
+  **Before writing off a knob, read the counter it was meant to move --
+  here, translations -- and check it moved the right way.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

@@ -144,12 +144,52 @@ beside the buffer size:
 ## `EMU_JIT_HOT_THRESHOLD` — translating only hot code
 
 `-DEMU_JIT_HOT_THRESHOLD=N`, or `--jit-hot N` on the host runner: a pc
-that misses the block cache is interpreted, one instruction at a time,
-until it has missed N times in the current epoch, and only then
-translated. The counts share the declined-pc table, reset on every
-flush, and are reported as `cold` beside `interp`. **The default is 1,
-which is translate-on-first-miss, because nothing measured gains from
-more:**
+that misses the block cache is interpreted **to its first jump** until
+it has missed N times in the current epoch, and only then translated.
+The counts share the declined-pc table, reset on every flush, and are
+reported as `cold` beside `interp`. The default is 1, translate on the
+first miss.
+
+**Interpreted to the jump, not one instruction at a time -- which is
+what made the option worth having.** One at a time, every pc on the way
+came back to the dispatcher and was counted, so the middle of a block
+could cross the threshold first and be translated as a block of its
+own; and since the stop before a known entry, the real head's block
+then stopped at that middle. Host CoreMark's translations rose with
+the threshold instead of falling -- 279 at 1, 1,060 at 2, 1,024 at 4 --
+and on the F746 RV32 Whetstone at 16 KB took 15.18 s at 4 against 7.43
+at 1. To the jump, only a jump's target comes back, a block's head:
+279, 206, 185 and 167 translations at 1, 2, 4 and 8.
+
+On the F746 (2026-11-14), wall clock in seconds; the interpreter runs
+Whetstone in 6.23:
+
+| | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| RV32 Whetstone, 16 KB | 7.43 | 8.25 | 7.79 | **7.20** |
+| RV32 Whetstone, 8 KB | 12.48 | 11.30 | 10.76 | **10.46** |
+| RV32 CoreMark x120, 32 KB | 6.54 | 4.72 | **4.46** | |
+
+**Where the buffer is short it pays** -- CoreMark at 32 KB a third
+faster at 4, its translations 10,560 to 5,459; Whetstone at 8 KB 16% at
+8 -- **and where the buffer fits it is a warm-up**, host cycles an
+instruction at the default buffers:
+
+| | 1 | 4 | 8 |
+|---|---|---|---|
+| RV32 CoreMark, 64 KB | 13.18 | **12.62** | 12.65 |
+| ARMv7-M CoreMark, 96 KB | 16.50 | **16.18** | 16.22 |
+| PowerPC CoreMark, 96 KB | 19.93 | **19.28** | 19.86 |
+| RV32 Whetstone, 64 KB | **27.22** | 31.05 | 35.27 |
+
+Whetstone at 4 interprets 239,149 more instructions warming up, at five
+times the cost of each translated one, and chains less (90 links
+against 123). So the default stays 1, and a build with a short buffer
+is the one to set it on. On the host a Linux boot at 4 translates six
+times fewer blocks (23,837 against 150,369); its wall clock was taken
+beside a board build and says nothing yet.
+
+Before this, measured one instruction at a time, nothing gained:
 
 | | 1 | 2 | 4 | 8 | 16 | 32 |
 |---|---|---|---|---|---|---|
@@ -158,25 +198,6 @@ more:**
 | F746 CoreMark, 96 KB | **32.52** | | 39.44 | | 32.38 | |
 | ...translations | 7,152 | | 10,241 | | 7,051 | |
 | host, Linux kernel init (s, two runs) | 4.38 / 4.66 | **4.35 / 4.36** | 5.21 / 5.05 | | 7.80 / 8.26 | |
-
-Three reasons, each visible in the counters:
-
-- **The F746's problem is a hot set larger than the buffer**, not cold
-  code in it. Translations do not fall at any threshold, because the
-  blocks being retranslated are the ones that were evicted while hot. The answer to that is the next section.
-- **Single-stepping cold code lets the middle of a block cross the
-  threshold first**, and its block then overlaps the one translated
-  later from the real start: 96 KB at 4 is 10,241 translations against
-  7,152.
-- **On x86-64 a translation is cheap and an interpreted step is not**,
-  and a Linux boot flushes thousands of times, so every flush restarts
-  every warm-up.
-
-Host CoreMark at two iterations does translate less -- 278 blocks at 1,
-175 at 8, 127 at 32 -- which is the cold code the option exists for;
-it is simply not where the time goes in anything measured here. Try it
-on a guest whose translated set is mostly run-once code before
-believing it pays.
 
 ## `EMU_JIT_THRASH_EVICTIONS` — giving up on what does not fit
 
@@ -467,8 +488,11 @@ to say, by an amount nobody has measured since.
   a one-instruction block still beats the interpreter by enough to pay
   for its own dispatch.
 - **Interpreter-in-SRAM**: slower.
-- **Translating only hot code** (`EMU_JIT_HOT_THRESHOLD`): kept as an
-  option, off by default; no measured workload gains. See above.
+- **Translating only hot code one instruction at a time**
+  (`EMU_JIT_HOT_THRESHOLD` before 2026-11-14): no measured workload
+  gained, because block middles crossed the threshold first. Cold code
+  is interpreted to its jump now, which pays where the buffer is short;
+  see above.
 - **Lazy IRQ**: neutral.
 - **Instruction fusion generally.** The textbook RISC-V fusions are not
   present in this guest: `lui`+`addi` is 0.2% of CoreMark pairs and
