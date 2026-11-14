@@ -112,6 +112,9 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # tests: a fix reverted, the failures named
 ./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
                                 # the assembly written above each
+./scripts/ir-board.sh [CORPUS]  # fuzz-ir's corpus through the Thumb-2
+                                # lowering, on the F746: the only fuzzing
+                                # that backend gets
 tests/armv7m-diff/run.py ...    # the ARMv7-M frontend against a real M7
 ```
 

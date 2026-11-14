@@ -32,7 +32,11 @@
  *
  * What it cannot see: the FP exception flags (the reference computes
  * none), FSQRT and FMA (the reference declines them), and the Thumb-2
- * lowering, which needs a board.
+ * lowering, which needs a board -- where this same file runs the corpus
+ * built here, compiled with EMU_IR_BOARD into a firmware of its own
+ * (tests/ir-board, scripts/ir-board.sh): the Thumb-2 lowering against
+ * the same reference, on the inputs that reached what they reached on
+ * x86-64.
  */
 
 #include "emu/emu_dtlb.h"
@@ -45,10 +49,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 
+#if defined(EMU_IR_BOARD)
+#if !defined(EMU_HOST_JIT_THUMB2)
+#error "the board's fuzz-ir runs the Thumb-2 lowering"
+#endif
+/* The replay's own, in tests/ir-board/main.c: a difference is counted
+ * and the next input runs, where on the host the process stops. */
+void fuzz_ir_board_differ(void);
+void fuzz_ir_stats(void);
+#else
+#include <sys/mman.h>
 #if !defined(EMU_HOST_JIT_X86_64)
 #error "fuzz-ir runs the x86-64 lowering"
+#endif
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -986,8 +1000,15 @@ static void save(side_t *s, const fcpu_t *c, uint32_t retired)
     s->retired = retired;
 }
 
+#if defined(EMU_IR_BOARD)
+/* One block at a time; RAM the M7 executes from. */
+#define CODE_BYTES (32u * 1024u)
+static uint8_t g_code_board[CODE_BYTES] __attribute__((aligned(8)));
+static uint8_t *g_code = g_code_board;
+#else
 #define CODE_BYTES (256u * 1024u)
 static uint8_t *g_code;
+#endif
 
 static const char *op_name(uint8_t op)
 {
@@ -1120,6 +1141,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     in_t in = {data, size};
 
     if (g_show < 0) {
+#if defined(EMU_IR_BOARD)
+        g_show = 0; /* the replay prints the differences it finds */
+#else
         g_show = getenv("FUZZ_SHOW") != NULL;
         if (getenv("FUZZ_STATS") != NULL) {
             atexit(print_stats);
@@ -1130,6 +1154,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             fprintf(stderr, "fuzz-ir: no executable mapping\n");
             abort();
         }
+#endif
     }
     g_st.inputs++;
 
@@ -1203,7 +1228,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         return 0;
     }
     restore(&cpu);
+#if defined(EMU_IR_BOARD)
+    /*
+     * The Thumb bit, and the memory stub in r1, which every block's
+     * slow path reaches through r11 (emu_jit_block_arg). The caches are
+     * off in this firmware, so what was written is what is fetched.
+     */
+    n = ((uint32_t(*)(void *, const void *))((uintptr_t)g_code | 1u))(
+        &cpu, emu_jit_block_arg);
+#else
     n = ((uint32_t(*)(void *, const void *))(void *)g_code)(&cpu, NULL);
+#endif
     /* A constant exit leaves unlinked here, and says so in the count. */
     n &= ~EMU_JIT_RET_UNLINKED;
     save(&got, &cpu, n);
@@ -1246,5 +1281,17 @@ differ:
     } else {
         fprintf(stderr, "-- (the lowering declined the block)\n");
     }
+#if defined(EMU_IR_BOARD)
+    fuzz_ir_board_differ();
+    return 0;
+#else
     abort();
+#endif
 }
+
+#if defined(EMU_IR_BOARD)
+void fuzz_ir_stats(void)
+{
+    print_stats();
+}
+#endif

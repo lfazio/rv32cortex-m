@@ -99,6 +99,7 @@ extern "C" {
 /* Static callbacks: the dynamic registration machinery costs RAM we would
  * rather give to the guest. */
 #define USE_HAL_UART_REGISTER_CALLBACKS 0U
+#define USE_HAL_RNG_REGISTER_CALLBACKS 0U /* the RNG's header tests it */
 
 /* ---------------------------------------------------------------- */
 /* Includes                                                          */

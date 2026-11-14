@@ -395,8 +395,31 @@ minutes.
 
 What it cannot see: the FP exception flags, which the reference does not
 compute; FSQRT and FMA, which it declines; the Thumb-2 lowering, which
-needs a board; and `pass_mac`, which forms a multiply-accumulate only
-where the backend lowers one, and x86-64 does not.
+needs a board -- where its corpus is replayed (below); and `pass_mac`,
+which forms a multiply-accumulate only where the backend lowers one,
+and x86-64 does not.
+
+### The IR corpus on the board
+
+`scripts/ir-board.sh` takes the corpus fuzzing built on the host
+(`build/fuzz/corpus/ir`), links it into a firmware of its own with
+`fuzz_ir.c` compiled for Thumb-2 (`EMU_IR_BOARD`; `tests/ir-board/`:
+start-up, the UART, a packer), flashes it and reads what it prints:
+every input built, interpreted as built and as optimised, lowered to
+Thumb-2, called and compared, by the same code as on the host -- the
+reference and the comparison are the host's exactly, and only the
+lowering differs. The F746 runs at its reset clock with the caches off,
+so what was emitted is what is fetched; a difference is printed whole
+and the next input runs, and a block that faults stops the run with the
+case named (`FIRST` resumes past it).
+
+The first run (2026-11-14): 3,574 inputs, **3,263 compared and none
+different**, in 71 s -- 839 looped, 654 trapped, 8,792 helper calls --
+with 305 that Thumb-2 does not lower and x86-64 does, which is this
+replay's blind spot: a block the board refuses is compared only as the
+passes made it. The XOR lowering made ORR, the replay reported 87
+differences; restored, none.
+
 
 ## Translation and protection: RV32
 

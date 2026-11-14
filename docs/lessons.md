@@ -4884,6 +4884,14 @@ session, and every one of them recurred:
   **Before designing for the dispatch you expected, histogram the
   dispatches by cause.**
 
+- **A wait on a process name waits on everything that names it.** A
+  board batch queued behind another with `while pgrep -f other.sh` --
+  and a second loop of the same shape, mine, watching for the first to
+  end -- each found the other's command line, which named the script,
+  and the board sat idle for an hour; the queue behind them waited on
+  the second loop in turn. **Wait on what a run writes, its output or a
+  file it creates, not on a name another waiter will carry.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

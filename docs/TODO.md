@@ -55,8 +55,12 @@ measured at.
     G4MH and PowerPC run two cores ([fuzzing.md](fuzzing.md#more-than-one-core)).
     No GPL emulator, not even as a reference.
   - **The IR**: done for the passes and the x86-64 lowering
-    (`fuzz-ir`). Not reached: the Thumb-2 lowering, which runs only on
-    a board -- its corpus replayed there would be the way; `pass_mac`,
+    (`fuzz-ir`), and for the Thumb-2 lowering on the inputs that corpus
+    holds, replayed on the F746 (`scripts/ir-board.sh`: 3,263 compared,
+    none different, [fuzzing.md](fuzzing.md#the-ir-corpus-on-the-board)).
+    Not reached: what Thumb-2 alone refuses -- 305 of those inputs --
+    and inputs a fuzzer guided by the Thumb-2 lowering would build,
+    which only fuzzing on a board could; `pass_mac`,
     which forms a multiply-accumulate only where the backend lowers
     one, and x86-64 does not; and the FP exception flags, which the
     reference does not compute.
