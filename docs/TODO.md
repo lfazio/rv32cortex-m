@@ -204,15 +204,16 @@ From the last measurements in [linux.md](linux.md).
 
 ## RV32
 
-- [ ] **The vector extension**, by its embedded subsets: Zve32x is in
-      progress behind `-DRV32_EXT_ZVE32X=ON` (off, advertised nowhere),
-      with configuration, every load and store form but segments, the
-      single-width integer ALU, multiply, divide, masks and reductions,
-      held to Spike by `probes/vec-int.S`. Left for Zve32x: segments,
-      carries, widening and narrowing, extension, fixed point, slides,
-      gathers, `vcompress`, whole-register moves, widening reductions,
-      and a probe of an element that faults; then Zve32f, Zve64*, V
-      ([frontend/rv32-vector.md](frontend/rv32-vector.md)).
+- [ ] **The vector extension past Zve32x**: Zve32x is whole behind
+      `-DRV32_EXT_ZVE32X=ON` and held to Spike by three probes; next
+      Zve32f, then Zve64x/f/d, then V and its `misa` bit
+      ([frontend/rv32-vector.md](frontend/rv32-vector.md)). The UDB and
+      Sail configurations wait for an arch-test pin with vector suites.
+- [ ] **Vector instructions under the JIT, with the host's SIMD**: OP-V
+      is declined, so every vector instruction ends its block. A helper
+      call first, then SSE2/SSE4.1 lowerings on x86-64 and the DSP
+      extension's 8- and 16-bit SIMD on the M7, measured on a vector
+      guest, with the vector unit in the JIT fuzzer.
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
       under the x86-64 JIT now, AES's S-box between two maps of two
       `pshufb` each ([backend/x86_64.md](backend/x86_64.md#aes-ni-and-pclmulqdq));

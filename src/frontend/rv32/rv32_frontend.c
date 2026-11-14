@@ -184,6 +184,12 @@
 #else
 #define RV32_S_ZKT ""
 #endif
+/* Zv after Zk: v comes after k among the single letters. */
+#if RV_EXT_ZVE32X
+#define RV32_S_ZVE "_zve32x_zvl128b"
+#else
+#define RV32_S_ZVE ""
+#endif
 #if RV_EXT_SSCOFPMF
 #define RV32_S_SSCOFPMF "_sscofpmf"
 #else
@@ -198,7 +204,7 @@
 /*
  * Canonical order, which is not alphabetical: the single letters, then
  * the Z extensions grouped by the letter after the Z in the order the
- * single letters come in -- i, a, f, c, b -- and alphabetical inside a
+ * single letters come in -- i, a, f, c, b, k, v -- and alphabetical inside a
  * group, then the S extensions. It is the order
  * `sail_riscv_sim --print-isa-string` gives for the same machine, which
  * is what it was checked against.
@@ -209,7 +215,8 @@
     "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND RV32_S_ZICSR           \
         RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
             RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_ZBK        \
-                RV32_S_ZKN RV32_S_ZKR RV32_S_ZKS RV32_S_ZKT RV32_S_SSCOFPMF RV32_S_SVINVAL
+                RV32_S_ZKN RV32_S_ZKR RV32_S_ZKS RV32_S_ZKT RV32_S_ZVE                \
+                    RV32_S_SSCOFPMF RV32_S_SVINVAL
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */

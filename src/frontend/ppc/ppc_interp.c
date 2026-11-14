@@ -1183,8 +1183,15 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
     return ((uint64_t)len << 32) | insn;
 }
 
-static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
-                                uint32_t *retired)
+/*
+ * In ITCM on the F746 (EMU_INTERP_TEXT), as RV32's and ARMv7-M's loops
+ * are: from flash, with the execute switch it inlines, the whole
+ * interpreter ran behind the 4 KB I-cache -- 100% of a PC profile's
+ * samples in flash.
+ */
+static EMU_INTERP_TEXT emu_run_reason_t ppc_run(emu_cpu_t *cpu,
+                                                uint32_t budget,
+                                                uint32_t *retired)
 {
     ppc_cpu_t *const c = (ppc_cpu_t *)(void *)cpu;
     uint32_t done = 0u;

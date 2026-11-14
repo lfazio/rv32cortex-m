@@ -31,7 +31,9 @@ unsigned g4mh_insn_len(uint16_t w)
     return (op < 0x30u) ? 2u : 4u;
 }
 
-bool g4mh_insn_is_48(uint16_t w0, uint16_t w1)
+/* Asked for every instruction the interpreter runs: beside its loop
+ * (EMU_INTERP_HELPER), not in flash behind a veneer. */
+EMU_INTERP_HELPER bool g4mh_insn_is_48(uint16_t w0, uint16_t w1)
 {
     /*
      * Every 48-bit encoding has reg2 == 0. Checked first because it
@@ -375,7 +377,8 @@ bool g4mh_mei(const uint16_t *hw, uint32_t block_reg, uint32_t *out)
     }
 }
 
-bool g4mh_cond(uint32_t cond, uint32_t psw)
+/* Beside the interpreter's loop, as g4mh_insn_is_48 is. */
+EMU_INTERP_HELPER bool g4mh_cond(uint32_t cond, uint32_t psw)
 {
     const bool z = (psw & G4MH_PSW_Z) != 0u;
     const bool s = (psw & G4MH_PSW_S) != 0u;

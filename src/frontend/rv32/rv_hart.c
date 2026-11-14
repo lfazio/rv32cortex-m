@@ -875,8 +875,11 @@ done:
  * misaligned-vs-access-fault cause can be reported, and so the bus can
  * assume aligned accesses on its fast paths.
  */
-rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
-                      bool sign_extend, uint32_t *out)
+/* Every interpreted load: beside the interpreter's loop
+ * (EMU_INTERP_HELPER), as ARMv7-M's rd_u is. */
+EMU_INTERP_HELPER rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr,
+                                        uint32_t size, bool sign_extend,
+                                        uint32_t *out)
 {
 #if !RV_MISALIGNED_OK
     if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
@@ -1565,7 +1568,9 @@ EMU_NOINLINE static rv_exc_t store_guarded(rv_hart_t *h, uint32_t addr,
     return RV_EXC_NONE;
 }
 
-rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
+/* Every interpreted store, beside the loop as the load is. */
+EMU_INTERP_HELPER rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr,
+                                         uint32_t size, uint32_t val)
 {
 #if !RV_MISALIGNED_OK
     if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {

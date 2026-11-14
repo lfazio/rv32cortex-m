@@ -224,11 +224,10 @@
 #endif
 /*
  * Zve32x, the vector extension's embedded integer subset, VLEN 128
- * (Zvl128b) and ELEN 32 -- **in progress**: off by default, and named in
- * no ISA string and no misa bit until every instruction Zve32x names is
- * in (docs/frontend/rv32-vector.md has what is and what is not). The
- * vector unit is rv_vec.c; both backends reach it, the JIT through the
- * FP helper for the loads and stores and by declining OP-V.
+ * (Zvl128b) and ELEN 32: off by default, and named in the ISA string
+ * when on -- it has no misa bit, which is V's. The vector unit is
+ * rv_vec.c, held to Spike by tests/arch-test/probes/vec-*.S; both
+ * backends reach it (docs/frontend/rv32-vector.md).
  */
 #ifndef RV_EXT_ZVE32X
 #define RV_EXT_ZVE32X 0

@@ -110,6 +110,8 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # and see whether that fuzzer notices
 ./scripts/unit-mutant.sh BUILD FILE OLD NEW  # the same, for the unit
                                 # tests: a fix reverted, the failures named
+./scripts/probe-mutant.sh BUILD FILE OLD NEW PROBE.S...  # and for the
+                                # probes, both backends: the registers named
 ./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
                                 # the assembly written above each
 ./scripts/ir-board.sh [CORPUS]  # fuzz-ir's corpus through the Thumb-2

@@ -576,10 +576,11 @@ else()
     set(_zkr_default ON)
 endif()
 option(RV32_EXT_ZKR "Zkr entropy source (the seed CSR)" ${_zkr_default})
-# Zve32x, the vector extension's integer subset, VLEN 128 and ELEN 32:
-# in progress, so off and advertised nowhere until it is whole
-# (docs/frontend/rv32-vector.md); built in, rv_vec.c runs what is there.
-option(RV32_EXT_ZVE32X "Zve32x vector integer subset (in progress)" OFF)
+# Zve32x, the vector extension's integer subset, VLEN 128 (Zvl128b) and
+# ELEN 32, in rv_vec.c (docs/frontend/rv32-vector.md). Whole, and named
+# in the ISA string when on; off by default for the 512 bytes of state a
+# hart and the code it adds to every board's firmware.
+option(RV32_EXT_ZVE32X "Zve32x vector integer subset, Zvl128b" OFF)
 option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 # Double precision. FLEN becomes 64 and single values are NaN-boxed, so
@@ -1416,6 +1417,9 @@ if(EMU_GUEST_ARCH_RV32)
     endif()
     # Zkt is a promise about timing with no option; rv_config.h makes it.
     string(APPEND _isa "_zkt")
+    if(RV32_EXT_ZVE32X)
+        string(APPEND _isa "_zve32x_zvl128b")
+    endif()
     # Sscofpmf and Svinval follow S and Zihpm, which have no option:
     # rv_config.h turns them on.
     string(APPEND _isa "_sscofpmf_svinval")
