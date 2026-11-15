@@ -250,6 +250,17 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-vecbench-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # CoreMark compiled for the vector unit: the same output, CRCs
+    # included, interpreted and translated -- code a compiler wrote.
+    if(TARGET guest-coremark-v AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-coremark-v-both
+                 COMMAND ${CMAKE_COMMAND} -E env
+                         "SAME_IGNORE=^(Total ticks|Total time|Iterations/Sec|CoreMark 1)"
+                         ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/coremark-v.bin" crcfinal)
+        set_tests_properties(guest-coremark-v-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(TARGET guest-ppc-stepover AND EMU_GUEST_ARCH_PPC)
         add_test(NAME guest-ppc-stepover-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

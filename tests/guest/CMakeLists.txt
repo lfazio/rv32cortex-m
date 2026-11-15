@@ -521,6 +521,27 @@ if(EXISTS "${COREMARK_DIR}/core_main.c")
             -DITERATIONS=${COREMARK_ITERATIONS}
             -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough)
     #
+    # And compiled for the vector unit: what GCC vectorises in CoreMark --
+    # parts of the matrix kernels, whole-register spills -- run on the
+    # vector unit, and CoreMark's own CRCs say whether it got them right.
+    # Its figures are the vector unit's on code a compiler wrote.
+    add_guest_image(coremark-v
+        SOURCES start.S
+        EXTRA_SOURCES
+            "${COREMARK_DIR}/core_main.c"
+            "${COREMARK_DIR}/core_list_join.c"
+            "${COREMARK_DIR}/core_matrix.c"
+            "${COREMARK_DIR}/core_state.c"
+            "${COREMARK_DIR}/core_util.c"
+            "${guest_dir}/coremark/core_portme.c"
+        FLAGS
+            -march=${RV_GUEST_MARCH}_zve32x
+            -I "${COREMARK_DIR}"
+            -I "${guest_dir}/coremark"
+            -DPERFORMANCE_RUN=1
+            -DITERATIONS=${COREMARK_ITERATIONS}
+            -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough)
+    #
     # The same benchmark as an ARMv7-M guest, for the one question the
     # generated cases cannot answer: is translated code *faster*. They
     # say whether each instruction is right; this is thousands of them

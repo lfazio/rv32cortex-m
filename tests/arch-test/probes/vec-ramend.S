@@ -13,7 +13,7 @@
  * probe-march: rv32imac_zicsr_zve32x
  * probe-models: spike
  * probe-spike-isa: rv32imac_zicsr_zve32x_zvl128b
- * probe-regs: s1 s2 s3 s4 s5 s6 a1 a2
+ * probe-regs: s1 s2 s3 s4 s5 s6 s8 a1 a2
  *
  *   s1  vle32.v, 4 elements from 8 bytes before the end: element 2 faults
  *   s2  vse32.v the same: elements 0 and 1 stored, read back
@@ -22,6 +22,11 @@
  *   s5  vlse32.v from the last word down, stride -4: no fault
  *   s6  vlseg2e32.v, 2 segments from 12 bytes before the end: segment 1's
  *       second field faults
+ *   s8  vl2re32.v, a whole-register load, from 8 bytes before the end:
+ *       element 2 faults, and the handler restarts it with the base 64
+ *       bytes lower -- elements 0 and 1 kept, 2 to 7 from the new base.
+ *       The restarted block begins at the load with vstart 2, which an
+ *       inline whole-register copy must not take for 0
  *   a2  every trap: case, cause, mtval - 0x80800000, vstart
  *   a1  set once every case has run
  */
@@ -144,6 +149,16 @@ rvtest_entry_point:
     FOLDV s6, v2
     FOLDVL s6
 
+/* --- s8 ------------------------------------------------------------- */
+    CLEAR
+    vmv.v.x v3, t0
+    addi a0, s7, -8
+    li   s0, 0x108
+    vl2re32.v v2, (a0)
+    FOLDV s8, v2
+    FOLDV s8, v3
+    FOLDVL s8
+
     li   a1, 6
     la   t0, tohost
     li   t1, 1
@@ -151,7 +166,8 @@ rvtest_entry_point:
 2:  j    2b
 
 /* Any trap: case, mcause, mtval less the end of RAM, vstart into a2;
- * then past the instruction, vstart cleared. */
+ * then, with s0's bit 8, the instruction again from a base 64 bytes
+ * lower, vstart as it is; otherwise past it, vstart cleared. */
     .align 2
 mtrap:
     MIX  a2, s0
@@ -162,7 +178,12 @@ mtrap:
     MIX  a2, t1
     csrr t1, vstart
     MIX  a2, t1
-    csrw vstart, zero
+    andi t1, s0, 0x100
+    beqz t1, 4f
+    andi s0, s0, 0xFF        /* once */
+    addi a0, a0, -64
+    mret
+4:  csrw vstart, zero
     csrr t1, mepc
     addi t1, t1, 4
     csrw mepc, t1

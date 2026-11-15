@@ -219,7 +219,9 @@ From the last measurements in [linux.md](linux.md).
       strided accesses; masked forms; the other rounding modes; .wv
       narrowing (a count a lane: AVX2's); Thumb-2's unsigned and 8-bit
       widening and narrowing and 16-bit multiply-adds; the N6's MVE
-      (Helium), a 128-bit unit. Not yet: a loop over an m4 or m8 group's
+      (Helium), a 128-bit unit; a cheaper inline vsetvli and tail, which
+      is what CoreMark's short vectors pay (`coremark-v`, 4.3% slower than
+      scalar under the JIT on the F746). Not yet: a loop over an m4 or m8 group's
       words on Thumb-2 -- vecbench runs the same at a 32 KB buffer as at
       64 ([backend/thumb2.md](backend/thumb2.md#the-guests-vector-registers-the-dsp-extension))
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).

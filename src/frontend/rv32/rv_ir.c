@@ -1157,6 +1157,14 @@ static bool rv_ir_crypto(emu_ir_block_t *b, uint32_t insn)
 
 static EMU_PER_CORE uint32_t g_vt;
 static EMU_PER_CORE bool g_vs_marked;
+/*
+ * Whether vstart is known to be 0 here. Not at a block's start: a block
+ * can begin at an access resumed after a fault, vstart where it stopped.
+ * From an inline vset on, and after any vector helper that returned --
+ * rv_hart_vec leaves vstart 0 whenever it does not trap -- until the
+ * block ends. The inline accesses assume it.
+ */
+static EMU_PER_CORE bool g_vstart0;
 
 /* VS Dirty at the block's first inline vector instruction, as fput marks
  * FS: Spike's rule, that every vector instruction that runs marks it. */
@@ -1227,6 +1235,7 @@ static bool rv_ir_vset(emu_ir_block_t *b, uint32_t insn)
         emu_ir_put(b, rd, vl);
     }
     g_vt = vt;
+    g_vstart0 = true;
     return true;
 }
 
@@ -1319,6 +1328,33 @@ static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     const uint32_t vd = (insn >> 7) & 31u;
     uint32_t eew;
 
+    /*
+     * A whole-register access -- vl<n>re<eew>.v, vs<n>r.v -- moves n
+     * registers whatever vtype and vl are, even vill: the group is fixed
+     * by the encoding, so the copy needs no vtype from this block, and vl
+     * goes in as the group's element count, which the inline path always
+     * takes. A compiler spills and reloads through these.
+     */
+    const uint32_t nf = insn >> 29;
+
+    if (!h_vs_off(cpu) && b->has_fast && g_vstart0 &&
+        ((insn >> 25) & 0xFu) == 1u &&
+        ((insn >> 20) & 31u) == 0x08u /* lumop: whole registers */ &&
+        (nf == 0u || nf == 1u || nf == 3u || nf == 7u) &&
+        vd % (nf + 1u) == 0u && (!store || width == 0u) &&
+        (width == 0u || width >= 5u) && width != 7u &&
+        emu_ir_can_lower(EMU_IR_VMEM, 0u)) {
+        const uint32_t ew = (width == 0u) ? 0u : width - 4u; /* log2 bytes */
+        const uint32_t glg = (nf == 0u) ? 0u : (nf == 1u) ? 1u : (nf == 3u) ? 2u : 3u;
+
+        vs_mark(b);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        emu_ir_vmem(b, (uint8_t)RV_IR_HELPER_VEC, emu_ir_get(b, rv_rs1(insn)),
+                    emu_ir_const(b, ((nf + 1u) * RV_VLENB) >> ew),
+                    emu_ir_const(b, insn), EMU_IR_VMEM_IMM(vd, glg, ew, store));
+        return true;
+    }
     if (h_vs_off(cpu) || g_vt == RV_IR_VT_UNKNOWN || !b->has_fast ||
         (insn >> 25) != 1u /* nf, mew, mop 0, vm 1 */ ||
         ((insn >> 20) & 31u) != 0u /* a plain unit-stride access */) {
@@ -1490,6 +1526,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         if (op == 0x57u && f3 == 7u) {
             g_vt = RV_IR_VT_UNKNOWN; /* the helper's vset: anything */
         }
+        g_vstart0 = true; /* the helper returned: vstart is 0 */
         return true;
     }
 #endif
@@ -2461,6 +2498,7 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 #if RV_EXT_ZVE32X
     g_vt = RV_IR_VT_UNKNOWN;
     g_vs_marked = false;
+    g_vstart0 = false;
 #endif
     b->start_pc = pc;
     b->has_fast = rv_ir_fast_mem(cpu, &b->fast);

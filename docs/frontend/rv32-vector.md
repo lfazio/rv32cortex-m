@@ -146,6 +146,28 @@ F746 (`-DVECBENCH_ROUNDS=800 -DEMU_PC_PROFILE=8000`) after the widening
 step was the clip, first; now it is the reductions and the strided
 load ([TODO](../TODO.md)).
 
+**Whole-register accesses are inline too** -- `vl<n>re<eew>.v` and
+`vs<n>r.v`, which a compiler spills and reloads through. They move a
+fixed group whatever vtype and vl are, so they need no vset in the
+block, but they do need vstart 0, which a block cannot assume at its
+start: it can begin at an access resumed after a fault. So the block
+tracks it (`g_vstart0`): known after an inline vset or any vector helper
+that returned. `vec-ramend.S`'s `s8` resumes a whole-register load at
+vstart 2, and an inline copy that took vstart for 0 fails it.
+
+**On code a compiler wrote** (`coremark-v`: CoreMark with
+`-march=..._zve32x`, 56 vector instructions -- 16-bit unit-stride loads
+and stores, whole-register spills, `vmv.v.x`, `vadd`, `vmul.vx`, `vid`)
+the CRCs are the scalar build's, 0x72be at 2 iterations and 0xd340 at
+120, on both backends on the host and on the F746, and
+`guest-coremark-v-both` holds the two backends to one output. It is not
+faster: on the F746 at 120 iterations, 0.25% more cycles interpreted and
+4.3% under the JIT, and 2.9% more host instructions under the JIT on the
+host -- with the helper all but idle (4,654 host instructions). Its
+vectors are a register or two a trip, and an inline vector operation
+with its vsetvli and tail masks costs about what the scalar instructions
+it replaced did.
+
 **Built only where something emits them**: the IR's vector operations,
 their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake
 sets on every host build and on a board only with the vector unit.

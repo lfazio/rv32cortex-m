@@ -8,7 +8,10 @@ and translated.
 Runs GUEST with EMU-ARGS, then again with --jit, and requires the
 guest's output to be identical, WANT to appear in it, and the run's
 total -- `emu-result retired=`, the budget's units -- to be the same.
-Prints PASS and the total, or what differed.
+Prints PASS and the total, or what differed. SAME_IGNORE in the
+environment is a regular expression for guest lines that report the
+guest's own timing -- CoreMark's ticks and rate -- which a wall clock
+makes differ; they are left out of the comparison and nothing else is.
 
 Why the total and not only the output. Every core's own retired count
 agreed between the backends while what `run` reported did not: the
@@ -18,12 +21,14 @@ one short for each exception a handler resumed from, on all four
 frontends (emu_jit_hot_t::charged). The total is what the instruction
 cap and a guest's instruction clock read.
 """
+import os
 import re
 import subprocess
 import sys
 
 # The runner's own lines: the banner, and the statistics after the run.
 OWN = re.compile(r"^(emu: |guest |ram |backend |-- |  )")
+IGNORE = re.compile(os.environ["SAME_IGNORE"]) if os.environ.get("SAME_IGNORE") else None
 
 
 def run(emu, guest, args):
@@ -42,7 +47,8 @@ def run(emu, guest, args):
             continue
         if l.startswith("-- done --"):
             break
-        if started and l.strip() and not OWN.match(l):
+        if started and l.strip() and not OWN.match(l) and \
+                not (IGNORE and IGNORE.search(l)):
             guest_out.append(l)
     return text, guest_out, (m.group(1) if m else None)
 
