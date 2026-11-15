@@ -758,7 +758,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   whole** (`fld` at 4 mod 8; PMP matched by first byte; a misaligned
   store across a page wrote the next physical frame).
 - **A failing operation must still ask whether it could have succeeded**
-  (`sc.w` to no memory).
+  (`sc.w` to no memory). And an order of tests is a rule: the FMA asked
+  "a NaN?" before "0 * inf?", and 0 * inf + qNaN left NV clear where
+  RISC-V, Sail and Spike set it (`probes/fmanv.S`).
 - **Sv32**: blocks are keyed on virtual addresses; `satp.PPN` follows the
   physical width, and a PTE's PPN past it is an access fault, not an
   alias (it was masked: `sv32ppn.S`); a 32-bit instruction can straddle

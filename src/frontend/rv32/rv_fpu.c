@@ -867,11 +867,13 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             if (d_is_snan(a) || d_is_snan(b) || d_is_snan(c)) {
                 flags |= FFLAG_NV;
                 dres = D_CANON_NAN;
-            } else if (d_is_nan(a) || d_is_nan(b) || d_is_nan(c)) {
-                dres = D_CANON_NAN;
             } else if ((d_is_zero(a) && d_is_inf(b)) ||
                        (d_is_inf(a) && d_is_zero(b))) {
-                flags |= FFLAG_NV; /* 0 * inf is invalid */
+                /* 0 * inf is invalid even plus a quiet NaN: the F
+                 * chapter's rule, Sail's and Spike's (probes/fmanv.S) */
+                flags |= FFLAG_NV;
+                dres = D_CANON_NAN;
+            } else if (d_is_nan(a) || d_is_nan(b) || d_is_nan(c)) {
                 dres = D_CANON_NAN;
             } else {
                 /*
@@ -906,11 +908,17 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         if (f_is_snan(a) || f_is_snan(b) || f_is_snan(c)) {
             flags |= FFLAG_NV;
             res = F_CANON_NAN;
-        } else if (f_is_nan(a) || f_is_nan(b) || f_is_nan(c)) {
-            res = F_CANON_NAN;
         } else if ((f_is_zero(a) && f_is_inf(b)) ||
                    (f_is_inf(a) && f_is_zero(b))) {
-            flags |= FFLAG_NV; /* 0 * inf is invalid */
+            /*
+             * 0 * inf is invalid even when the addend is a quiet NaN --
+             * which IEEE leaves open and RISC-V's F chapter does not. This
+             * came after the NaN test until probes/fmanv.S: NV clear, where
+             * Sail and Spike both set it, single and double.
+             */
+            flags |= FFLAG_NV;
+            res = F_CANON_NAN;
+        } else if (f_is_nan(a) || f_is_nan(b) || f_is_nan(c)) {
             res = F_CANON_NAN;
         } else {
             /*

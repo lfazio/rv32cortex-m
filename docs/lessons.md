@@ -5072,6 +5072,18 @@ session, and every one of them recurred:
   it on the board. **An input is checked against the mutant it is
   for** (the dictionary lesson, again).
 
+- **An order of tests is a rule.** The fused multiply-add asked "is any
+  operand a NaN?" before "is this zero times infinity?", so
+  0 * inf + qNaN gave the canonical NaN with NV clear. IEEE leaves the
+  flag to the implementation; RISC-V's F chapter requires it, and Sail
+  and Spike both set it (`probes/fmanv.S`, single and double). Every
+  architecture test passed, the JIT reached the same code, and the
+  fuzzers compare the two backends with each other -- so the one place
+  it could show was an oracle, asked about the relation directly.
+  Found while writing the vector unit's FMA, by reading the scalar one
+  to share it. **When two checks can both match, which runs first is a
+  behaviour: test the overlap.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
