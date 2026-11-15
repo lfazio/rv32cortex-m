@@ -131,6 +131,7 @@ void t2_rev(uint32_t rd, uint32_t rm);
 #define T2_PAR_SUB8 4u
 #define T2_PAR_SUB16 5u
 void t2_par(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_par_h(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_sel(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_smulxy(uint32_t rd, uint32_t rn, uint32_t rm, bool nt, bool mt);
 void t2_pkhbt16(uint32_t rd, uint32_t rn, uint32_t rm);

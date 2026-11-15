@@ -53,9 +53,23 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
         const int32_t sa = (int32_t)(a << sh) >> sh;
         const int32_t sb = (int32_t)(b << sh) >> sh;
         const uint32_t amt = b & (bits - 1u);
+        uint32_t d = 0u; /* vd's element as it was, for the multiply-adds */
         uint32_t r;
 
+        for (uint32_t k = w; k-- > 0u;) {
+            d = (d << 8) | vd[i * w + k];
+        }
         switch (EMU_IR_VOP_OP(aux)) {
+        case EMU_IR_V_AADDU_RNU: /* (a + b + 1) >> 1, in 33 bits */
+            r = (uint32_t)(((uint64_t)a + b + 1u) >> 1);
+            break;
+        case EMU_IR_V_AADD_RNU:
+            r = (uint32_t)(((int64_t)sa + sb + 1) >> 1);
+            break;
+        case EMU_IR_V_MACC: r = d + b * a; break;
+        case EMU_IR_V_NMSAC: r = d - b * a; break;
+        case EMU_IR_V_MADD: r = b * d + a; break;
+        case EMU_IR_V_NMSUB: r = a - b * d; break;
         case EMU_IR_V_ADD: r = a + b; break;
         case EMU_IR_V_SUB: r = a - b; break;
         case EMU_IR_V_RSUB: r = b - a; break;

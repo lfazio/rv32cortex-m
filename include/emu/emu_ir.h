@@ -121,12 +121,24 @@ extern "C" {
 #define EMU_IR_V_SRL 12u
 #define EMU_IR_V_SRA 13u
 #define EMU_IR_V_MV 14u /* d = s1 */
-#define EMU_IR_V_COUNT 15u
+/*
+ * The averaging adds under round-to-nearest-up (RISC-V's vxrm rnu): the
+ * sum in one more bit than the element, plus one, halved. Another
+ * rounding mode is another operation, which nothing lowers yet.
+ */
+#define EMU_IR_V_AADDU_RNU 15u
+#define EMU_IR_V_AADD_RNU 16u
+/* The multiply-adds, which read d as well, the product's low half. */
+#define EMU_IR_V_MACC 17u  /* d + s1 * s2 */
+#define EMU_IR_V_NMSAC 18u /* d - s1 * s2 */
+#define EMU_IR_V_MADD 19u  /* s1 * d + s2 */
+#define EMU_IR_V_NMSUB 20u /* s2 - s1 * d */
+#define EMU_IR_V_COUNT 21u
 
 #define EMU_IR_VOP_AUX(op, sew, vx)                                            \
-    ((uint8_t)((op) | ((uint32_t)(sew) << 4) | ((vx) ? 0x80u : 0u)))
-#define EMU_IR_VOP_OP(aux) ((uint32_t)(aux) & 15u)
-#define EMU_IR_VOP_SEW(aux) (((uint32_t)(aux) >> 4) & 3u) /* log2 bytes */
+    ((uint8_t)((op) | ((uint32_t)(sew) << 5) | ((vx) ? 0x80u : 0u)))
+#define EMU_IR_VOP_OP(aux) ((uint32_t)(aux) & 31u)
+#define EMU_IR_VOP_SEW(aux) (((uint32_t)(aux) >> 5) & 3u) /* log2 bytes */
 #define EMU_IR_VOP_VX(aux) (((uint32_t)(aux) & 0x80u) != 0u)
 
 #define EMU_IR_VOP_IMM(vd, vs2, vs1, lg)                                       \

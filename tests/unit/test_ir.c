@@ -1445,6 +1445,7 @@ static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
         const uint8_t *const bp = vx ? sbuf : b + i * w;
         const int64_t sb = vop_lane(bp, w, true);
         const int64_t ub = vop_lane(bp, w, false);
+        const int64_t ud = vop_lane(d + i * w, w, false); /* vd before */
         const unsigned cnt = (unsigned)(ub & (8u * w - 1u));
         int64_t r;
 
@@ -1463,6 +1464,18 @@ static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
         case EMU_IR_V_SLL: r = (int64_t)((uint64_t)ua << cnt); break;
         case EMU_IR_V_SRL: r = ua >> cnt; break;
         case EMU_IR_V_SRA: r = sa >> cnt; break;
+        /* the exact average, rounded half up: floor((a + b + 1) / 2) */
+        case EMU_IR_V_AADDU_RNU: r = (ua + ub + 1) / 2; break;
+        case EMU_IR_V_AADD_RNU: {
+            const int64_t s = sa + sb + 1;
+
+            r = (s >= 0) ? s / 2 : -((-s + 1) / 2); /* floor, not C's toward 0 */
+            break;
+        }
+        case EMU_IR_V_MACC: r = (int64_t)((uint64_t)ud + (uint64_t)ub * (uint64_t)ua); break;
+        case EMU_IR_V_NMSAC: r = (int64_t)((uint64_t)ud - (uint64_t)ub * (uint64_t)ua); break;
+        case EMU_IR_V_MADD: r = (int64_t)((uint64_t)ub * (uint64_t)ud + (uint64_t)ua); break;
+        case EMU_IR_V_NMSUB: r = (int64_t)((uint64_t)ua - (uint64_t)ub * (uint64_t)ud); break;
         default: r = ub; break;
         }
         for (uint32_t k = 0; k < w; k++) {

@@ -1235,16 +1235,26 @@ static bool rv_ir_vset(emu_ir_block_t *b, uint32_t insn)
  * rv_vec.c's opi_forms allows, so a form that does not exist still
  * reaches the helper and its illegal instruction.
  */
-static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t *op,
-                         uint32_t *forms)
+static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t vxrm,
+                         uint32_t *op, uint32_t *forms)
 {
-    if (f3 == 2u || f3 == 6u) { /* OPMVV, OPMVX */
-        if (f6 == 0x25u) {
-            *op = EMU_IR_V_MUL;
-            *forms = 3u;
-            return true;
+    if (f3 == 2u || f3 == 6u) { /* OPMVV, OPMVX: .vv and .vx each */
+        *forms = 3u;
+        switch (f6) {
+        case 0x25u: *op = EMU_IR_V_MUL; return true;
+        case 0x2Du: *op = EMU_IR_V_MACC; return true;
+        case 0x2Fu: *op = EMU_IR_V_NMSAC; return true;
+        case 0x29u: *op = EMU_IR_V_MADD; return true;
+        case 0x2Bu: *op = EMU_IR_V_NMSUB; return true;
+        /*
+         * The averaging adds round by vxrm, which the block is
+         * specialised on (rv_jit_ctx_key), so the mode is a constant
+         * here; only rnu has an operation.
+         */
+        case 0x08u: *op = EMU_IR_V_AADDU_RNU; return vxrm == 0u;
+        case 0x09u: *op = EMU_IR_V_AADD_RNU; return vxrm == 0u;
+        default: return false;
         }
-        return false;
     }
     /*
      * Only OPIVV, OPIVI and OPIVX from here. OPFVV and OPFVF (1 and 5)
@@ -1354,7 +1364,8 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     uint32_t vop;
     uint32_t forms;
 
-    if (!rv_ir_vop_of(f3, f6, &vop, &forms)) {
+    if (!rv_ir_vop_of(f3, f6, ((const rv_hart_t *)cpu)->vxrm & 3u, &vop,
+                      &forms)) {
         return false;
     }
     const uint32_t form = (f3 == 0u || f3 == 2u) ? 1u : (f3 == 3u) ? 4u : 2u;

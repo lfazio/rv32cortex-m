@@ -471,6 +471,13 @@ void x86_movdqu_store(int base, uint8_t disp, int xmm)
     emu_jit_emit8(disp);
 }
 
+/* The SSE2 shifts by an immediate: 66 0F 71/72/73 /ext ib. */
+void x86_sse_shift_imm(uint8_t op2, unsigned ext, int xmm, uint8_t imm)
+{
+    sse_rr(0x66u, op2, ext, (unsigned)xmm);
+    emu_jit_emit8(imm);
+}
+
 /* add r64, r64: REX.W 01 /r. */
 void x86_add64_rr(int dst, int src)
 {

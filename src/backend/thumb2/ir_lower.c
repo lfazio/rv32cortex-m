@@ -1290,6 +1290,14 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_SRL:
     case EMU_IR_V_SRA:
         return sew == 2u && EMU_IR_VOP_VX(aux);
+    case EMU_IR_V_AADDU_RNU:
+    case EMU_IR_V_AADD_RNU:
+        return true;
+    case EMU_IR_V_MACC: /* MLA and MLS: a word; narrower has no register */
+    case EMU_IR_V_NMSAC:
+    case EMU_IR_V_MADD:
+    case EMU_IR_V_NMSUB:
+        return sew == 2u;
     default:
         return false;
     }
@@ -1785,6 +1793,44 @@ static void vop_word(uint32_t op, uint32_t sew, uint32_t rb)
             t2_pkhbt16(T2_R0, T2_R2, T2_R0);
         }
         break;
+    /*
+     * Round-to-nearest-up averages: the halving add, which truncates,
+     * plus each lane's lost bit, (a ^ b) & 1 -- (a + b + 1) >> 1 is
+     * ((a + b) >> 1) + ((a + b) & 1), and the lane cannot carry out. At 32
+     * bits (a | b) - ((a ^ b) >> 1), arithmetic for the signed form.
+     */
+    case EMU_IR_V_AADDU_RNU:
+    case EMU_IR_V_AADD_RNU: {
+        const bool u = op == EMU_IR_V_AADDU_RNU;
+
+        t2_eor(T2_R2, T2_R0, rb);
+        if (sew == 2u) {
+            t2_shift_imm(u ? T2_LSR : T2_ASR, T2_R2, T2_R2, 1u);
+            t2_orr(T2_R0, T2_R0, rb);
+            t2_sub(T2_R0, T2_R0, T2_R2);
+        } else {
+            uint16_t enc;
+
+            (void)t2_expand_imm((sew == 0u) ? 0x01010101u : 0x00010001u, &enc);
+            t2_and_imm(T2_R2, T2_R2, enc);
+            t2_par_h(add, u, T2_R0, T2_R0, rb);
+            t2_par(add, true, T2_R0, T2_R0, T2_R2);
+        }
+        break;
+    }
+    /* r2 holds d, the word of vd as it was (lower_vop loads it). */
+    case EMU_IR_V_MACC: /* d + s1 * s2 */
+        t2_mla(T2_R0, T2_R0, rb, T2_R2, false);
+        break;
+    case EMU_IR_V_NMSAC: /* d - s1 * s2 */
+        t2_mla(T2_R0, T2_R0, rb, T2_R2, true);
+        break;
+    case EMU_IR_V_MADD: /* s1 * d + s2 */
+        t2_mla(T2_R0, rb, T2_R2, T2_R0, false);
+        break;
+    case EMU_IR_V_NMSUB: /* s2 - s1 * d */
+        t2_mla(T2_R0, rb, T2_R2, T2_R0, true);
+        break;
     case EMU_IR_V_SLL:
         t2_shift_reg(T2_LSL, T2_R0, T2_R0, rb);
         break;
@@ -1848,6 +1894,9 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
             if (op != EMU_IR_V_MV) {
                 t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(vs2 + r) + 4u * w);
+            }
+            if (op >= EMU_IR_V_MACC) {
+                t2_ldr_imm(T2_R2, T2_CPU, od); /* d, for the multiply-adds */
             }
             vop_word(op, sew, rb);
             t2_ldr_imm(T2_R2, T2_R3, 16u * r + 4u * w); /* the mask */

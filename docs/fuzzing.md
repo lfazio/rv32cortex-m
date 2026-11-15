@@ -136,7 +136,9 @@ keeps, and all of data RAM. Then, per target:
   leaves -- the JIT's inline vsetvli and `EMU_IR_VOP` against rv_vec.c.
   Its seeds are `seeds/rv32-vec-jit/` (a strip-mined loop, every width
   and grouping, the helper between lowered operations, vl 0 and a kept
-  vl) and vecbench's text.
+  vl, the averages and multiply-adds under a vxrm that changes between
+  trips) and vecbench's text. The last finds vxrm dropped from the
+  block's context in 10 s.
 - **ARMv7-M.** The flags translated code keeps in four words are packed
   into xPSR before comparing. The core's own retired count is compared,
   because SysTick counts it -- though SysTick itself cannot be enabled

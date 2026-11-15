@@ -95,9 +95,12 @@ nothing can change vtype -- it has no CSR write, a CSR write ends the
 block, and the helper's `vsetvl` makes the block forget it -- and
 vstart stays 0. Unmasked `vadd`, `vsub`, `vrsub`, `vand`, `vor`,
 `vxor`, `vminu`, `vmin`, `vmaxu`, `vmax`, `vmul`, `vsll`, `vsrl`,
-`vsra` and `vmv.v` become `EMU_IR_VOP` when the backend says it lowers
-that form (`emu_ir_can_lower`), and VS is marked Dirty at the block's
-first; the rest stays the helper. VS off is in the block's context
+`vsra`, `vmv.v`, `vmacc`, `vnmsac`, `vmadd`, `vnmsub`, and `vaaddu` and
+`vaadd` while vxrm is rnu, become `EMU_IR_VOP` when the backend says it
+lowers that form (`emu_ir_can_lower`), and VS is marked Dirty at the
+block's first; the rest stays the helper. vxrm is in the block's
+context (bits 42:41), as frm is: the averages' rounding is resolved at
+translation, and a vxrm write is a CSR write, which ends the block. VS off is in the block's context
 (`rv_jit_ctx_key` bit 40), as FS off is, because the inline vsetvli has
 no test of its own. The x86-64 lowering is SSE2 and SSE4.1
 ([backend/x86_64.md](../backend/x86_64.md#the-guests-vector-registers-sse2-and-sse41));
@@ -113,6 +116,7 @@ the host's in every row:
 | 0b2d2d1: the helper under the JIT, plain-RAM accesses copied | 226.46 | 141.01 |
 | the arithmetic lowered with the DSP extension | | 134.22 |
 | unit-stride loads and stores inline (`EMU_IR_VMEM`) | | 74.29 |
+| the averaging adds under rnu, the multiply-adds | | 48.21 |
 
 **Unit-stride loads and stores are inline too** (`rv_ir_vmem`): an
 unmasked access of one field, in a block that knows vtype and has the
@@ -127,10 +131,10 @@ the JIT on the host: 59.0M host instructions to 39.6M.
 
 vecbench under the JIT, one binary, callgrind: the helper alone
 (`EMU_HOST_SIMD=0`) 67.6M host instructions, SSE2 64.6M, SSE4.1 59.0M,
-the same checksum each; 39.6M with the accesses inline (below). What is
-left is the helper's: the forms not lowered -- the averaging add and its
-rounding, two thirds of what remains, the multiply-adds, widening and
-narrowing ([TODO](../TODO.md)).
+the same checksum each; 39.6M with the accesses inline (below), 22.2M
+with the averages and the multiply-adds. What is left is the helper's:
+widening and narrowing (`vwmacc`, `vnclip`), the reductions, the strided
+load ([TODO](../TODO.md)).
 
 **Built only where something emits them**: the IR's vector operations,
 their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake

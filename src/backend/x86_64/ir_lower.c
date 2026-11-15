@@ -1337,6 +1337,14 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_SRL:
     case EMU_IR_V_SRA:
         return sew != 0u && EMU_IR_VOP_VX(aux);
+    case EMU_IR_V_AADDU_RNU:
+    case EMU_IR_V_AADD_RNU:
+        return true;
+    case EMU_IR_V_MACC:
+    case EMU_IR_V_NMSAC:
+    case EMU_IR_V_MADD:
+    case EMU_IR_V_NMSUB: /* as the multiply */
+        return sew == 1u || (sew == 2u && sse41);
     default:
         return false;
     }
@@ -1546,9 +1554,81 @@ static uint32_t vop_opcode(uint32_t op, uint32_t sew)
         [EMU_IR_V_SLL] = {0, 0xF1, 0xF2},       /* psll w/d by xmm */
         [EMU_IR_V_SRL] = {0, 0xD1, 0xD2},       /* psrl */
         [EMU_IR_V_SRA] = {0, 0xE1, 0xE2},       /* psra */
+        /* the averaging adds and multiply-adds: vop_special */
     };
 
     return k[op][sew];
+}
+
+static void vop_apply(uint32_t code, int dst, int src);
+
+/* Sixteen 0x80 bytes, and eight 0x8000 halfwords: the sign bias. */
+static const uint8_t k_vop_bias8[16] = {
+    0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u,
+    0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u, 0x80u,
+};
+static const uint8_t k_vop_bias16[16] = {
+    0x00u, 0x80u, 0x00u, 0x80u, 0x00u, 0x80u, 0x00u, 0x80u,
+    0x00u, 0x80u, 0x00u, 0x80u, 0x00u, 0x80u, 0x00u, 0x80u,
+};
+
+/*
+ * The averaging adds and the multiply-adds, on xmm0 (s2), xmm1 (s1) and
+ * xmm2 (d as it was), into xmm0, xmm3 and xmm4 free. Round-to-nearest-up
+ * is PAVGB and PAVGW for unsigned bytes and halfwords, and for signed
+ * ones the same with the sign bit flipped in, which maps the signed
+ * order onto the unsigned; at 32 bits, (a | b) - ((a ^ b) >> 1), the
+ * shift arithmetic for the signed form.
+ */
+static void vop_special(uint32_t op, uint32_t sew)
+{
+    const uint32_t mul = vop_opcode(EMU_IR_V_MUL, sew);
+    const uint32_t add = vop_opcode(EMU_IR_V_ADD, sew);
+    const uint32_t subc = vop_opcode(EMU_IR_V_SUB, sew);
+
+    switch (op) {
+    case EMU_IR_V_AADDU_RNU:
+    case EMU_IR_V_AADD_RNU:
+        if (sew == 2u) {
+            x86_sse_66(0x6Fu, X86_XMM4, X86_XMM0);
+            x86_sse_66(0xEFu, X86_XMM4, X86_XMM1); /* a ^ b */
+            x86_sse_shift_imm(0x72u, (op == EMU_IR_V_AADD_RNU) ? 4u : 2u,
+                              X86_XMM4, 1u); /* psrad / psrld */
+            x86_sse_66(0xEBu, X86_XMM0, X86_XMM1); /* a | b */
+            x86_sse_66(0xFAu, X86_XMM0, X86_XMM4); /* psubd */
+            break;
+        }
+        if (op == EMU_IR_V_AADD_RNU) {
+            x86_mov_imm64(T0, (uint64_t)(uintptr_t)((sew == 0u) ? k_vop_bias8
+                                                               : k_vop_bias16));
+            x86_movdqu_ld_reg(X86_XMM3, T0);
+            x86_sse_66(0xEFu, X86_XMM0, X86_XMM3);
+            x86_sse_66(0x6Fu, X86_XMM4, X86_XMM1);
+            x86_sse_66(0xEFu, X86_XMM4, X86_XMM3);
+            x86_sse_66((sew == 0u) ? 0xE0u : 0xE3u, X86_XMM0, X86_XMM4);
+            x86_sse_66(0xEFu, X86_XMM0, X86_XMM3);
+        } else {
+            x86_sse_66((sew == 0u) ? 0xE0u : 0xE3u, X86_XMM0, X86_XMM1); /* pavg */
+        }
+        break;
+    case EMU_IR_V_MACC: /* d + s1 * s2 */
+    case EMU_IR_V_NMSAC: /* d - s1 * s2 */
+        x86_sse_66(0x6Fu, X86_XMM4, X86_XMM0);
+        vop_apply(mul, X86_XMM4, X86_XMM1);
+        x86_sse_66(0x6Fu, X86_XMM0, X86_XMM2);
+        vop_apply((op == EMU_IR_V_MACC) ? add : subc, X86_XMM0, X86_XMM4);
+        break;
+    case EMU_IR_V_MADD: /* s1 * d + s2 */
+        x86_sse_66(0x6Fu, X86_XMM4, X86_XMM2);
+        vop_apply(mul, X86_XMM4, X86_XMM1);
+        vop_apply(add, X86_XMM0, X86_XMM4);
+        break;
+    default: /* EMU_IR_V_NMSUB: s2 - s1 * d */
+        x86_sse_66(0x6Fu, X86_XMM4, X86_XMM2);
+        vop_apply(mul, X86_XMM4, X86_XMM1);
+        vop_apply(subc, X86_XMM0, X86_XMM4);
+        break;
+    }
 }
 
 static void vop_apply(uint32_t code, int dst, int src)
@@ -1606,6 +1686,8 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     for (uint32_t r = 0; r < nregs; r++) {
         const uint32_t od = t->vreg_offset(vd + r);
 
+        /* vd as it was: the multiply-adds read it, and the tail keeps it */
+        x86_movdqu_ld_cpu(X86_XMM2, od);
         if (!vx) {
             x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs1 + r));
         }
@@ -1617,6 +1699,8 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 x86_sse_66(0x6Fu, X86_XMM4, X86_XMM1);
                 vop_apply(code, X86_XMM4, X86_XMM0);
                 x86_sse_66(0x6Fu, X86_XMM0, X86_XMM4);
+            } else if (op >= EMU_IR_V_AADDU_RNU) {
+                vop_special(op, sew);
             } else {
                 vop_apply(code, X86_XMM0, X86_XMM1);
             }
@@ -1625,7 +1709,6 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
         x86_sub64_rr(T0, T2);
         x86_movdqu_ld_reg(X86_XMM3, T0);
-        x86_movdqu_ld_cpu(X86_XMM2, od);
         x86_sse_66(0xDBu, X86_XMM0, X86_XMM3); /* pand */
         x86_sse_66(0xDFu, X86_XMM3, X86_XMM2); /* pandn: old & ~mask */
         x86_sse_66(0xEBu, X86_XMM0, X86_XMM3); /* por */

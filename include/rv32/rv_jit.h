@@ -156,6 +156,12 @@ static inline uint64_t rv_jit_ctx_key(const rv_hart_t *h)
      * the translator declines, and the interpreter refreshes this.
      */
     key |= (uint64_t)(((h->mstatus & MSTATUS_VS_MASK) == 0u) ? 1u : 0u) << 40;
+    /*
+     * Bits 42:41, vxrm: the averaging adds are lowered for one rounding
+     * mode, resolved at translation as frm is, and vxrm changes only by a
+     * CSR write, which the translator declines.
+     */
+    key |= (uint64_t)(h->vxrm & 3u) << 41;
 #endif
     return key;
 }

@@ -135,7 +135,14 @@ setting GE by lane and `SEL` for the minimum and maximum, `SMULBB` and
 `SMULTT` packed by `PKHBT` for a 16-bit multiply. At 32: the ALU, a
 compare and an `IT` for the minimum and maximum -- NZCV written, which
 no IR instruction here carries to the next. No 8-bit multiply and no
-shift narrower than a word: the frontend's helper. The fifteen
+shift narrower than a word: the frontend's helper. The averages under
+rnu are the halving add (`UHADD8`/`16`, `SHADD8`/`16`, which truncate)
+plus each lane's lost bit, `(a ^ b) & 1`, added with `UADD8`/`16` -- a
+lane cannot carry out -- and at 32 bits `(a | b) - ((a ^ b) >> 1)`; the
+multiply-adds are `MLA` and `MLS` at 32 bits, vd's word loaded first,
+and narrower ones keep the helper: the 16-bit product needs the
+register vd's word is in. vecbench on the F746 74.29 to 48.21; the
+replay 5,604 compared clean, and with the lost bit dropped 64 different. The fifteen
 encodings, r12 in every position, were checked against
 arm-none-eabi-as before the first flash; one byte of the comment
 beside them was not.

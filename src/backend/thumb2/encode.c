@@ -619,6 +619,17 @@ void t2_par(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm)
               (uint16_t)(0xF000u | (rd << 8) | (u ? 0x40u : 0u) | rm));
 }
 
+/*
+ * The halving forms, op2 10: (rn + rm) >> 1 by lane, signed or not,
+ * truncated. Checked against arm-none-eabi-as: uhadd8 r0, r0, r1 is
+ * FA80 F061, shadd16 r12, r0, r1 FA90 FC21.
+ */
+void t2_par_h(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFA80u | (op1 << 4) | rn),
+              (uint16_t)(0xF020u | (rd << 8) | (u ? 0x40u : 0u) | rm));
+}
+
 /* SEL rd, rn, rm: each byte from rn where its GE bit is set, else rm. */
 void t2_sel(uint32_t rd, uint32_t rn, uint32_t rm)
 {
