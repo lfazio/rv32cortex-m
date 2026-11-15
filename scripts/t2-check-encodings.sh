@@ -131,6 +131,17 @@ sub.w   lr, lr, #1
 tst.w   r1, #128
 it      eq
 moveq   r0, #0
+smultt  lr, r2, r12
+smulbb  r2, r2, r1
+pkhbt   r2, r2, lr, lsl #16
+uadd16  r0, r0, r2
+usub16  r0, r2, r0
+sxth    lr, r0
+uxth    r12, r1
+mla     r2, lr, r12, r2
+mul     lr, lr, r1
+asr.w   lr, r0, #16
+lsr.w   r12, r1, #16
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -306,6 +317,19 @@ int main(void)
     (void)t2_tst_imm8(1u, 128u);
     t2_emit16(0xBF08u); /* IT EQ */
     t2_emit16(0x2000u); /* MOV r0, #0, in the IT */
+
+    /* The 16-bit and the unsigned widening multiply-adds. */
+    t2_smulxy(14u, 2u, 12u, true, true);
+    t2_smulxy(2u, 2u, 1u, false, false);
+    t2_pkhbt16(2u, 2u, 14u);
+    t2_par(T2_PAR_ADD16, true, 0u, 0u, 2u);
+    t2_par(T2_PAR_SUB16, true, 0u, 2u, 0u);
+    t2_sxth(14u, 0u);
+    t2_uxth(12u, 1u);
+    t2_mla(2u, 14u, 12u, 2u, false);
+    t2_mul(14u, 14u, 1u);
+    t2_shift_imm(T2_ASR, 14u, 0u, 16u);
+    t2_shift_imm(T2_LSR, 12u, 1u, 16u);
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

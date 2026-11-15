@@ -124,7 +124,11 @@ whose vd is v0 is reserved, and declined. The widening and narrowing
 forms are masked too, the bit by vd's element (twice the width for a
 widening one), and a masked-off clip element cannot set vxsat.
 `tests/guest/vecmask.c` runs them all under masks of both values in
-every byte: one checksum interpreted, translated, and on the F746. vecbench has no masked operation, and
+every byte: one checksum interpreted, translated, and on the F746.
+Which forms a host lowers differs: Thumb-2 has no 8-bit widening,
+no narrowing to bytes and no unsigned clip
+([backend/thumb2.md](../backend/thumb2.md#the-guests-vector-registers-the-dsp-extension)),
+and those stay the helper there. vecbench has no masked operation, and
 on the F746 its figure moved only with the layout: 27.85 with the same
 translated code, 28.02 and 27.67 with the code moved 1 KB and 2.8 KB.
 

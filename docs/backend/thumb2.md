@@ -203,6 +203,22 @@ made a `NOP`, in any slice. `tests/guest/vecmask.c` did: the host's
 checksum on the F746, `0e09b928` with the `NOP`. The narrowing mask
 dropped, 9 different in the replay.
 
+**The 16-bit multiply-adds and the unsigned widening ones** are lowered
+too. A 16-bit `vmacc` family's products are each lane's low 16 bits,
+signed or not the same: `SMULBB` and `SMULTT`, packed by `PKHBT`, added
+or subtracted by `UADD16`/`USUB16`. They need lr, so a masked
+operation's element mask now comes after the operation (before only for
+the merge, which chooses by it) -- which a 16-bit one needed anyway, the
+mask's expansion using r2 where d is. `vwmaccu`, `vwmaccsu` and
+`vwmaccus` from halfwords extend each with `UXTH`/`SXTH` (low) or
+`LSR`/`ASR #16` (high) and `MLA`, through whichever of r1 and r12 holds
+no operand. The replay, 12,667 inputs, clean; the high product from the
+wrong half, 11 different in a slice, the unsigned operand sign-extended,
+2. Still the helper's: the widening forms from bytes (four lanes
+extended and two products a halfword is more registers than a block
+has free), narrowing to bytes (no lane shift), and the unsigned clip
+(`USAT` reads its input as signed).
+
 A reduction (`EMU_IR_VRED`) goes a word of vs2's group at a time into r0,
 its inactive lanes set to the identity -- cleared, set, or r12's signed
 maximum or minimum -- and combined into r1 with the operation's

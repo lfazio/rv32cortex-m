@@ -218,9 +218,11 @@ From the last measurements in [linux.md](linux.md).
       shifts and clips too, and the single-width forms masked, with
       `vmerge` (`EMU_IR_VOPM`), the reductions (`EMU_IR_VRED`) and
       unmasked strided accesses (`EMU_IR_VMEMS`), the averages and clips
-      under every vxrm mode, every form masked. Next: .wv
-      narrowing (a count a lane: AVX2's); Thumb-2's unsigned and 8-bit
-      widening and narrowing and 16-bit multiply-adds; the N6's MVE
+      under every vxrm mode, every form masked, Thumb-2's 16-bit and
+      unsigned widening multiply-adds. Next: .wv narrowing (a count a
+      lane: AVX2's on x86-64, an extraction a lane on Thumb-2);
+      Thumb-2's widening from bytes, narrowing to bytes and unsigned clip
+      (registers; USAT reads signed); the N6's MVE
       (Helium), a 128-bit unit; the short-trip element loop out of
       line, which every unit-stride access carries inline -- about 90
       bytes on Thumb-2, vecbench 0.5% slower for it while vector

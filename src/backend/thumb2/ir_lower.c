@@ -1296,12 +1296,20 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_AADDU:
     case EMU_IR_V_AADD:
         return true;
-    case EMU_IR_V_MACC: /* MLA and MLS: a word; narrower has no register */
+    case EMU_IR_V_MACC: /* MLA and MLS a word; SMULBB/TT a halfword pair */
     case EMU_IR_V_NMSAC:
     case EMU_IR_V_MADD:
     case EMU_IR_V_NMSUB:
-        return sew == 2u;
-    case EMU_IR_V_WMACC: /* SMLABB and SMLATT: signed halfwords only */
+        return sew >= 1u;
+    /*
+     * From halfwords: SMLABB and SMLATT signed, MLA after UXTH/SXTH and
+     * LSR/ASR for the rest. Not from bytes: two products a halfword
+     * lane, four lanes extended, is more registers than a block has.
+     */
+    case EMU_IR_V_WMACC:
+    case EMU_IR_V_WMACCU:
+    case EMU_IR_V_WMACCSU:
+    case EMU_IR_V_WMACCUS:
         return sew == 1u;
     /*
      * Narrowing to halfwords by one count: the shifts, and the signed clip
@@ -1871,16 +1879,36 @@ static void vop_word(uint32_t op, uint32_t sew, uint32_t rb, uint32_t rm)
     }
     /* r2 holds d, the word of vd as it was (lower_vop loads it). */
     case EMU_IR_V_MACC: /* d + s1 * s2 */
-        t2_mla(T2_R0, T2_R0, rb, T2_R2, false);
-        break;
     case EMU_IR_V_NMSAC: /* d - s1 * s2 */
-        t2_mla(T2_R0, T2_R0, rb, T2_R2, true);
-        break;
     case EMU_IR_V_MADD: /* s1 * d + s2 */
-        t2_mla(T2_R0, rb, T2_R2, T2_R0, false);
-        break;
     case EMU_IR_V_NMSUB: /* s2 - s1 * d */
-        t2_mla(T2_R0, rb, T2_R2, T2_R0, true);
+        if (sew == 1u) {
+            /*
+             * Two halfword lanes: each product's low 16 bits, signed or
+             * not the same, from SMULBB and SMULTT (lr, which lower_vop
+             * leaves free for this: the element mask comes after),
+             * packed by PKHBT, then added or subtracted by lane.
+             */
+            const bool by_d = op == EMU_IR_V_MADD || op == EMU_IR_V_NMSUB;
+            const uint32_t x = by_d ? T2_R2 : T2_R0; /* times s1 */
+            const uint32_t y = by_d ? T2_R0 : T2_R2; /* what it adds to */
+            const bool sub = op == EMU_IR_V_NMSAC || op == EMU_IR_V_NMSUB;
+
+            t2_smulxy(T2_LR, x, rb, true, true);
+            t2_smulxy(x, x, rb, false, false);
+            t2_pkhbt16(x, x, T2_LR);
+            t2_par(sub ? T2_PAR_SUB16 : T2_PAR_ADD16, true, T2_R0, y, x);
+            break;
+        }
+        if (op == EMU_IR_V_MACC) {
+            t2_mla(T2_R0, T2_R0, rb, T2_R2, false);
+        } else if (op == EMU_IR_V_NMSAC) {
+            t2_mla(T2_R0, T2_R0, rb, T2_R2, true);
+        } else if (op == EMU_IR_V_MADD) {
+            t2_mla(T2_R0, rb, T2_R2, T2_R0, false);
+        } else {
+            t2_mla(T2_R0, rb, T2_R2, T2_R0, true);
+        }
         break;
     case EMU_IR_V_SLL:
         t2_shift_reg(T2_LSL, T2_R0, T2_R0, rb);
@@ -1929,6 +1957,10 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const bool masked = in->op == (uint8_t)EMU_IR_VOPM;
     const uint32_t mreg = EMU_IR_VOP_MREG(in->imm);
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    /* a is vs2's element, b vs1's or the scalar, as emu_ir_vop_ref */
+    const bool sign_a = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCUS;
+    const bool sign_b = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCSU;
     const bool vx = EMU_IR_VOP_VX(in->aux);
     const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
     const uint32_t vd = EMU_IR_VOP_VD(in->imm);
@@ -1959,10 +1991,37 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 t2_ldr_imm(T2_R1, T2_CPU, t->vreg_offset(vs1 + r) + 4u * w);
                 rb = T2_R1;
             }
-            t2_ldr_imm(T2_R2, T2_CPU, olo);
-            t2_smlaxy(T2_R2, T2_R0, rb, T2_R2, false, false);
-            t2_ldr_imm(T2_LR, T2_CPU, ohi);
-            t2_smlaxy(T2_LR, T2_R0, rb, T2_LR, true, true);
+            if (op == EMU_IR_V_WMACC) {
+                t2_ldr_imm(T2_R2, T2_CPU, olo);
+                t2_smlaxy(T2_R2, T2_R0, rb, T2_R2, false, false);
+                t2_ldr_imm(T2_LR, T2_CPU, ohi);
+                t2_smlaxy(T2_LR, T2_R0, rb, T2_LR, true, true);
+            } else {
+                /*
+                 * Unsigned or mixed: each halfword extended -- UXTH/SXTH
+                 * for the low, LSR/ASR 16 for the high -- and MLA. f is
+                 * whichever of r1 and r12 holds no operand.
+                 */
+                const uint32_t f = (rb == T2_R1) ? T2_R12 : T2_R1;
+
+                if (sign_a) {
+                    t2_sxth(T2_LR, T2_R0);
+                } else {
+                    t2_uxth(T2_LR, T2_R0);
+                }
+                if (sign_b) {
+                    t2_sxth(f, rb);
+                } else {
+                    t2_uxth(f, rb);
+                }
+                t2_ldr_imm(T2_R2, T2_CPU, olo);
+                t2_mla(T2_R2, T2_LR, f, T2_R2, false);
+                t2_shift_imm(sign_a ? T2_ASR : T2_LSR, T2_LR, T2_R0, 16u);
+                t2_shift_imm(sign_b ? T2_ASR : T2_LSR, f, rb, 16u);
+                t2_mul(T2_LR, T2_LR, f);
+                t2_ldr_imm(f, T2_CPU, ohi);
+                t2_add(T2_LR, T2_LR, f);
+            }
 
             t2_ldr_imm(T2_R0, T2_R3, 4u * k);  /* the masks */
             if (masked) {
@@ -2204,7 +2263,12 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             if (op >= EMU_IR_V_MACC && op <= EMU_IR_V_NMSUB) {
                 t2_ldr_imm(T2_R2, T2_CPU, od); /* d, for the multiply-adds */
             }
-            if (masked) {
+            /*
+             * The element mask before a merge, which chooses by it; after
+             * any other operation, which may use lr and r2 -- d for a
+             * multiply-add -- and needs the mask only for the keep.
+             */
+            if (masked && op == EMU_IR_V_MERGE) {
                 vop_word_mask(t, EMU_IR_VOP_MREG(in->imm), sew, 4u * r + w);
             }
             if (op == EMU_IR_V_MERGE) {
@@ -2214,6 +2278,9 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 t2_orr(T2_R0, T2_R0, T2_R2);
             } else {
                 vop_word(op, sew, rb, EMU_IR_VOP_RM(in->imm));
+                if (masked) {
+                    vop_word_mask(t, EMU_IR_VOP_MREG(in->imm), sew, 4u * r + w);
+                }
             }
             t2_ldr_imm(T2_R2, T2_R3, 16u * r + 4u * w); /* the mask */
             if (masked && op != EMU_IR_V_MERGE) {
