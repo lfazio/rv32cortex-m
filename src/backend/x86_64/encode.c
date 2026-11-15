@@ -478,6 +478,20 @@ void x86_sse_shift_imm(uint8_t op2, unsigned ext, int xmm, uint8_t imm)
     emu_jit_emit8(imm);
 }
 
+/* pmovmskb r32, xmm: 66 0F D7 /r, the gpr in reg. */
+void x86_pmovmskb(int gpr, int xmm)
+{
+    sse_rr(0x66u, 0xD7u, (unsigned)gpr, (unsigned)xmm);
+}
+
+/* mov dword [rbx + disp32], imm32: C7 /0 id. */
+void x86_st_cpu_imm32(uint32_t disp, uint32_t imm)
+{
+    emu_jit_emit8(0xC7);
+    modrm_cpu(0, disp);
+    emu_jit_emit32(imm);
+}
+
 /* add r64, r64: REX.W 01 /r. */
 void x86_add64_rr(int dst, int src)
 {

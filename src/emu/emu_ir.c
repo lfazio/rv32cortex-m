@@ -128,6 +128,67 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 
 #endif /* EMU_IR_VECTOR */
 
+#if EMU_IR_VECTOR
+bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                           uint32_t scalar, uint8_t aux, uint32_t nregs,
+                           uint32_t vl)
+{
+    const uint32_t op = EMU_IR_VOP_OP(aux);
+    const uint32_t w = 1u << EMU_IR_VOP_SEW(aux);
+    const uint32_t bits = 8u * w;
+    const uint32_t ww = 2u * w;
+    const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
+    const uint32_t n = (vl < lanes) ? vl : lanes;
+    const int64_t smax = (int64_t)((1u << (bits - 1u)) - 1u);
+    const uint64_t umax = (1u << bits) - 1u;
+    bool sat = false;
+
+    /* Ascending: with vd at s2's start, element i's bytes are read first. */
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t x = 0u;
+        uint32_t s = 0u;
+
+        for (uint32_t k = ww; k-- > 0u;) {
+            x = (x << 8) | vs2[i * ww + k];
+        }
+        for (uint32_t k = w; k-- > 0u;) {
+            s = (s << 8) | vs1[i * w + k];
+        }
+        if (EMU_IR_VOP_VX(aux)) {
+            s = scalar;
+        }
+        const uint32_t sh = s & (2u * bits - 1u);
+        const uint32_t xs = 32u - 2u * bits; /* x as a 2 * SEW signed value */
+        const int64_t sx = (int32_t)(x << xs) >> xs;
+        const uint64_t half = (sh == 0u) ? 0u : ((uint64_t)x >> (sh - 1u)) & 1u;
+        uint32_t r;
+
+        switch (op) {
+        case EMU_IR_V_NSRL: r = (uint32_t)((uint64_t)x >> sh); break;
+        case EMU_IR_V_NSRA: r = (uint32_t)(sx >> sh); break;
+        case EMU_IR_V_NCLIPU_RNU: {
+            const uint64_t v = ((uint64_t)x >> sh) + half;
+
+            sat = sat || v > umax;
+            r = (uint32_t)((v > umax) ? umax : v);
+            break;
+        }
+        default: { /* EMU_IR_V_NCLIP_RNU */
+            const int64_t v = (sx >> sh) + (int64_t)half;
+
+            sat = sat || v > smax || v < -smax - 1;
+            r = (uint32_t)((v > smax) ? smax : (v < -smax - 1) ? -smax - 1 : v);
+            break;
+        }
+        }
+        for (uint32_t k = 0; k < w; k++) {
+            vd[i * w + k] = (uint8_t)(r >> (8u * k));
+        }
+    }
+    return sat;
+}
+#endif
+
 void emu_ir_reset(emu_ir_block_t *b)
 {
     b->count = 0u;

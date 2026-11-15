@@ -982,6 +982,19 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_VOP: {
             uint8_t *const base = (uint8_t *)cpu;
 
+            if (EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(in->aux))) {
+                if (emu_ir_vop_narrow_ref(
+                        base + t->vreg_offset(EMU_IR_VOP_VD(in->imm)),
+                        base + t->vreg_offset(EMU_IR_VOP_VS2(in->imm)),
+                        base + t->vreg_offset(EMU_IR_VOP_VS1(in->imm)), a,
+                        in->aux, EMU_IR_VOP_NREGS(in->imm), bv)) {
+                    const uint32_t one = 1u;
+
+                    memcpy(base + t->vsat_offset, &one, sizeof(one));
+                }
+                continue;
+            }
+
             emu_ir_vop_ref(base + t->vreg_offset(EMU_IR_VOP_VD(in->imm)),
                            base + t->vreg_offset(EMU_IR_VOP_VS2(in->imm)),
                            base + t->vreg_offset(EMU_IR_VOP_VS1(in->imm)), a,

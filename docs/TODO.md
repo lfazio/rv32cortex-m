@@ -214,13 +214,13 @@ From the last measurements in [linux.md](linux.md).
       (`EMU_IR_VOP`), to SSE2/SSE4.1 on x86-64 and the DSP extension on
       Thumb-2, and unit-stride loads and stores that fill a group copy
       inline (`EMU_IR_VMEM`); the averages under rnu, the
-      multiply-adds and the widening multiply-adds too. Next, by
-      vecbench's profile on the F746: the narrowing clip `vnclip` (its
-      rounding and vxsat), the reductions, strided accesses; masked
-      forms; the other rounding modes; Thumb-2's unsigned and 8-bit
-      widening and 16-bit multiply-adds; there, a loop over the words of
-      an m4 or m8 operation rather than a kilobyte unrolled --
-      vecbench's code is 52 KB of the 64; the N6's MVE (Helium), a
+      multiply-adds, the widening multiply-adds and the narrowing
+      shifts and clips too. Next, by vecbench's profile: the reductions,
+      strided accesses; masked forms; the other rounding modes; .wv
+      narrowing (a count a lane: AVX2's); Thumb-2's unsigned and 8-bit
+      widening and narrowing and 16-bit multiply-adds; there, a loop over
+      the words of an m4 or m8 operation rather than a kilobyte unrolled
+      -- vecbench's code is 53 KB of the 64; the N6's MVE (Helium), a
       128-bit unit
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native

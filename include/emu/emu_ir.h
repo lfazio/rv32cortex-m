@@ -144,8 +144,21 @@ extern "C" {
 #define EMU_IR_V_WMACC 22u   /* signed * signed */
 #define EMU_IR_V_WMACCSU 23u /* signed s1 * unsigned s2 */
 #define EMU_IR_V_WMACCUS 24u /* unsigned s1 * signed s2 */
-#define EMU_IR_V_COUNT 25u
+/*
+ * The narrowing shifts and clips: s2 at twice the element width in a
+ * group of 2^(lg+1) registers -- lg at most 2 -- d at the element width in
+ * 2^lg, and the shift s1 (or the scalar) taken modulo 2 * SEW. The clips
+ * round to nearest up and saturate to d's width, and any element they
+ * saturate sets the target's saturation word (vsat_offset) to 1; the
+ * plain shifts truncate. d's group is disjoint from s2's or starts at it.
+ */
+#define EMU_IR_V_NSRL 25u
+#define EMU_IR_V_NSRA 26u
+#define EMU_IR_V_NCLIPU_RNU 27u
+#define EMU_IR_V_NCLIP_RNU 28u
+#define EMU_IR_V_COUNT 29u
 #define EMU_IR_V_IS_WIDE(op) ((op) >= EMU_IR_V_WMACCU && (op) <= EMU_IR_V_WMACCUS)
+#define EMU_IR_V_IS_NARROW(op) ((op) >= EMU_IR_V_NSRL && (op) <= EMU_IR_V_NCLIP_RNU)
 
 #define EMU_IR_VOP_AUX(op, sew, vx)                                            \
     ((uint8_t)((op) | ((uint32_t)(sew) << 5) | ((vx) ? 0x80u : 0u)))
@@ -178,6 +191,14 @@ extern "C" {
  */
 void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                     uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl);
+
+/*
+ * The narrowing operations' reference, which also says whether an
+ * element saturated -- the caller sets the target's saturation word.
+ */
+bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                           uint32_t scalar, uint8_t aux, uint32_t nregs,
+                           uint32_t vl);
 
 /* ------------------------------------------------------------------ */
 /* Guest condition flags                                               */
@@ -1209,6 +1230,11 @@ typedef struct emu_ir_target {
      * EMU_IR_VOP; NULL for a guest that has none, which then emits none.
      */
     uint32_t (*vreg_offset)(uint32_t n);
+    /*
+     * The saturation word the narrowing clips set to 1 (RISC-V's vxsat),
+     * a uint32_t in the cpu state; meaningful wherever vreg_offset is.
+     */
+    uint32_t vsat_offset;
 
     /* Byte offset of the word holding the guest's condition flags. */
     uint32_t flags_offset;

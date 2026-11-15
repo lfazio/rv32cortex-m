@@ -93,6 +93,7 @@ typedef struct {
     uint8_t pad[7];
     emu_dtlb_entry_t tlb[4];
     uint8_t v[32][EMU_IR_VREG_BYTES]; /* EMU_IR_VOP's registers */
+    uint32_t vsat; /* the narrowing clips' saturation word */
 } fcpu_t;
 
 static uint8_t g_ram[PAGE];
@@ -337,7 +338,7 @@ static uint32_t off_vreg(uint32_t n)
         .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
         .helper_count = 5u, .load = f_load, .store = f_store,                  \
         .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
-        .vreg_offset = off_vreg,                                               \
+        .vreg_offset = off_vreg, .vsat_offset = offsetof(fcpu_t, vsat),       \
     }
 #define TGT_FLAGS(ro, rz)                                                      \
     TGT(ro, rz, 1u, 2u, 4u, 8u),                                               \
@@ -889,12 +890,16 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         const uint32_t sew = pick(in, 3u);
         const bool vx = (byte(in) & 1u) != 0u;
         const bool wide = EMU_IR_V_IS_WIDE(vop);
-        const uint32_t lg = pick(in, wide ? 3u : 4u);
+        const bool narrow = EMU_IR_V_IS_NARROW(vop);
+        const uint32_t lg = pick(in, (wide || narrow) ? 3u : 4u);
         const uint32_t dlg = wide ? lg + 1u : lg; /* vd's group */
+        const uint32_t slg = narrow ? lg + 1u : lg; /* vs2's */
         const uint8_t aux = EMU_IR_VOP_AUX(vop, sew, vx);
         /* each the first register of a group: same or disjoint */
         const uint32_t vd = pick(in, 32u >> dlg) << dlg;
-        const uint32_t vs2 = pick(in, 32u >> lg) << lg;
+        const uint32_t vs2 = (narrow && (byte(in) & 3u) == 0u)
+                                 ? (vd & ~((2u << lg) - 1u)) /* vd at its start */
+                                 : (pick(in, 32u >> slg) << slg);
         const uint32_t vs1 = pick(in, 32u >> lg) << lg;
         const uint32_t lanes = (EMU_IR_VREG_BYTES << lg) >> sew;
 
@@ -904,6 +909,9 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         if (wide && ((vd < vs2 + (1u << lg) && vs2 < vd + (2u << lg)) ||
                      (!vx && vd < vs1 + (1u << lg) && vs1 < vd + (2u << lg)))) {
             break; /* the contract: vd disjoint from the sources */
+        }
+        if (narrow && vd != vs2 && vd < vs2 + (2u << lg) && vs2 < vd + (1u << lg)) {
+            break; /* the contract: disjoint from vs2's group, or its start */
         }
         /* vl at most the group's elements; often a register's edge */
         uint32_t vl = pick(in, lanes + 1u);
@@ -1208,6 +1216,7 @@ static bool same(const side_t *x, const side_t *y, bool print,
     CMP("cause_pc", 0, x->cpu.cause_pc, y->cpu.cause_pc);
     CMP("helpers", 0, x->cpu.hlog, y->cpu.hlog);
     CMP("guard", 0, x->cpu.guard, y->cpu.guard);
+    CMP("vsat", 0, x->cpu.vsat, y->cpu.vsat);
     for (unsigned i = 0; i < sizeof(x->cpu.v) / 4u; i++) {
         uint32_t a, b;
 

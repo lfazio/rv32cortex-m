@@ -656,6 +656,22 @@ void t2_smlaxy(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool nt,
                          (mt ? 0x10u : 0u) | rm));
 }
 
+/*
+ * SSAT rd, #16, rn: rn saturated to a signed halfword, Q set if it had
+ * to be (F300 | rn, rd << 8 | 15). MSR APSR_nzcvq, rn writes N Z C V Q
+ * from rn's top bits (F380 | rn, 8800). Checked against
+ * arm-none-eabi-as.
+ */
+void t2_ssat16(uint32_t rd, uint32_t rn)
+{
+    t2_emit32((uint16_t)(0xF300u | rn), (uint16_t)((rd << 8) | 15u));
+}
+
+void t2_msr_apsr_nzcvq(uint32_t rn)
+{
+    t2_emit32((uint16_t)(0xF380u | rn), 0x8800u);
+}
+
 /* PKHBT rd, rn, rm, LSL #16: rn's low halfword, rm's low one above it. */
 void t2_pkhbt16(uint32_t rd, uint32_t rn, uint32_t rm)
 {

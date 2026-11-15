@@ -152,7 +152,19 @@ replaces. Both products are formed before either is kept, in r2 and lr
 the sequence calls -- leaving r0 and r1 for the masks and the old words.
 The encodings, lr and r12 in each position, were checked against the
 assembler. vecbench 48.21 to 37.68; the corpus replay clean in both its
-halves, and the high element multiplied by SMLABB 77 different. The fifteen
+halves, and the high element multiplied by SMLABB 77 different.
+
+The narrowing shifts and the signed clip to halfwords go a word of vd
+at a time from two source words: shifted by r12, for the clip rounded
+up through lr, and packed by `PKHBT`. The clip saturates with
+`SSAT #16`, and **Q is its vxsat**: cleared first (`MSR APSR_nzcvq`), the
+tail's inputs zeroed by the word's mask -- a halfword's 0xFFFF
+sign-extended by `SXTH` and `ASR #16` -- before the SSAT so that only an
+active element can set it, read after into the saturation word and
+cleared again. NZCV go with it, which no IR instruction carries. The
+unsigned clip keeps the helper: USAT reads its 32-bit input as signed.
+vecbench 37.68 to 27.54; the replay 7,900 clean, and with the tail not
+zeroed 16 different. The fifteen
 encodings, r12 in every position, were checked against
 arm-none-eabi-as before the first flash; one byte of the comment
 beside them was not.

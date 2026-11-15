@@ -1390,7 +1390,8 @@ static void test_lower_crypto_ops(void)
  */
 typedef struct {
     uint32_t pc; /* where the block's exit writes: not over v0 */
-    uint32_t pad[3];
+    uint32_t sat; /* the narrowing clips' saturation word */
+    uint32_t pad[2];
     uint8_t v[32][EMU_IR_VREG_BYTES];
 } vop_cpu_t;
 
@@ -1408,6 +1409,7 @@ static uint32_t vop_vreg_offset(uint32_t n)
 static const emu_ir_target_t g_vop_target = {
     .reg_offset = vop_reg_offset,
     .vreg_offset = vop_vreg_offset,
+    .vsat_offset = (uint32_t)offsetof(vop_cpu_t, sat),
     .pc_offset = (uint32_t)offsetof(vop_cpu_t, pc),
 };
 
@@ -1437,6 +1439,44 @@ static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
     uint8_t *const d = (uint8_t *)c->v + vd * EMU_IR_VREG_BYTES;
     const uint64_t m = (w == 4u) ? 0xFFFFFFFFull : ((1ull << (8u * w)) - 1u);
 
+    if (op >= EMU_IR_V_NSRL && op <= EMU_IR_V_NCLIP_RNU) {
+        const int64_t smax = (w == 2u) ? 32767 : 127;
+        const int64_t umax = (w == 2u) ? 65535 : 255;
+
+        for (uint32_t i = 0; i < vl; i++) {
+            uint8_t sbuf[4] = {(uint8_t)scalar, (uint8_t)(scalar >> 8), 0u, 0u};
+            const int64_t sx = vop_lane(a + i * 2u * w, 2u * w, true);
+            const int64_t ux = vop_lane(a + i * 2u * w, 2u * w, false);
+            const unsigned sh =
+                (unsigned)(vop_lane(vx ? sbuf : b + i * w, w, false) & (16u * w - 1u));
+            /* the bit shifted out last, rounding half up */
+            const int64_t up = (sh == 0u) ? 0 : ((ux >> (sh - 1u)) & 1);
+            int64_t r;
+
+            switch (op) {
+            case EMU_IR_V_NSRL: r = ux >> sh; break;
+            case EMU_IR_V_NSRA: r = sx >> sh; break;
+            case EMU_IR_V_NCLIPU_RNU:
+                r = (ux >> sh) + up;
+                if (r > umax) {
+                    r = umax;
+                    c->sat = 1u;
+                }
+                break;
+            default:
+                r = (sx >> sh) + up;
+                if (r > smax || r < -smax - 1) {
+                    r = (r > smax) ? smax : -smax - 1;
+                    c->sat = 1u;
+                }
+                break;
+            }
+            for (uint32_t k = 0; k < w; k++) {
+                d[i * w + k] = (uint8_t)((uint64_t)r >> (8u * k));
+            }
+        }
+        return;
+    }
     if (op >= EMU_IR_V_WMACCU && op <= EMU_IR_V_WMACCUS) {
         const bool sgn_a = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCUS;
         const bool sgn_b = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCSU;
@@ -1545,8 +1585,9 @@ static void test_lower_vop(void)
                 for (uint32_t lg = 0; lg < 4u; lg++) {
                     const uint32_t nregs = 1u << lg;
                     const bool wide = EMU_IR_V_IS_WIDE(op);
+                    const bool narrow = EMU_IR_V_IS_NARROW(op);
 
-                    if (wide && lg == 3u) {
+                    if ((wide || narrow) && lg == 3u) {
                         ran += 8u; /* vd would be 16 registers: no such form */
                         continue;
                     }
@@ -1565,6 +1606,7 @@ static void test_lower_vop(void)
                         vop_cpu_t got, want, ref;
 
                         got.pc = 0u;
+                        got.sat = 0u;
                         memset(got.pad, 0, sizeof(got.pad));
                         for (uint32_t i = 0; i < sizeof(got.v); i++) {
                             seed = seed * 1103515245u + 12345u;
@@ -1586,10 +1628,20 @@ static void test_lower_vop(void)
                         want.pc = 0x1000u; /* the exit's */
                         ref = want;
                         vop_mine(&want, op, w, vx != 0u, scalar, vd, vs2, vs1, vl);
-                        emu_ir_vop_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
-                                       (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
-                                       (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES, scalar,
-                                       aux, nregs, vl);
+                        if (narrow) {
+                            if (emu_ir_vop_narrow_ref(
+                                    (uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
+                                    (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
+                                    (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES,
+                                    scalar, aux, nregs, vl)) {
+                                ref.sat = 1u;
+                            }
+                        } else {
+                            emu_ir_vop_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
+                                           (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
+                                           (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES,
+                                           scalar, aux, nregs, vl);
+                        }
 
                         emu_ir_reset(&g_b);
                         const uint16_t tv = emu_ir_const(&g_b, vl);

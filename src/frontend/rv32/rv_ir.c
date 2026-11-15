@@ -806,6 +806,7 @@ const emu_ir_target_t rv_ir_target = {
     .reg_offset = rv_reg_offset,
 #if RV_EXT_ZVE32X
     .vreg_offset = rv_vreg_offset,
+    .vsat_offset = (uint32_t)offsetof(rv_hart_t, vxsat),
 #endif
     /*
      * No condition flags at all. flags_offset is unused while every
@@ -1285,6 +1286,11 @@ static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t vxrm,
     case 0x25u: *op = EMU_IR_V_SLL; *forms = 7u; return true;
     case 0x28u: *op = EMU_IR_V_SRL; *forms = 7u; return true;
     case 0x29u: *op = EMU_IR_V_SRA; *forms = 7u; return true;
+    /* narrowing: vs2 twice SEW in twice the registers (rv_ir_vec) */
+    case 0x2Cu: *op = EMU_IR_V_NSRL; *forms = 7u; return true;
+    case 0x2Du: *op = EMU_IR_V_NSRA; *forms = 7u; return true;
+    case 0x2Eu: *op = EMU_IR_V_NCLIPU_RNU; *forms = 7u; return vxrm == 0u;
+    case 0x2Fu: *op = EMU_IR_V_NCLIP_RNU; *forms = 7u; return vxrm == 0u;
     default: return false;
     }
 }
@@ -1380,10 +1386,25 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     const uint32_t nlg = (lg > 0) ? (uint32_t)lg : 0u;
     const uint32_t grp = 1u << nlg;
     const bool shift = vop == EMU_IR_V_SLL || vop == EMU_IR_V_SRL ||
-                       vop == EMU_IR_V_SRA;
+                       vop == EMU_IR_V_SRA || EMU_IR_V_IS_NARROW(vop);
+
+    /*
+     * Narrowing: LMUL 1 to 4 and SEW 8 or 16, vs2's group of twice the
+     * registers aligned to it, and vd disjoint from it or its first
+     * register -- the overlap the specification allows; any other is the
+     * helper's.
+     */
+    if (EMU_IR_V_IS_NARROW(vop) &&
+        (lg < 0 || lg > 2 || sew > 1u || vs2 % (2u * grp) != 0u ||
+         vd % grp != 0u ||
+         (vd != vs2 && vd < vs2 + 2u * grp && vs2 < vd + grp))) {
+        return false;
+    }
+    /* vs2's group: twice the registers for a narrowing operation */
+    const uint32_t sgrp = EMU_IR_V_IS_NARROW(vop) ? 2u * grp : grp;
 
     if ((forms & form) == 0u || vd % grp != 0u ||
-        (vop != EMU_IR_V_MV && vs2 % grp != 0u) ||
+        (vop != EMU_IR_V_MV && vs2 % sgrp != 0u) ||
         (vop == EMU_IR_V_MV && vs2 != 0u) || (form == 1u && r1 % grp != 0u)) {
         return false;
     }

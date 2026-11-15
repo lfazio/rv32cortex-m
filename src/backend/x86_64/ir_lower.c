@@ -1356,6 +1356,17 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_WMACCSU:
     case EMU_IR_V_WMACCUS:
         return sew == 0u;
+    /*
+     * Narrowing, by one count only: SSE2's shifts take it from a register,
+     * a vector of counts is AVX2's. The unsigned clip clamps with PMINUD
+     * or PMINUW before packing, which are SSE4.1's.
+     */
+    case EMU_IR_V_NSRL:
+    case EMU_IR_V_NSRA:
+    case EMU_IR_V_NCLIP_RNU:
+        return sew <= 1u && EMU_IR_VOP_VX(aux);
+    case EMU_IR_V_NCLIPU_RNU:
+        return sew <= 1u && EMU_IR_VOP_VX(aux) && sse41;
     default:
         return false;
     }
@@ -1750,6 +1761,164 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/* Per-lane constants: 1, and the unsigned maximum, by width. */
+static const uint8_t k_vop_one32[16] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+static const uint8_t k_vop_one16[16] = {1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0};
+static const uint8_t k_vop_max16[16] = {0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0,
+                                        0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0};
+static const uint8_t k_vop_max8[16] = {0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0,
+                                       0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0};
+
+static void vop_const(int xmm, const uint8_t *k)
+{
+    x86_mov_imm64(T0, (uint64_t)(uintptr_t)k);
+    x86_movdqu_ld_reg(xmm, T0);
+}
+
+/*
+ * One source register of a narrowing operation, in xmm `x`: shifted by
+ * the count in xmm6, and for a clip rounded up -- ((x << 1) >> sh) & 1,
+ * the bit shifted out last, and 0 for a shift of 0 -- with xmm2 for the
+ * rounding bit and xmm7 holding the lanes' 1.
+ */
+static void vop_narrow_shift(uint32_t op, uint32_t sew, int x)
+{
+    /* sew is d's: the source lanes are 32 bits (sew 1) or 16 (sew 0) */
+    const uint8_t grp = (sew == 1u) ? 0x72u : 0x71u; /* psXd / psXw imm */
+    const uint8_t srl = (sew == 1u) ? 0xD2u : 0xD1u; /* by xmm */
+    const uint8_t sra = (sew == 1u) ? 0xE2u : 0xE1u;
+    const uint8_t sll = (sew == 1u) ? 0xF2u : 0xF1u;
+    const uint8_t add = (sew == 1u) ? 0xFEu : 0xFDu;
+    const bool sign = op == EMU_IR_V_NSRA || op == EMU_IR_V_NCLIP_RNU;
+    const bool clip = op == EMU_IR_V_NCLIP_RNU || op == EMU_IR_V_NCLIPU_RNU;
+
+    if (clip) {
+        x86_sse_66(0x6Fu, X86_XMM2, x);
+        x86_sse_shift_imm(grp, 6u, X86_XMM2, 1u); /* << 1 */
+        x86_sse_66(srl, X86_XMM2, X86_XMM6);
+        x86_sse_66(0xDBu, X86_XMM2, X86_XMM7); /* & 1 */
+    }
+    (void)sll;
+    x86_sse_66(sign ? sra : srl, x, X86_XMM6);
+    if (clip) {
+        x86_sse_66(add, x, X86_XMM2);
+    }
+}
+
+/*
+ * eq = all ones in each lane of x that narrows exactly, into `eq`: a
+ * signed value against its low half sign-extended back, an unsigned one
+ * against its clamp to d's maximum (xmm7 then holds the maximum).
+ */
+static void vop_narrow_exact(uint32_t op, uint32_t sew, int x, int eq)
+{
+    const uint8_t grp = (sew == 1u) ? 0x72u : 0x71u;
+    const uint8_t cmp = (sew == 1u) ? 0x76u : 0x75u; /* pcmpeqd / w */
+
+    x86_sse_66(0x6Fu, eq, x);
+    if (op == EMU_IR_V_NCLIP_RNU) {
+        const uint8_t half = (sew == 1u) ? 16u : 8u;
+
+        x86_sse_shift_imm(grp, 6u, eq, half); /* << half */
+        x86_sse_shift_imm(grp, 4u, eq, half); /* >> half, arithmetic */
+    } else {
+        x86_sse_0f38((sew == 1u) ? 0x3Bu : 0x3Au, eq, X86_XMM7); /* pminu */
+    }
+    x86_sse_66(cmp, eq, x);
+}
+
+/*
+ * The narrowing operations, a register of vd at a time from s2's two:
+ * each shifted (and for a clip rounded) as wide lanes, then packed --
+ * PACKSS for the signed clip, which saturates as it should; the unsigned
+ * one clamped first and packed by PACKUS, exactly; a plain shift's low
+ * halves sign-extended first so PACKSS cannot saturate. A clip's
+ * saturated lanes are those that did not narrow exactly, packed to d's
+ * lanes, kept to the active ones by the tail mask and gathered by
+ * PMOVMSKB into ecx: non-zero at the end sets the saturation word.
+ */
+static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    const uint32_t sew = EMU_IR_VOP_SEW(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const bool clip = op == EMU_IR_V_NCLIP_RNU || op == EMU_IR_V_NCLIPU_RNU;
+    const uint8_t packs = (sew == 1u) ? 0x6Bu : 0x63u; /* packssdw / packsswb */
+
+    ld_operand(T2, in->b);
+    if (sew != 0u) {
+        x86_shift_imm(T2, X86_SHL, sew); /* vl in d's bytes */
+    }
+    ld_operand(T0, in->a);
+    x86_alu_imm32(4u, T0, (16u << sew) - 1u); /* the count, mod 2 * SEW */
+    x86_movd_to_xmm(X86_XMM6, T0);
+    if (clip) {
+        x86_mov_imm32(T1, 0u); /* the saturated lanes, gathered */
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + 2u * r));
+        x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs2 + 2u * r + 1u));
+        if (clip) {
+            vop_const(X86_XMM7, (sew == 1u) ? k_vop_one32 : k_vop_one16);
+        }
+        vop_narrow_shift(op, sew, X86_XMM0);
+        vop_narrow_shift(op, sew, X86_XMM1);
+        if (clip) {
+            if (op == EMU_IR_V_NCLIPU_RNU) {
+                vop_const(X86_XMM7, (sew == 1u) ? k_vop_max16 : k_vop_max8);
+            }
+            vop_narrow_exact(op, sew, X86_XMM0, X86_XMM4);
+            vop_narrow_exact(op, sew, X86_XMM1, X86_XMM5);
+            x86_sse_66(packs, X86_XMM4, X86_XMM5); /* exact, by d's lane */
+        }
+        if (op == EMU_IR_V_NCLIPU_RNU) {
+            const uint8_t minu = (sew == 1u) ? 0x3Bu : 0x3Au;
+
+            x86_sse_0f38(minu, X86_XMM0, X86_XMM7);
+            x86_sse_0f38(minu, X86_XMM1, X86_XMM7);
+            if (sew == 1u) {
+                x86_sse_0f38(0x2Bu, X86_XMM0, X86_XMM1); /* packusdw */
+            } else {
+                x86_sse_66(0x67u, X86_XMM0, X86_XMM1); /* packuswb */
+            }
+        } else {
+            if (op != EMU_IR_V_NCLIP_RNU) {
+                const uint8_t grp = (sew == 1u) ? 0x72u : 0x71u;
+                const uint8_t half = (sew == 1u) ? 16u : 8u;
+
+                x86_sse_shift_imm(grp, 6u, X86_XMM0, half);
+                x86_sse_shift_imm(grp, 4u, X86_XMM0, half);
+                x86_sse_shift_imm(grp, 6u, X86_XMM1, half);
+                x86_sse_shift_imm(grp, 4u, X86_XMM1, half);
+            }
+            x86_sse_66(packs, X86_XMM0, X86_XMM1);
+        }
+        /* The mask of d's register r, then the keep and the store. */
+        x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
+        x86_sub64_rr(T0, T2);
+        x86_movdqu_ld_reg(X86_XMM3, T0);
+        if (clip) {
+            x86_sse_66(0xDFu, X86_XMM4, X86_XMM3); /* pandn: inexact & active */
+            x86_pmovmskb(X86_EAX, X86_XMM4);
+            x86_alu_rr(0x09u, X86_ECX, X86_EAX); /* or ecx, eax */
+        }
+        x86_movdqu_ld_cpu(X86_XMM2, t->vreg_offset(vd + r));
+        x86_sse_66(0xDBu, X86_XMM0, X86_XMM3);
+        x86_sse_66(0xDFu, X86_XMM3, X86_XMM2);
+        x86_sse_66(0xEBu, X86_XMM0, X86_XMM3);
+        x86_movdqu_st_cpu(t->vreg_offset(vd + r), X86_XMM0);
+    }
+    if (clip) {
+        x86_alu_rr(X86_TEST, X86_ECX, X86_ECX);
+        uint8_t *const none = x86_jcc8(X86_CC_E);
+
+        x86_st_cpu_imm32(t->vsat_offset, 1u);
+        (void)x86_patch_rel8(none, emu_jit_here());
+    }
+}
+
 /*
  * EMU_IR_VOP, a register of the group at a time: vs2 into xmm0, the
  * second operand in xmm1 (vs1's register, or the scalar in every lane --
@@ -1774,6 +1943,10 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     if (EMU_IR_V_IS_WIDE(op)) {
         lower_vop_wide(in, t);
+        return;
+    }
+    if (EMU_IR_V_IS_NARROW(op)) {
+        lower_vop_narrow(in, t);
         return;
     }
     ld_operand(T2, in->b);

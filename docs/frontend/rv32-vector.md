@@ -98,8 +98,10 @@ vstart stays 0. Unmasked `vadd`, `vsub`, `vrsub`, `vand`, `vor`,
 `vsra`, `vmv.v`, `vmacc`, `vnmsac`, `vmadd`, `vnmsub`, `vaaddu` and
 `vaadd` while vxrm is rnu, and the widening `vwmaccu`, `vwmacc`,
 `vwmaccsu`, `vwmaccus` -- at LMUL 1 to 4, vd's group disjoint from the
-sources -- become `EMU_IR_VOP` when the backend says it lowers that
-form (`emu_ir_can_lower`), and VS is marked Dirty at the
+sources -- and the narrowing `vnsrl`, `vnsra`, and `vnclipu` and
+`vnclip` under rnu, by one count (.wx, .wi), vd disjoint from vs2's
+group or at its start, become `EMU_IR_VOP` when the backend says it
+lowers that form (`emu_ir_can_lower`), and VS is marked Dirty at the
 block's first; the rest stays the helper. vxrm is in the block's
 context (bits 42:41), as frm is: the averages' rounding is resolved at
 translation, and a vxrm write is a CSR write, which ends the block. VS off is in the block's context
@@ -120,6 +122,7 @@ the host's in every row:
 | unit-stride loads and stores inline (`EMU_IR_VMEM`) | | 74.29 |
 | the averaging adds under rnu, the multiply-adds | | 48.21 |
 | the widening multiply-adds | | 37.68 |
+| the narrowing shifts and clip | | 27.54 |
 
 **Unit-stride loads and stores are inline too** (`rv_ir_vmem`): an
 unmasked access of one field, in a block that knows vtype and has the
@@ -136,10 +139,12 @@ vecbench under the JIT, one binary, callgrind: the helper alone
 (`EMU_HOST_SIMD=0`) 67.6M host instructions, SSE2 64.6M, SSE4.1 59.0M,
 the same checksum each; 39.6M with the accesses inline (below), 22.2M
 with the averages and the multiply-adds, 17.7M with the widening
-multiply-adds. What is left is the helper's, by a profile on the F746
-(`-DVECBENCH_ROUNDS=800 -DEMU_PC_PROFILE=8000`): the narrowing clip
-`vnclip`, its rounding and saturation the largest share, then the
-reductions and the strided load ([TODO](../TODO.md)).
+multiply-adds, 12.9M with the narrowing clip. A clip that saturates an
+active element sets vxsat through the target's saturation word
+(`emu_ir_target_t::vsat_offset`). What was left by a profile on the
+F746 (`-DVECBENCH_ROUNDS=800 -DEMU_PC_PROFILE=8000`) after the widening
+step was the clip, first; now it is the reductions and the strided
+load ([TODO](../TODO.md)).
 
 **Built only where something emits them**: the IR's vector operations,
 their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake

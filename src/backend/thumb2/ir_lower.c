@@ -1300,6 +1300,15 @@ static bool vop_lowerable(uint8_t aux)
         return sew == 2u;
     case EMU_IR_V_WMACC: /* SMLABB and SMLATT: signed halfwords only */
         return sew == 1u;
+    /*
+     * Narrowing to halfwords by one count: the shifts, and the signed clip
+     * by SSAT, whose Q flag is the saturation. Not to bytes -- no lane
+     * shift -- nor the unsigned clip, whose 32-bit input USAT reads signed.
+     */
+    case EMU_IR_V_NSRL:
+    case EMU_IR_V_NSRA:
+    case EMU_IR_V_NCLIP_RNU:
+        return sew == 1u && EMU_IR_VOP_VX(aux);
     default:
         return false;
     }
@@ -1914,6 +1923,91 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/* One 32-bit source element in `x`, shifted by r12 and, for the clip,
+ * rounded up by the bit shifted out last -- ((x << 1) >> sh) & 1, 0 for a
+ * shift of 0 -- through lr. */
+static void vop_narrow_word(uint32_t op, uint32_t x)
+{
+    if (op == EMU_IR_V_NSRL) {
+        t2_shift_reg(T2_LSR, x, x, T2_R12);
+        return;
+    }
+    if (op == EMU_IR_V_NCLIP_RNU) {
+        t2_shift_imm(T2_LSL, T2_LR, x, 1u);
+        t2_shift_reg(T2_LSR, T2_LR, T2_LR, T2_R12);
+        t2_and_imm(T2_LR, T2_LR, 1u);
+    }
+    t2_shift_reg(T2_ASR, x, x, T2_R12);
+    if (op == EMU_IR_V_NCLIP_RNU) {
+        t2_add(x, x, T2_LR);
+    }
+}
+
+/*
+ * The narrowing operations to halfwords, a word of vd at a time from two
+ * source words. The clip saturates by SSAT, and Q is its vxsat: cleared
+ * first, and the tail's inputs zeroed by the word's mask before the SSAT
+ * -- a halfword's 0xFFFF sign-extended (SXTH, ASR 16) -- so that only an
+ * active element can set it; read after, into the saturation word, and
+ * cleared again. NZCV go with it, which no IR instruction carries.
+ */
+static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const bool clip = op == EMU_IR_V_NCLIP_RNU;
+
+    ld_operand(T2_R12, in->a);
+    t2_and_imm(T2_R12, T2_R12, 31u); /* the count, mod 32 */
+    ld_operand(T2_R3, in->b);
+    t2_shift_imm(T2_LSL, T2_R3, T2_R3, 1u); /* vl in vd's bytes */
+    t2_imm32(T2_R2, (uint32_t)(uintptr_t)(k_vop_window + 128u));
+    t2_sub(T2_R3, T2_R2, T2_R3);
+    if (clip) {
+        t2_imm32(T2_R0, 0u);
+        t2_msr_apsr_nzcvq(T2_R0);
+    }
+    for (uint32_t k = 0; k < 4u * nregs; k++) {
+        /* vd's word k: source words 2k and 2k + 1 of vs2's group */
+        const uint32_t od = t->vreg_offset(vd + k / 4u) + 4u * (k % 4u);
+        const uint32_t o0 = t->vreg_offset(vs2 + (2u * k) / 4u) + 4u * ((2u * k) % 4u);
+        const uint32_t o1 =
+            t->vreg_offset(vs2 + (2u * k + 1u) / 4u) + 4u * ((2u * k + 1u) % 4u);
+
+        t2_ldr_imm(T2_R0, T2_CPU, o0);
+        t2_ldr_imm(T2_R1, T2_CPU, o1);
+        vop_narrow_word(op, T2_R0);
+        vop_narrow_word(op, T2_R1);
+        t2_ldr_imm(T2_R2, T2_R3, 4u * k); /* the mask */
+        if (clip) {
+            t2_sxth(T2_LR, T2_R2);
+            t2_and(T2_R0, T2_R0, T2_LR);
+            t2_shift_imm(T2_ASR, T2_LR, T2_R2, 16u);
+            t2_and(T2_R1, T2_R1, T2_LR);
+            t2_ssat16(T2_R0, T2_R0);
+            t2_ssat16(T2_R1, T2_R1);
+        }
+        t2_pkhbt16(T2_R0, T2_R0, T2_R1);
+        t2_ldr_imm(T2_R1, T2_CPU, od);
+        t2_and(T2_R0, T2_R0, T2_R2);
+        t2_bic(T2_R1, T2_R1, T2_R2);
+        t2_orr(T2_R0, T2_R0, T2_R1);
+        t2_str_imm(T2_R0, T2_CPU, od);
+    }
+    if (clip) {
+        t2_mrs_apsr(T2_R0);
+        t2_shift_imm(T2_LSR, T2_R0, T2_R0, 27u);
+        t2_and_imm(T2_R0, T2_R0, 1u); /* Q */
+        t2_ldr_imm(T2_R1, T2_CPU, t->vsat_offset);
+        t2_orr(T2_R1, T2_R1, T2_R0);
+        t2_str_imm(T2_R1, T2_CPU, t->vsat_offset);
+        t2_imm32(T2_R0, 0u);
+        t2_msr_apsr_nzcvq(T2_R0);
+    }
+}
+
 static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const uint32_t op = EMU_IR_VOP_OP(in->aux);
@@ -1928,6 +2022,10 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     if (EMU_IR_V_IS_WIDE(op)) {
         lower_vop_wide(in, t);
+        return;
+    }
+    if (EMU_IR_V_IS_NARROW(op)) {
+        lower_vop_narrow(in, t);
         return;
     }
     if (vx) {
