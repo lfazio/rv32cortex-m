@@ -1298,6 +1298,11 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
                 emu_run_env_t *env)
 {
     g_opt = *args;
+    /*
+     * --timer-hz. The shared parser stores it in emu_args_t; from 4d69448
+     * until this line nothing read it there, and the divisor stayed 1.
+     */
+    g_timer_div = (g_opt.timer_div != 0u) ? g_opt.timer_div : 1u;
 
     /*
      * **Where "an image is required" is enforced**, rather than in the

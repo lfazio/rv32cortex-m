@@ -4976,6 +4976,40 @@ session, and every one of them recurred:
   host, on a board only with a vector unit. **Build the boards a change
   does not mean to touch.**
 
+- **An option the parser keeps is not an option until something reads
+  it.** `--timer-hz` divides the host's guest clock, and README and
+  games.md send DOOM's players to it (`--timer-hz 6`). When the board
+  and the host came to share one `main()` (4d69448), its parse moved
+  into `emu_args_t::timer_div`, and the host's `g_timer_div` -- the only
+  thing the clock divides by -- was left at its initialiser. For three
+  months the flag parsed, printed in `--help`, and did nothing; the help
+  line also called a divisor "ticks per second". `check-doc-flags.sh`
+  asks about `-D` flags, not runtime ones. Found by reading the reader
+  while fixing a test that needed the flag. A count of readers over
+  every field of `emu_args_t` found no other. `guest-timer-hz-divided`
+  asks CoreMark's own tick count with the clock in seconds -- 0, where
+  the wall clock gives 11,168 -- and fails with the assignment removed.
+  **Grep for the reader of a parsed value, not only the parse.**
+
+- **A guest that prints the time retires more for a longer number.**
+  `guest-coremark-v-both` holds the two backends to one output and one
+  retired count, with CoreMark's timing lines ignored -- the guest's
+  clock is the wall clock. It passed alone and failed two runs of three
+  under `ctest -j16`: 514,011 retired interpreted, 513,996 translated,
+  because a run slowed by the load had a longer tick count to format.
+  Ignoring a line ignores its text, not what it cost to produce. With
+  `--timer-hz 1000000` the clock is in seconds and reads 0 for the run,
+  and nothing is ignored. **Whatever a run's count depends on is an
+  input; give a comparison the same inputs, the clock included.**
+
+- **A capped listing must print its verdict after the cap.**
+  `ir-board.sh` showed the first sixty of the replay's lines, which is
+  where a summary of a clean run sits -- and where the cases of a
+  failing one go first: with a Thumb-2 mutant, the line saying how many
+  differed came after sixty of them and was cut, and the grep for it
+  printed nothing for a run that had found 72. The summary lines are
+  printed whatever the count now.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

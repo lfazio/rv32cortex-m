@@ -166,6 +166,20 @@ unsigned clip keeps the helper: USAT reads its 32-bit input as signed.
 vecbench 37.68 to 27.54; the replay 7,900 clean, and with the tail not
 zeroed 16 different.
 
+Masked (`EMU_IR_VOPM`), a word's mask bits go to lr: the mask
+register's byte holding the word's first element, shifted and cut to
+the word's 1, 2 or 4 bits, then spread to its lanes -- negated for a
+word; for halfwords and bytes multiplied by 0x8001 or 0x00204081, which
+puts each bit at its own lane's bottom, ANDed with 0x00010001 or
+0x01010101 and multiplied by 0xFFFF or 0xFF. ANDed into the word's
+tail mask, it keeps a masked-off element's old value as the tail does;
+a merge is `BIC`, `AND` and `ORR` between vs2's word and the source.
+The replay 8,658 inputs clean in two halves. With the byte spread's
+multiplier a bit off, 72 different in the second half -- the first
+half's count was lost: `ir-board.sh` printed sixty differing cases and
+cut the summary after them, and prints it always now -- and with the
+mask not ANDed in, 306 and 317.
+
 **The unrolled words cost vecbench nothing yet.** Its translations reach
 53 KB of the 64 KB buffer, which read as a reason to loop over an m4 or
 m8 group's words rather than unroll them. At a 32 KB buffer it runs at

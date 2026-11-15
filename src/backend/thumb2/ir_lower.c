@@ -1225,6 +1225,7 @@ static bool bisect_allows(uint8_t op)
      * time vecbench ran with EMU_IR_VOP on this host.
      */
     case EMU_IR_VOP:
+    case EMU_IR_VOPM:
     case EMU_IR_VMEM:
         return T2_BISECT >= 11;
     default:
@@ -1446,8 +1447,15 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         return vop_lowerable(aux);
     case EMU_IR_VMEM: /* word moves; without a window, the helper alone */
         return true;
+    case EMU_IR_VOPM: /* single-width, as unmasked, and the merge */
+        if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
+            return EMU_IR_VOP_SEW(aux) <= 2u;
+        }
+        return !EMU_IR_V_IS_WIDE(EMU_IR_VOP_OP(aux)) &&
+               !EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(aux)) && vop_lowerable(aux);
 #else
     case EMU_IR_VOP:
+    case EMU_IR_VOPM:
     case EMU_IR_VMEM:
         return false;
 #endif
@@ -1923,6 +1931,39 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/*
+ * lr = the mask of word k of the group's elements -- each lane all ones
+ * where its bit of mask register `mreg` is set -- with r2 for the
+ * constants. The word's elements' bits are one, two or four bits of one
+ * byte: a single one negated; two spread to the halfwords by 0x8001 and
+ * 0x00010001; four to the bytes by 0x00204081 and 0x01010101; then each
+ * lane's bit made its whole width by a multiply. lr is free inside a
+ * block (every block pushes it).
+ */
+static void vop_word_mask(const emu_ir_target_t *t, uint32_t mreg, uint32_t sew,
+                          uint32_t k)
+{
+    const uint32_t per = 4u >> sew;      /* elements a word */
+    const uint32_t e = k * per;          /* the word's first element */
+    uint16_t enc;
+
+    t2_ldrb_imm(T2_LR, T2_CPU, t->vreg_offset(mreg) + (e >> 3));
+    if ((e & 7u) != 0u) {
+        t2_shift_imm(T2_LSR, T2_LR, T2_LR, e & 7u);
+    }
+    t2_and_imm(T2_LR, T2_LR, (uint16_t)((1u << per) - 1u));
+    if (sew == 2u) {
+        t2_neg(T2_LR, T2_LR);
+        return;
+    }
+    t2_imm32(T2_R2, (sew == 1u) ? 0x8001u : 0x00204081u);
+    t2_mul(T2_LR, T2_LR, T2_R2);
+    (void)t2_expand_imm((sew == 1u) ? 0x00010001u : 0x01010101u, &enc);
+    t2_and_imm(T2_LR, T2_LR, enc);
+    t2_imm32(T2_R2, (sew == 1u) ? 0xFFFFu : 0xFFu);
+    t2_mul(T2_LR, T2_LR, T2_R2);
+}
+
 /* One 32-bit source element in `x`, shifted by r12 and, for the clip,
  * rounded up by the bit shifted out last -- ((x << 1) >> sh) & 1, 0 for a
  * shift of 0 -- through lr. */
@@ -2019,6 +2060,7 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
     const bool shift =
         op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
+    const bool masked = in->op == (uint8_t)EMU_IR_VOPM;
 
     if (EMU_IR_V_IS_WIDE(op)) {
         lower_vop_wide(in, t);
@@ -2060,11 +2102,24 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             if (op != EMU_IR_V_MV) {
                 t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(vs2 + r) + 4u * w);
             }
-            if (op >= EMU_IR_V_MACC) {
+            if (op >= EMU_IR_V_MACC && op <= EMU_IR_V_NMSUB) {
                 t2_ldr_imm(T2_R2, T2_CPU, od); /* d, for the multiply-adds */
             }
-            vop_word(op, sew, rb);
+            if (masked) {
+                vop_word_mask(t, EMU_IR_VOP_MREG(in->imm), sew, 4u * r + w);
+            }
+            if (op == EMU_IR_V_MERGE) {
+                /* s1 where the bit is set, s2 (in r0) where not */
+                t2_bic(T2_R0, T2_R0, T2_LR);
+                t2_and(T2_R2, rb, T2_LR);
+                t2_orr(T2_R0, T2_R0, T2_R2);
+            } else {
+                vop_word(op, sew, rb);
+            }
             t2_ldr_imm(T2_R2, T2_R3, 16u * r + 4u * w); /* the mask */
+            if (masked && op != EMU_IR_V_MERGE) {
+                t2_and(T2_R2, T2_R2, T2_LR); /* and only the set bits */
+            }
             t2_ldr_imm(T2_R1, T2_CPU, od);               /* the old word */
             t2_and(T2_R0, T2_R0, T2_R2);
             t2_bic(T2_R1, T2_R1, T2_R2);
@@ -2719,7 +2774,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
 #if EMU_IR_VECTOR
     case EMU_IR_VOP:
-        if (!vop_lowerable(in->aux) || t->vreg_offset == NULL) {
+    case EMU_IR_VOPM:
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux) ||
+            t->vreg_offset == NULL) {
             return false;
         }
         lower_vop(in, t);

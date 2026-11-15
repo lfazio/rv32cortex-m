@@ -1380,10 +1380,17 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 #if EMU_IR_VECTOR
     case EMU_IR_VOP:
         return vop_lowerable(aux);
+    case EMU_IR_VOPM: /* single-width, as unmasked, and the merge */
+        if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
+            return EMU_IR_VOP_SEW(aux) <= 2u && (host_simd() & HOST_SIMD_SSE2) != 0u;
+        }
+        return !EMU_IR_V_IS_WIDE(EMU_IR_VOP_OP(aux)) &&
+               !EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(aux)) && vop_lowerable(aux);
     case EMU_IR_VMEM: /* SSE2 moves; without a window, the helper alone */
         return (host_simd() & HOST_SIMD_SSE2) != 0u;
 #else
     case EMU_IR_VOP:
+    case EMU_IR_VOPM:
     case EMU_IR_VMEM:
         return false;
 #endif
@@ -1583,6 +1590,53 @@ static uint32_t vop_opcode(uint32_t op, uint32_t sew)
 }
 
 static void vop_apply(uint32_t code, int dst, int src);
+
+/* Each lane's own bit, by width: what a broadcast mask is tested by. */
+static const uint8_t k_vop_bit8[16] = {1, 2, 4, 8, 16, 32, 64, 128,
+                                       1, 2, 4, 8, 16, 32, 64, 128};
+static const uint8_t k_vop_bit16[16] = {1, 0, 2, 0, 4, 0, 8, 0,
+                                        16, 0, 32, 0, 64, 0, 128, 0};
+static const uint8_t k_vop_bit32[16] = {1, 0, 0, 0, 2, 0, 0, 0,
+                                        4, 0, 0, 0, 8, 0, 0, 0};
+
+/*
+ * xmm5 = all ones in each lane of register r of the group whose mask bit
+ * is set: the register's bits from the mask register (a nibble, a byte
+ * or a halfword of it), broadcast to every lane, ANDed with each lane's
+ * own bit and compared equal to it. xmm7 for the lanes' bits.
+ */
+static void vop_elem_mask(const emu_ir_target_t *t, uint32_t mreg, uint32_t sew,
+                          uint32_t r)
+{
+    const uint32_t moff = t->vreg_offset(mreg);
+
+    if (sew == 2u) { /* 4 lanes: a nibble */
+        x86_movzx_cpu(T0, moff + r / 2u, false);
+        if ((r & 1u) != 0u) {
+            x86_shift_imm(T0, X86_SHR, 4u);
+        }
+        x86_movd_to_xmm(X86_XMM5, T0);
+        x86_pshufd(X86_XMM5, X86_XMM5, 0x00u);
+    } else if (sew == 1u) { /* 8 lanes: a byte */
+        x86_movzx_cpu(T0, moff + r, false);
+        x86_imul_imm32(T0, 0x00010001u);
+        x86_movd_to_xmm(X86_XMM5, T0);
+        x86_pshufd(X86_XMM5, X86_XMM5, 0x00u);
+    } else { /* 16 lanes: a halfword, its low byte to lanes 0-7 */
+        x86_movzx_cpu(T0, moff + 2u * r, true);
+        x86_movd_to_xmm(X86_XMM5, T0);
+        x86_sse_66(0x60u, X86_XMM5, X86_XMM5); /* punpcklbw */
+        x86_sse_66(0x61u, X86_XMM5, X86_XMM5); /* punpcklwd */
+        x86_sse_66(0x62u, X86_XMM5, X86_XMM5); /* punpckldq */
+    }
+    x86_mov_imm64(T0, (uint64_t)(uintptr_t)((sew == 2u)   ? k_vop_bit32
+                                            : (sew == 1u) ? k_vop_bit16
+                                                          : k_vop_bit8));
+    x86_movdqu_ld_reg(X86_XMM7, T0);
+    x86_sse_66(0xDBu, X86_XMM5, X86_XMM7);                       /* pand */
+    x86_sse_66((sew == 2u) ? 0x76u : (sew == 1u) ? 0x75u : 0x74u, /* pcmpeq */
+               X86_XMM5, X86_XMM7);
+}
 
 /* Sixteen 0x80 bytes, and eight 0x8000 halfwords: the sign bias. */
 static const uint8_t k_vop_bias8[16] = {
@@ -1940,6 +1994,7 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     const bool shift =
         op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
     const uint32_t code = vop_opcode(op, sew);
+    const bool masked = in->op == (uint8_t)EMU_IR_VOPM;
 
     if (EMU_IR_V_IS_WIDE(op)) {
         lower_vop_wide(in, t);
@@ -1978,7 +2033,18 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (!vx) {
             x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs1 + r));
         }
-        if (op == EMU_IR_V_MV) {
+        if (masked) {
+            vop_elem_mask(t, EMU_IR_VOP_MREG(in->imm), sew, r);
+        }
+        if (op == EMU_IR_V_MERGE) {
+            /* s1 where the bit is set, s2 where not */
+            x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + r));
+            x86_sse_66(0x6Fu, X86_XMM4, X86_XMM5);
+            x86_sse_66(0xDBu, X86_XMM4, X86_XMM1); /* pand: s1 & m */
+            x86_sse_66(0xDFu, X86_XMM5, X86_XMM0); /* pandn: s2 & ~m */
+            x86_sse_66(0xEBu, X86_XMM4, X86_XMM5);
+            x86_sse_66(0x6Fu, X86_XMM0, X86_XMM4);
+        } else if (op == EMU_IR_V_MV) {
             x86_sse_66(0x6Fu, X86_XMM0, X86_XMM1); /* movdqa */
         } else {
             x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + r));
@@ -1996,6 +2062,9 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
         x86_sub64_rr(T0, T2);
         x86_movdqu_ld_reg(X86_XMM3, T0);
+        if (masked && op != EMU_IR_V_MERGE) {
+            x86_sse_66(0xDBu, X86_XMM3, X86_XMM5); /* and only the set bits */
+        }
         x86_sse_66(0xDBu, X86_XMM0, X86_XMM3); /* pand */
         x86_sse_66(0xDFu, X86_XMM3, X86_XMM2); /* pandn: old & ~mask */
         x86_sse_66(0xEBu, X86_XMM0, X86_XMM3); /* por */
@@ -3093,7 +3162,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
 #if EMU_IR_VECTOR
     case EMU_IR_VOP:
-        if (!emu_ir_can_lower(EMU_IR_VOP, in->aux) || t->vreg_offset == NULL) {
+    case EMU_IR_VOPM:
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux) ||
+            t->vreg_offset == NULL) {
             return false;
         }
         lower_vop(in, t);

@@ -492,6 +492,15 @@ void x86_st_cpu_imm32(uint32_t disp, uint32_t imm)
     emu_jit_emit32(imm);
 }
 
+/* movzx r32, byte or word [rbx + disp32]: 0F B6 / 0F B7 /r. */
+void x86_movzx_cpu(int dst, uint32_t disp, bool word)
+{
+    emit_rex(0u, (unsigned)dst, X86_CPU);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(word ? 0xB7 : 0xB6);
+    modrm_cpu(dst, disp);
+}
+
 /* add r64, r64: REX.W 01 /r. */
 void x86_add64_rr(int dst, int src)
 {

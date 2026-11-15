@@ -137,8 +137,9 @@ keeps, and all of data RAM. Then, per target:
   Its seeds are `seeds/rv32-vec-jit/` (a strip-mined loop, every width
   and grouping, the helper between lowered operations, vl 0 and a kept
   vl, the averages and multiply-adds under a vxrm that changes between
-  trips) and vecbench's text. The last finds vxrm dropped from the
-  block's context in 10 s.
+  trips, masked operations and merges under four masks) and vecbench's
+  text. The averages' seed finds vxrm dropped from the block's context
+  in 10 s.
 - **ARMv7-M.** The flags translated code keeps in four words are packed
   into xPSR before comparing. The core's own retired count is compared,
   because SysTick counts it -- though SysTick itself cannot be enabled
@@ -446,6 +447,16 @@ call, and the inline copy, which makes none, was reported as a
 difference. On the host 686,611 blocks compared clean in five minutes,
 and the window check 4 bytes loose was found at input #1895; on the
 board 4,938 compared clean, and the same mutant gave 21 differences.
+
+**And `EMU_IR_VOPM`**: half the generated vector operations masked,
+the mask register outside vd's group, and merges among them. Two
+minutes on the host, 265,853 blocks compared clean, and the x86 mask
+not ANDed into the tail's found at input #3968. The corpus on the F746,
+8,658 inputs clean in two halves; Thumb-2's byte spread a bit off, 72
+different in the second half, and its mask not ANDed in, 306 and 317.
+Among the `rv32-vec` seeds, `masked.S` makes a masked operation allowed
+to write v0 -- reserved, which the interpreter refuses -- a difference
+in 5 s; two minutes of `rv32-vec`, 6,997 programs compared clean.
 
 The corpus outgrew the replay's flash during these sessions -- 7,086
 inputs, 1,015,565 bytes packed, the link 29,484 bytes over -- so

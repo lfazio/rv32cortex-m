@@ -1404,7 +1404,12 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     if (f3 == 7u) {
         return rv_ir_vset(b, insn);
     }
-    if (g_vt == RV_IR_VT_UNKNOWN || !vm) {
+    /*
+     * Masked (vm 0) forms are EMU_IR_VOPM, under v0; a masked operation
+     * may not write v0, which holds its mask -- the helper's illegal
+     * instruction.
+     */
+    if (g_vt == RV_IR_VT_UNKNOWN || (!vm && vd == 0u)) {
         return false;
     }
 
@@ -1441,7 +1446,9 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
 
     if ((forms & form) == 0u || vd % grp != 0u ||
         (vop != EMU_IR_V_MV && vs2 % sgrp != 0u) ||
-        (vop == EMU_IR_V_MV && vs2 != 0u) || (form == 1u && r1 % grp != 0u)) {
+        (vop == EMU_IR_V_MV && vm && vs2 != 0u) ||
+        (vop == EMU_IR_V_MV && !vm && vs2 % grp != 0u) ||
+        (form == 1u && r1 % grp != 0u)) {
         return false;
     }
     /*
@@ -1458,7 +1465,16 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     }
     const uint8_t aux = EMU_IR_VOP_AUX(vop, sew, form != 1u);
 
-    if (!emu_ir_can_lower(EMU_IR_VOP, aux)) {
+    /* vmv.v under a mask is vmerge; the rest keep their operation. */
+    if (!vm && vop == EMU_IR_V_MV) {
+        vop = EMU_IR_V_MERGE;
+    }
+    const uint8_t maux = EMU_IR_VOP_AUX(vop, sew, form != 1u);
+
+    if (!vm && (EMU_IR_V_IS_WIDE(vop) || EMU_IR_V_IS_NARROW(vop))) {
+        return false; /* not under a mask yet */
+    }
+    if (!emu_ir_can_lower(vm ? EMU_IR_VOP : EMU_IR_VOPM, vm ? aux : maux)) {
         return false;
     }
 
@@ -1472,6 +1488,11 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
                                        : (uint32_t)((int32_t)(r1 << 27) >> 27));
     }
     vs_mark(b);
+    if (!vm) {
+        (void)emu_ir_emit(b, EMU_IR_VOPM, maux, scalar, emu_ir_get(b, RV_IR_VL),
+                          EMU_IR_VOPM_IMM(vd, vs2, r1, nlg, 0u), 0u);
+        return true;
+    }
     (void)emu_ir_emit(b, EMU_IR_VOP, aux, scalar, emu_ir_get(b, RV_IR_VL),
                       EMU_IR_VOP_IMM(vd, vs2, r1, nlg), 0u);
     return true;

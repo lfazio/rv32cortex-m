@@ -129,6 +129,37 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 #endif /* EMU_IR_VECTOR */
 
 #if EMU_IR_VECTOR
+void emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                     const uint8_t *mask, uint32_t scalar, uint8_t aux,
+                     uint32_t nregs, uint32_t vl)
+{
+    const uint32_t w = 1u << EMU_IR_VOP_SEW(aux);
+    const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
+    const uint32_t n = (vl < lanes) ? vl : lanes;
+    uint8_t res[8u * EMU_IR_VREG_BYTES];
+
+    /* Every element below vl computed unmasked, into a copy of vd... */
+    memcpy(res, vd, nregs * EMU_IR_VREG_BYTES);
+    if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
+        const uint8_t mv = EMU_IR_VOP_AUX(EMU_IR_V_MV, EMU_IR_VOP_SEW(aux),
+                                          EMU_IR_VOP_VX(aux));
+
+        emu_ir_vop_ref(res, vs2, vs1, scalar, mv, nregs, vl); /* s1 */
+    } else {
+        emu_ir_vop_ref(res, vs2, vs1, scalar, aux, nregs, vl);
+    }
+    /* ...then kept where the bit says, or for a merge, s2 where not. */
+    for (uint32_t i = 0; i < n; i++) {
+        const bool on = ((mask[i >> 3] >> (i & 7u)) & 1u) != 0u;
+
+        if (on) {
+            memcpy(vd + i * w, res + i * w, w);
+        } else if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
+            memcpy(vd + i * w, vs2 + i * w, w);
+        }
+    }
+}
+
 bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                            uint32_t scalar, uint8_t aux, uint32_t nregs,
                            uint32_t vl)
@@ -378,6 +409,7 @@ static bool op_writes(emu_ir_op_t op)
     case EMU_IR_BITOP_TST:
     /* The guest's vector registers are a place, not a temp. */
     case EMU_IR_VOP:
+    case EMU_IR_VOPM:
     case EMU_IR_VMEM:
         return false;
     default:

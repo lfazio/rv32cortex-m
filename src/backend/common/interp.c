@@ -414,6 +414,7 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
             }
             break;
         case EMU_IR_VOP:
+        case EMU_IR_VOPM:
             if (t->vreg_offset == NULL) {
                 return false;
             }
@@ -421,6 +422,7 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
 #else
         case EMU_IR_VMEM:
         case EMU_IR_VOP:
+        case EMU_IR_VOPM:
             return false; /* not built: EMU_IR_VECTOR */
 #endif
         case EMU_IR_OP_COUNT:
@@ -976,6 +978,17 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
                 0u) {
                 return IR_RUN_DONE;
             }
+            continue;
+        }
+
+        case EMU_IR_VOPM: {
+            uint8_t *const base = (uint8_t *)cpu;
+
+            emu_ir_vopm_ref(base + t->vreg_offset(EMU_IR_VOP_VD(in->imm)),
+                            base + t->vreg_offset(EMU_IR_VOP_VS2(in->imm)),
+                            base + t->vreg_offset(EMU_IR_VOP_VS1(in->imm)),
+                            base + t->vreg_offset(EMU_IR_VOP_MREG(in->imm)), a,
+                            in->aux, EMU_IR_VOP_NREGS(in->imm), bv);
             continue;
         }
 

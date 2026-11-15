@@ -252,12 +252,15 @@ if(EMU_JIT AND Python3_EXECUTABLE)
     endif()
     # CoreMark compiled for the vector unit: the same output, CRCs
     # included, interpreted and translated -- code a compiler wrote.
+    # With its clock in seconds (--timer-hz 1000000), which reads 0 for a
+    # run this short: on the wall clock the retired counts differed under
+    # load -- 514,011 interpreted, 513,996 translated at ctest -j16 --
+    # because a longer tick count takes more instructions to print.
     if(TARGET guest-coremark-v AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
         add_test(NAME guest-coremark-v-both
-                 COMMAND ${CMAKE_COMMAND} -E env
-                         "SAME_IGNORE=^(Total ticks|Total time|Iterations/Sec|CoreMark 1)"
-                         ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
-                         "${CMAKE_BINARY_DIR}/guest/coremark-v.bin" crcfinal)
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/coremark-v.bin" crcfinal
+                         --timer-hz 1000000)
         set_tests_properties(guest-coremark-v-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
@@ -405,6 +408,21 @@ if(TARGET guest-armv7m-coremark)
             LABELS fast
             PASS_REGULAR_EXPRESSION "Correct operation validated")
     endif()
+endif()
+
+# --timer-hz divides the guest's clock. It was parsed and read by nothing
+# from 4d69448 on, so these ask CoreMark's own tick count: nonzero on the
+# wall clock, 0 with the clock in seconds for a run this short.
+if(TARGET guest-coremark AND EMU_GUEST_ARCH_RV32)
+    add_test(NAME guest-timer-hz-wall
+             COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/coremark.bin")
+    set_tests_properties(guest-timer-hz-wall PROPERTIES
+        LABELS fast PASS_REGULAR_EXPRESSION "Total ticks +: [1-9]")
+    add_test(NAME guest-timer-hz-divided
+             COMMAND emu-host --timer-hz 1000000
+                     "${CMAKE_BINARY_DIR}/guest/coremark.bin")
+    set_tests_properties(guest-timer-hz-divided PROPERTIES
+        LABELS fast PASS_REGULAR_EXPRESSION "Total ticks +: 0[^0-9]")
 endif()
 
 # AES and SHA-256 against their FIPS vectors, and Dhrystone, the same

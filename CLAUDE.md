@@ -356,7 +356,9 @@ Each has cost more than one session, and every one recurred.
   nothing** (CoreMark under 10 s prints "Errors detected").
 - **The host's guest clock is the wall clock**; use `retired` for a
   reproducible quantity. A longer quantum is a coarser clock
-  (`Zicntr-csrrc` failed past 11,000).
+  (`Zicntr-csrrc` failed past 11,000), and a guest that prints the time
+  retires more for a longer number: `guest-coremark-v-both` differed by
+  15 under `ctest -j16` until its clock read seconds (`--timer-hz`).
 - **Two frontends on one program measure their compilers**: PowerPC
   Quake was 63% compiler-rt float until `-mefpu2`. Profile the guest by
   symbol first.
@@ -398,7 +400,9 @@ Each has cost more than one session, and every one recurred.
   Zbb (23,339 interpreted instructions back to 1 once lowered).
   PowerPC's loop measured 2-5% slower in ITCM while it called
   `ppc_exec` through a veneer, and 7.5% faster once LTO had inlined it:
-  a "not kept" is about the code that was measured.
+  a "not kept" is about the code that was measured. And a merge is a
+  replacement: one `main()` parsed `--timer-hz` into `emu_args_t`,
+  which nothing read for three months (`guest-timer-hz-divided`).
 - **A row that builds is not a row that runs** (`board_argv` passed
   `--jit` to a JIT-less build); a board change is not done until a board
   row has linked (libatomic's `__atomic_load_8`) -- every board's, not

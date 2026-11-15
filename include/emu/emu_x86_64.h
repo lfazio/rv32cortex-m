@@ -183,6 +183,7 @@ void x86_sse_66(uint8_t op, int dst, int src);
 void x86_sub64_rr(int dst, int src);
 void x86_movdqu_store(int base, uint8_t disp, int xmm);
 void x86_add64_rr(int dst, int src);
+void x86_movzx_cpu(int dst, uint32_t disp, bool word);
 void x86_pmovmskb(int gpr, int xmm);
 void x86_st_cpu_imm32(uint32_t disp, uint32_t imm);
 void x86_sse_shift_imm(uint8_t op2, unsigned ext, int xmm, uint8_t imm);

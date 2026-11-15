@@ -903,7 +903,7 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         const uint32_t vs1 = pick(in, 32u >> lg) << lg;
         const uint32_t lanes = (EMU_IR_VREG_BYTES << lg) >> sew;
 
-        if (!emu_ir_can_lower(EMU_IR_VOP, aux)) {
+        if (vop != EMU_IR_V_MERGE && !emu_ir_can_lower(EMU_IR_VOP, aux)) {
             break; /* a frontend would have kept its helper */
         }
         if (wide && ((vd < vs2 + (1u << lg) && vs2 < vd + (2u << lg)) ||
@@ -918,6 +918,27 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
 
         if (byte(in) < 64u) {
             vl = ((EMU_IR_VREG_BYTES >> sew) * pick(in, (1u << lg) + 1u));
+        }
+        /*
+         * Under a mask, half the time where the operation has a masked
+         * form: the mask register anywhere outside vd's group.
+         */
+        const uint32_t vmr = pick(in, 32u);
+        const bool masked = !wide && !narrow && (byte(in) & 1u) != 0u &&
+                            !(vmr >= vd && vmr < vd + (1u << dlg));
+        const uint32_t mop = (masked && vop == EMU_IR_V_MV && (byte(in) & 1u))
+                                 ? EMU_IR_V_MERGE
+                                 : vop;
+        const uint8_t maux = EMU_IR_VOP_AUX(mop, sew, vx);
+
+        if (masked && emu_ir_can_lower(EMU_IR_VOPM, maux)) {
+            (void)E(EMU_IR_VOPM, maux, vx ? val(in) : EMU_IR_NO_TEMP,
+                    emu_ir_const(&g_built, vl),
+                    EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vmr), 0u);
+            break;
+        }
+        if (vop == EMU_IR_V_MERGE) {
+            break; /* a merge has no unmasked form */
         }
         (void)E(EMU_IR_VOP, aux, vx ? val(in) : EMU_IR_NO_TEMP,
                 emu_ir_const(&g_built, vl), EMU_IR_VOP_IMM(vd, vs2, vs1, lg),
@@ -1148,7 +1169,7 @@ static const char *op_name(uint8_t op)
         N(FMUL),    N(FDIV),      N(FSQRT),     N(FMA),       N(FMIN),
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
-        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VMEM)};
+        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }

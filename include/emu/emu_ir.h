@@ -156,7 +156,9 @@ extern "C" {
 #define EMU_IR_V_NSRA 26u
 #define EMU_IR_V_NCLIPU_RNU 27u
 #define EMU_IR_V_NCLIP_RNU 28u
-#define EMU_IR_V_COUNT 29u
+/* EMU_IR_VOPM only: d = the mask's bit ? s1 : s2, every element below vl. */
+#define EMU_IR_V_MERGE 29u
+#define EMU_IR_V_COUNT 30u
 #define EMU_IR_V_IS_WIDE(op) ((op) >= EMU_IR_V_WMACCU && (op) <= EMU_IR_V_WMACCUS)
 #define EMU_IR_V_IS_NARROW(op) ((op) >= EMU_IR_V_NSRL && (op) <= EMU_IR_V_NCLIP_RNU)
 
@@ -173,6 +175,10 @@ extern "C" {
 #define EMU_IR_VOP_VS2(imm) (((uint32_t)(imm) >> 5) & 31u)
 #define EMU_IR_VOP_VS1(imm) (((uint32_t)(imm) >> 10) & 31u)
 #define EMU_IR_VOP_NREGS(imm) (1u << (((uint32_t)(imm) >> 15) & 3u))
+/* EMU_IR_VOPM's mask register, in bits 21:17. */
+#define EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vm)                                  \
+    (EMU_IR_VOP_IMM(vd, vs2, vs1, lg) | ((uint32_t)(vm) << 17))
+#define EMU_IR_VOP_MREG(imm) (((uint32_t)(imm) >> 17) & 31u)
 
 #define EMU_IR_VMEM_IMM(vd, glg, eew, store)                                   \
     ((uint32_t)(vd) | ((uint32_t)(glg) << 5) | ((uint32_t)(eew) << 7) |        \
@@ -191,6 +197,16 @@ extern "C" {
  */
 void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                     uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl);
+
+/*
+ * EMU_IR_VOPM's meaning: as emu_ir_vop_ref, but element i is written
+ * only where bit i of `mask` (a register, bit i in byte i / 8) is set --
+ * and for EMU_IR_V_MERGE every element below vl, from s1 where the bit is
+ * set and s2 where it is not. Single-width operations only.
+ */
+void emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                     const uint8_t *mask, uint32_t scalar, uint8_t aux,
+                     uint32_t nregs, uint32_t vl);
 
 /*
  * The narrowing operations' reference, which also says whether an
@@ -621,6 +637,18 @@ typedef enum emu_ir_op {
      * emu_ir_vop_ref is its meaning, in C.
      */
     EMU_IR_VOP,
+
+    /*
+     * EMU_IR_VOP under a mask: the same aux and operands, and in imm the
+     * mask register (EMU_IR_VOPM_IMM), outside vd's group. An element is
+     * written only where its mask bit is set, the others left as they
+     * were; EMU_IR_V_MERGE writes every element below vl, choosing its
+     * source by the bit. Single-width operations only. A separate
+     * operation, so that a backend answers for the masked forms apart
+     * (emu_ir_can_lower(EMU_IR_VOPM, aux)). emu_ir_vopm_ref is its
+     * meaning.
+     */
+    EMU_IR_VOPM,
 
     /*
      * A unit-stride vector load or store that fills or empties a whole

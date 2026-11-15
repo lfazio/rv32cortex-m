@@ -115,11 +115,20 @@ while time.time() - start < secs:
 text = buf.decode("latin1").replace("\r", "")
 with open(out, "w") as f:
     f.write(text)
-keep = [l for l in text.splitlines()
-        if l.startswith(("IR-BOARD", "fuzz-ir"))]
-print("\n".join(keep[:60]))
-if len(keep) > 60:
-    print("... %d more lines in %s" % (len(keep) - 60, out))
+# The cases that differed or faulted, at most 60; then the summary, always:
+# cut with the cases, it hid "differ 72" behind sixty of them.
+lines = text.splitlines()
+summary = [l for l in lines
+           if l.startswith(("IR-BOARD-START", "IR-BOARD inputs", "IR-BOARD-END",
+                            "fuzz-ir: passes"))
+           or (l.startswith("fuzz-ir: ") and l[9:10].isdigit())]
+cases = [l for l in lines
+         if l.startswith(("IR-BOARD", "fuzz-ir")) and l not in summary]
+print("\n".join(cases[:60]))
+if len(cases) > 60:
+    print("... %d more cases in %s" % (len(cases) - 60, out))
+if summary:
+    print("\n".join(summary))
 ok = ("IR-BOARD-END" in text and "IR-BOARD-FAULT" not in text and
       " differ 0" in text)
 print("ir-board: %s, %.0f s" % ("clean" if ok else "NOT CLEAN", time.time() - start))

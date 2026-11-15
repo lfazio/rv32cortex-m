@@ -1682,6 +1682,110 @@ static void test_lower_vop(void)
 }
 
 /*
+ * EMU_IR_VOPM, lowered and run: every single-width form the host lowers
+ * under a mask in v24 -- outside every group -- of random bits with the
+ * edges forced in (all set, none, alternating), against
+ * emu_ir_vopm_ref and against the test's own reading: the unmasked
+ * result (vop_mine) kept where the bit is set, vd's old element where
+ * not, and for the merge the bit's choice of s1 or s2.
+ */
+static void test_lower_vopm(void)
+{
+    uint32_t seed = 0x2545F491u;
+    unsigned ran = 0u;
+    unsigned lowerable = 0u;
+    unsigned bad = 0u;
+
+    for (uint32_t op = 0; op < EMU_IR_V_COUNT; op++) {
+        if (EMU_IR_V_IS_WIDE(op) || EMU_IR_V_IS_NARROW(op)) {
+            continue;
+        }
+        for (uint32_t sew = 0; sew < 3u; sew++) {
+            for (uint32_t vx = 0; vx < 2u; vx++) {
+                const uint8_t aux = EMU_IR_VOP_AUX(op, sew, vx != 0u);
+
+                if (!emu_ir_can_lower(EMU_IR_VOPM, aux)) {
+                    continue;
+                }
+                lowerable++;
+                for (uint32_t lg = 0; lg < 4u; lg++) {
+                    for (uint32_t pat = 0; pat < 4u; pat++) {
+                        const uint32_t nregs = 1u << lg;
+                        const uint32_t w = 1u << sew;
+                        const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
+                        const uint32_t vl = (pat == 3u) ? lanes - 1u : lanes - (lg + pat) % 3u;
+                        const uint32_t scalar = 0x80000000u ^ (op * 0x01010101u) ^ pat;
+                        const uint32_t vd = 0u, vs2 = 8u, vs1 = 16u, vmr = 24u;
+                        vop_cpu_t got, want, ref, un;
+
+                        memset(&got, 0, sizeof(got));
+                        for (uint32_t i = 0; i < sizeof(got.v); i++) {
+                            seed = seed * 1103515245u + 12345u;
+                            ((uint8_t *)got.v)[i] = (uint8_t)(seed >> 16);
+                        }
+                        for (uint32_t i = 0; i < EMU_IR_VREG_BYTES; i++) {
+                            got.v[vmr][i] = (pat == 0u) ? 0xFFu : (pat == 1u) ? 0x00u
+                                            : (pat == 2u) ? 0x55u : got.v[vmr][i];
+                        }
+                        un = got;
+                        un.pc = 0x1000u;
+                        if (op == EMU_IR_V_MERGE) {
+                            vop_mine(&un, EMU_IR_V_MV, w, vx != 0u, scalar, vd, vs2, vs1, vl);
+                        } else {
+                            vop_mine(&un, op, w, vx != 0u, scalar, vd, vs2, vs1, vl);
+                        }
+                        want = got;
+                        want.pc = 0x1000u;
+                        for (uint32_t i = 0; i < vl; i++) {
+                            const bool on = ((got.v[vmr][i >> 3] >> (i & 7u)) & 1u) != 0u;
+                            uint8_t *const dw = (uint8_t *)want.v + vd * EMU_IR_VREG_BYTES + i * w;
+
+                            if (on) {
+                                memcpy(dw, (uint8_t *)un.v + vd * EMU_IR_VREG_BYTES + i * w, w);
+                            } else if (op == EMU_IR_V_MERGE) {
+                                memcpy(dw, (uint8_t *)got.v + vs2 * EMU_IR_VREG_BYTES + i * w, w);
+                            }
+                        }
+                        ref = got;
+                        ref.pc = 0x1000u;
+                        emu_ir_vopm_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
+                                        (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
+                                        (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES,
+                                        (uint8_t *)ref.v + vmr * EMU_IR_VREG_BYTES,
+                                        scalar, aux, nregs, vl);
+                        emu_ir_reset(&g_b);
+                        const uint16_t tv = emu_ir_const(&g_b, vl);
+                        const uint16_t ts = vx ? emu_ir_const(&g_b, scalar) : EMU_IR_NO_TEMP;
+
+                        (void)emu_ir_emit(&g_b, EMU_IR_VOPM, aux, ts, tv,
+                                          EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vmr), 0u);
+                        (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                                          EMU_IR_NO_TEMP, 0x1000u, 0u);
+                        if (!vop_run(&got)) {
+                            bad++;
+                            continue;
+                        }
+                        ran++;
+                        if (memcmp(&got, &want, sizeof(got)) != 0 ||
+                            memcmp(&ref, &want, sizeof(ref)) != 0) {
+                            if (bad++ < 4u) {
+                                printf("  vopm op %u sew %u vx %u nregs %u vl %u pat %u: "
+                                       "lowered %s, ref %s\n", op, sew, vx, nregs, vl, pat,
+                                       memcmp(&got, &want, sizeof(got)) ? "WRONG" : "ok",
+                                       memcmp(&ref, &want, sizeof(ref)) ? "WRONG" : "ok");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CHECK_EQ(bad, 0u);
+    CHECK(lowerable >= 40u);
+    CHECK_EQ(ran, lowerable * 16u);
+}
+
+/*
  * EMU_IR_VMEM, lowered and run: the inline copy where vl fills the group
  * and every byte is in the window, the helper everywhere else -- a short
  * vl, an address below the window, one whose group ends one byte past
@@ -3567,6 +3671,7 @@ void test_ir(void)
     test_lower_crypto_ops();
 #if EMU_IR_VECTOR
     test_lower_vop();
+    test_lower_vopm();
     test_lower_vmem();
 #endif
     test_lower_zero_register();

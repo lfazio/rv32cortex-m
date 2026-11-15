@@ -215,8 +215,10 @@ From the last measurements in [linux.md](linux.md).
       Thumb-2, and unit-stride loads and stores that fill a group copy
       inline (`EMU_IR_VMEM`); the averages under rnu, the
       multiply-adds, the widening multiply-adds and the narrowing
-      shifts and clips too. Next, by vecbench's profile: the reductions,
-      strided accesses; masked forms; the other rounding modes; .wv
+      shifts and clips too, and the single-width forms masked, with
+      `vmerge` (`EMU_IR_VOPM`). Next, by vecbench's profile: the
+      reductions, strided accesses; the masked widening and narrowing
+      forms; the other rounding modes; .wv
       narrowing (a count a lane: AVX2's); Thumb-2's unsigned and 8-bit
       widening and narrowing and 16-bit multiply-adds; the N6's MVE
       (Helium), a 128-bit unit; a cheaper inline vsetvli and tail, which
