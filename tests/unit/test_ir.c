@@ -1785,6 +1785,148 @@ static void test_lower_vopm(void)
     CHECK_EQ(ran, lowerable * 16u);
 }
 
+
+/*
+ * EMU_IR_VRED, lowered and run: every reduction the host lowers, at each
+ * width, masked and not, groups of 1 to 8, vl of 0, 1, half, all but one
+ * and all, under four masks, with vd disjoint from the sources, vs1
+ * itself, vs2's first register and its last -- against emu_ir_vred_ref
+ * and against the test's own reading in 64-bit integers.
+ */
+static uint64_t red_elem(const uint8_t *p, uint32_t w, bool sign)
+{
+    uint64_t v = 0u;
+
+    for (uint32_t k = 0; k < w; k++) {
+        v |= (uint64_t)p[k] << (8u * k);
+    }
+    if (sign && (v >> (8u * w - 1u)) != 0u) {
+        v |= ~(uint64_t)0 << (8u * w);
+    }
+    return v;
+}
+
+static void red_mine(vop_cpu_t *c, uint32_t rop, uint32_t sew, bool masked,
+                     uint32_t vd, uint32_t vs2, uint32_t vs1, uint32_t vmr,
+                     uint32_t vl)
+{
+    const uint8_t *const file = (const uint8_t *)c->v;
+    const uint32_t w = 1u << sew;
+    const bool wide = rop >= EMU_IR_R_WSUMU;
+    const uint32_t rw = wide ? 2u * w : w;
+    const uint64_t rmask = (rw == 4u) ? 0xFFFFFFFFu : ((uint64_t)1 << (8u * rw)) - 1u;
+    const bool sgn = rop == EMU_IR_R_MIN || rop == EMU_IR_R_MAX || rop == EMU_IR_R_WSUM;
+    int64_t acc = (int64_t)red_elem(file + vs1 * EMU_IR_VREG_BYTES, rw, sgn && !wide);
+    uint8_t out[4];
+
+    if (vl == 0u) {
+        return;
+    }
+    for (uint32_t i = 0; i < vl; i++) {
+        if (masked && ((file[vmr * EMU_IR_VREG_BYTES + i / 8u] >> (i % 8u)) & 1u) == 0u) {
+            continue;
+        }
+        const int64_t e = (int64_t)red_elem(file + vs2 * EMU_IR_VREG_BYTES + i * w, w, sgn);
+
+        switch (rop) {
+        case EMU_IR_R_SUM:
+        case EMU_IR_R_WSUMU:
+        case EMU_IR_R_WSUM: acc = (int64_t)(((uint64_t)acc + (uint64_t)e) & rmask); break;
+        case EMU_IR_R_AND: acc &= e; break;
+        case EMU_IR_R_OR: acc |= e; break;
+        case EMU_IR_R_XOR: acc ^= e; break;
+        case EMU_IR_R_MINU:
+        case EMU_IR_R_MIN: acc = (e < acc) ? e : acc; break;
+        default: acc = (e > acc) ? e : acc; break; /* MAXU, MAX */
+        }
+    }
+    for (uint32_t k = 0; k < rw; k++) {
+        out[k] = (uint8_t)((uint64_t)acc >> (8u * k));
+    }
+    memcpy((uint8_t *)c->v + vd * EMU_IR_VREG_BYTES, out, rw);
+}
+
+static void test_lower_vred(void)
+{
+    uint32_t seed = 0x6A09E667u;
+    unsigned ran = 0u;
+    unsigned lowerable = 0u;
+    unsigned bad = 0u;
+
+    for (uint32_t rop = 0; rop < EMU_IR_R_COUNT; rop++) {
+        for (uint32_t sew = 0; sew < 3u; sew++) {
+            for (uint32_t m = 0; m < 2u; m++) {
+                const uint8_t aux = EMU_IR_VRED_AUX(rop, sew, m != 0u);
+
+                if (!emu_ir_can_lower(EMU_IR_VRED, aux)) {
+                    continue;
+                }
+                lowerable++;
+                for (uint32_t lg = 0; lg < 4u; lg++) {
+                    for (uint32_t pat = 0; pat < 20u; pat++) {
+                        const uint32_t nregs = 1u << lg;
+                        const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / (1u << sew);
+                        const uint32_t vls[5] = {0u, 1u, lanes / 2u + 1u, lanes - 1u, lanes};
+                        const uint32_t vl = vls[pat % 5u];
+                        const uint32_t vs2 = 8u, vs1 = 24u, vmr = 0u;
+                        const uint32_t vds[4] = {28u, vs1, vs2, vs2 + nregs - 1u};
+                        const uint32_t vd = vds[pat / 5u];
+                        vop_cpu_t got, want, ref;
+
+                        memset(&got, 0, sizeof(got));
+                        for (uint32_t i = 0; i < sizeof(got.v); i++) {
+                            seed = seed * 1103515245u + 12345u;
+                            ((uint8_t *)got.v)[i] = (uint8_t)(seed >> 16);
+                        }
+                        /* the mask: all, none, alternate, random */
+                        for (uint32_t i = 0; i < EMU_IR_VREG_BYTES; i++) {
+                            const uint32_t q = (pat + lg) % 4u;
+
+                            got.v[vmr][i] = (q == 0u) ? 0xFFu : (q == 1u) ? 0x00u
+                                            : (q == 2u) ? 0xAAu : got.v[vmr][i];
+                        }
+                        got.pc = 0u;
+                        want = got;
+                        want.pc = 0x1000u;
+                        red_mine(&want, rop, sew, m != 0u, vd, vs2, vs1, vmr, vl);
+                        ref = got;
+                        ref.pc = 0x1000u;
+                        emu_ir_vred_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
+                                        (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
+                                        (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES,
+                                        m ? (uint8_t *)ref.v + vmr * EMU_IR_VREG_BYTES
+                                          : NULL,
+                                        aux, nregs, vl);
+                        emu_ir_reset(&g_b);
+                        (void)emu_ir_emit(&g_b, EMU_IR_VRED, aux, EMU_IR_NO_TEMP,
+                                          emu_ir_const(&g_b, vl),
+                                          EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vmr), 0u);
+                        (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                                          EMU_IR_NO_TEMP, 0x1000u, 0u);
+                        if (!vop_run(&got)) {
+                            bad++;
+                            continue;
+                        }
+                        ran++;
+                        if (memcmp(&got, &want, sizeof(got)) != 0 ||
+                            memcmp(&ref, &want, sizeof(ref)) != 0) {
+                            if (bad++ < 4u) {
+                                printf("  vred rop %u sew %u masked %u nregs %u vl %u vd %u: "
+                                       "lowered %s, ref %s\n", rop, sew, m, nregs, vl, vd,
+                                       memcmp(&got, &want, sizeof(got)) ? "WRONG" : "ok",
+                                       memcmp(&ref, &want, sizeof(ref)) ? "WRONG" : "ok");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CHECK_EQ(bad, 0u);
+    CHECK(lowerable >= 40u);
+    CHECK_EQ(ran, lowerable * 4u * 20u);
+}
+
 /*
  * EMU_IR_VMEM, lowered and run: the inline copy where vl fills the group
  * and every byte is in the window, the helper everywhere else -- a short
@@ -1797,8 +1939,9 @@ static void test_lower_vopm(void)
 typedef struct {
     uint32_t pc;
     uint32_t vl_seen;
+    int32_t stride; /* EMU_IR_VMEMS's, which its helper reads from here */
     uint8_t guard;
-    uint8_t pad[7];
+    uint8_t pad[3];
     uint8_t v[32][EMU_IR_VREG_BYTES];
 } vmem_cpu_t;
 
@@ -1954,6 +2097,152 @@ static void test_lower_vmem(void)
                        memcmp(got.v, want.v, sizeof(got.v)) ? "registers " : "",
                        memcmp(g_vmem_ram, ram_want, sizeof(ram_want)) ? "ram "
                                                                        : "",
+                       path_ok ? "" : "path");
+            }
+        }
+    }
+    CHECK_EQ(bad, 0u);
+}
+
+/*
+ * EMU_IR_VMEMS, lowered and run: strides forward, backward and zero,
+ * the first or the last element at either edge of the window and one
+ * past it, the stride bound and one inside it, vl 0, a store with and
+ * without the reservation guard -- each against the reference helper
+ * on copies, and its calls counted, so that a case meant to be inline
+ * and taken by the helper fails as surely as a wrong byte.
+ */
+static uint32_t vmems_helper(emu_cpu_t *cpu, uint32_t imm, uint32_t addr,
+                             uint32_t vl)
+{
+    vmem_cpu_t *const m = (vmem_cpu_t *)(void *)cpu;
+    uint8_t *const reg = (uint8_t *)m->v + EMU_IR_VMEM_VD(imm) * EMU_IR_VREG_BYTES;
+    const uint32_t eb = 1u << EMU_IR_VMEM_EEW(imm);
+    const bool store = EMU_IR_VMEM_STORE(imm);
+
+    g_vmem_calls++;
+    m->vl_seen = vl;
+    for (uint32_t i = 0; i < vl; i++) {
+        for (uint32_t k = 0; k < eb; k++) {
+            const uint32_t a = addr + i * (uint32_t)m->stride + k - VMEM_BASE;
+
+            if (a >= sizeof(g_vmem_ram)) {
+                return 1u;
+            }
+            if (store) {
+                g_vmem_ram[a] = reg[i * eb + k];
+            } else {
+                reg[i * eb + k] = g_vmem_ram[a];
+            }
+        }
+    }
+    return 0u;
+}
+
+static const void *const k_vmems_helpers[] = {(const void *)vmems_helper};
+
+static const emu_ir_target_t g_vmems_target = {
+    .reg_offset = vop_reg_offset,
+    .vreg_offset = vmem_vreg_offset,
+    .pc_offset = (uint32_t)offsetof(vmem_cpu_t, pc),
+    .helpers = k_vmems_helpers,
+    .helper_count = 1u,
+};
+
+static void test_lower_vmems(void)
+{
+    static const struct {
+        uint32_t off; /* the address less VMEM_BASE */
+        int32_t stride;
+        uint32_t vl, eew;
+        bool store, guard, fast;
+    } k[] = {
+        {0u, 16, 8u, 2u, false, false, true},         /* e32, every fourth word */
+        {5u, 3, 16u, 0u, false, false, true},         /* e8, odd */
+        {200u, -6, 10u, 1u, false, false, true},      /* backward */
+        {508u, 0, 4u, 2u, false, false, true},        /* stride 0, at the end */
+        {500u, 4, 3u, 2u, false, false, true},        /* the last ends at the end */
+        {500u, 4, 4u, 2u, false, false, false},       /* and one past: faults */
+        {10u, -5, 3u, 0u, false, false, true},        /* the last at 0 */
+        {10u, -5, 4u, 0u, false, false, false},       /* one below: faults */
+        {0xFFFFFFF0u, 4, 4u, 2u, false, false, false}, /* below the window */
+        {0u, (int32_t)EMU_IR_VMEMS_STRIDE_MAX - 1, 1u, 2u, false, false, true},
+        {0u, (int32_t)EMU_IR_VMEMS_STRIDE_MAX, 1u, 2u, false, false, false},
+        {0u, -(int32_t)EMU_IR_VMEMS_STRIDE_MAX, 1u, 2u, false, false, true},
+        {0u, -(int32_t)EMU_IR_VMEMS_STRIDE_MAX - 1, 1u, 2u, false, false, false},
+        {100u, 7, 0u, 2u, false, false, true},        /* vl 0 */
+        {100u, 6, 5u, 1u, true, false, true},         /* store e16 */
+        {100u, 6, 5u, 1u, true, true, false},         /* the guard */
+        {300u, -12, 8u, 2u, true, false, true},       /* store backward */
+        {7u, 1, 16u, 0u, true, false, true},          /* store e8, stride 1 */
+    };
+    unsigned bad = 0u;
+
+    for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        static uint8_t *exec;
+        vmem_cpu_t got;
+        vmem_cpu_t want;
+        uint8_t ram_want[sizeof(g_vmem_ram)];
+        const uint32_t vd = 8u;
+        const uint32_t addr = VMEM_BASE + k[i].off;
+        const uint32_t imm = EMU_IR_VMEMS_IMM(vd, k[i].eew, k[i].store, 0u);
+
+        if (exec == NULL) {
+            void *const p = mmap(NULL, IR_TEST_CODE_BYTES,
+                                 PROT_READ | PROT_WRITE | PROT_EXEC,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (p == MAP_FAILED) {
+                bad++;
+                break;
+            }
+            exec = (uint8_t *)p;
+        }
+        for (uint32_t j = 0; j < sizeof(g_vmem_ram); j++) {
+            g_vmem_ram[j] = (uint8_t)(j * 7u + 1u);
+        }
+        memset(&got, 0, sizeof(got));
+        for (uint32_t j = 0; j < sizeof(got.v); j++) {
+            ((uint8_t *)got.v)[j] = (uint8_t)(0xA0u ^ j);
+        }
+        got.stride = k[i].stride;
+        got.guard = k[i].guard ? 1u : 0u;
+        want = got;
+        {
+            uint8_t save[sizeof(g_vmem_ram)];
+
+            memcpy(save, g_vmem_ram, sizeof(save));
+            (void)vmems_helper((emu_cpu_t *)(void *)&want, imm, addr, k[i].vl);
+            memcpy(ram_want, g_vmem_ram, sizeof(ram_want));
+            memcpy(g_vmem_ram, save, sizeof(save));
+        }
+        emu_ir_reset(&g_b);
+        g_b.has_fast = true;
+        g_b.fast.base = VMEM_BASE;
+        g_b.fast.size = sizeof(g_vmem_ram);
+        g_b.fast.host = g_vmem_ram;
+        g_b.fast.store_guard_offset = (uint32_t)offsetof(vmem_cpu_t, guard);
+        emu_ir_vmems(&g_b, 0u, emu_ir_const(&g_b, addr), emu_ir_const(&g_b, k[i].vl),
+                     emu_ir_const(&g_b, (uint32_t)k[i].stride), imm);
+        (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0x2000u, 0u);
+        emu_ir_optimise(&g_b, &g_vmems_target, EMU_IR_F_ALL, NULL);
+        emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
+        if (!emu_ir_lower(&g_b, &g_vmems_target) || emu_jit_overflowed()) {
+            bad++;
+            continue;
+        }
+        g_vmem_calls = 0u;
+        ((uint32_t (*)(void *))(void *)exec)(&got);
+        want.pc = got.pc;
+        want.vl_seen = got.vl_seen;
+        const bool path_ok = (g_vmem_calls == 0u) == k[i].fast;
+
+        if (memcmp(got.v, want.v, sizeof(got.v)) != 0 ||
+            memcmp(g_vmem_ram, ram_want, sizeof(ram_want)) != 0 || !path_ok) {
+            if (bad++ < 4u) {
+                printf("  vmems case %u: %s%s%s\n", i,
+                       memcmp(got.v, want.v, sizeof(got.v)) ? "registers " : "",
+                       memcmp(g_vmem_ram, ram_want, sizeof(ram_want)) ? "ram " : "",
                        path_ok ? "" : "path");
             }
         }
@@ -3672,6 +3961,8 @@ void test_ir(void)
 #if EMU_IR_VECTOR
     test_lower_vop();
     test_lower_vopm();
+    test_lower_vred();
+    test_lower_vmems();
     test_lower_vmem();
 #endif
     test_lower_zero_register();

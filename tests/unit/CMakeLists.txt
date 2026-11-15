@@ -193,6 +193,16 @@ endif()
 # arm-none-eabi-as, which catches a wrong encoding. It cannot catch a
 # wrong *choice* of encoding. Executing them does.
 #
+# And the encodings themselves, wherever the assembler is: the vector
+# lowering's DSP forms had been checked by hand, once, until this ran them.
+find_program(EMU_ARM_AS arm-none-eabi-as)
+if(EMU_ARM_AS)
+    add_test(NAME t2-check-encodings
+             COMMAND "${CMAKE_SOURCE_DIR}/scripts/t2-check-encodings.sh")
+    set_tests_properties(t2-check-encodings PROPERTIES
+        LABELS fast PASS_REGULAR_EXPRESSION "match the assembler")
+endif()
+
 if(TARGET guest-armv7m-t2exec)
     add_test(NAME guest-armv7m-t2exec
              COMMAND emu-host --frontend armv7m --max-insn 2000000

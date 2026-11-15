@@ -160,6 +160,61 @@ void emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
     }
 }
 
+/* A little-endian element of w bytes at p. */
+static uint32_t vred_get(const uint8_t *p, uint32_t w)
+{
+    uint32_t v = 0u;
+
+    for (uint32_t k = w; k-- > 0u;) {
+        v = (v << 8) | p[k];
+    }
+    return v;
+}
+
+void emu_ir_vred_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                     const uint8_t *mask, uint8_t aux, uint32_t nregs,
+                     uint32_t vl)
+{
+    const uint32_t rop = EMU_IR_VRED_OP(aux);
+    const uint32_t w = 1u << EMU_IR_VRED_SEW(aux);
+    const uint32_t rw = EMU_IR_R_IS_WIDE(rop) ? 2u * w : w; /* the result's */
+    const uint32_t bits = 8u * w;
+    const uint32_t rmask = (rw == 4u) ? 0xFFFFFFFFu : (1u << (8u * rw)) - 1u;
+    const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
+    const uint32_t n = (vl < lanes) ? vl : lanes;
+    const uint32_t xs = 32u - bits; /* an element as a signed word */
+
+    if (n == 0u) {
+        return;
+    }
+    uint32_t acc = vred_get(vs1, rw);
+
+    for (uint32_t i = 0; i < n; i++) {
+        if (mask != NULL && ((mask[i >> 3] >> (i & 7u)) & 1u) == 0u) {
+            continue;
+        }
+        const uint32_t e = vred_get(vs2 + i * w, w);
+        const int32_t se = (int32_t)(e << xs) >> xs;
+        const int32_t sa = (int32_t)(acc << xs) >> xs;
+
+        switch (rop) {
+        case EMU_IR_R_SUM: acc = (acc + e) & rmask; break;
+        case EMU_IR_R_AND: acc &= e; break;
+        case EMU_IR_R_OR: acc |= e; break;
+        case EMU_IR_R_XOR: acc ^= e; break;
+        case EMU_IR_R_MINU: acc = (e < acc) ? e : acc; break;
+        case EMU_IR_R_MIN: acc = (se < sa) ? e : acc; break;
+        case EMU_IR_R_MAXU: acc = (e > acc) ? e : acc; break;
+        case EMU_IR_R_MAX: acc = (se > sa) ? e : acc; break;
+        case EMU_IR_R_WSUMU: acc = (acc + e) & rmask; break;
+        default: acc = (acc + (uint32_t)se) & rmask; break; /* WSUM */
+        }
+    }
+    for (uint32_t k = 0; k < rw; k++) {
+        vd[k] = (uint8_t)(acc >> (8u * k));
+    }
+}
+
 bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                            uint32_t scalar, uint8_t aux, uint32_t nregs,
                            uint32_t vl)
@@ -411,6 +466,8 @@ static bool op_writes(emu_ir_op_t op)
     case EMU_IR_VOP:
     case EMU_IR_VOPM:
     case EMU_IR_VMEM:
+    case EMU_IR_VRED:
+    case EMU_IR_VMEMS:
         return false;
     default:
         return true;
@@ -469,6 +526,17 @@ void emu_ir_vmem(emu_ir_block_t *b, uint8_t helper, uint16_t addr, uint16_t vl,
     (void)emu_ir_emit(b, EMU_IR_VMEM, helper, addr, vl, imm, 0u);
     if (b->count > before) {
         b->insn[b->count - 1u].c = arg;
+    }
+}
+
+void emu_ir_vmems(emu_ir_block_t *b, uint8_t helper, uint16_t addr,
+                  uint16_t vl, uint16_t stride, uint32_t imm)
+{
+    const uint32_t before = b->count;
+
+    (void)emu_ir_emit(b, EMU_IR_VMEMS, helper, addr, vl, imm, 0u);
+    if (b->count > before) {
+        b->insn[b->count - 1u].c = stride;
     }
 }
 
@@ -557,6 +625,7 @@ static uint8_t op_reads_flags(const emu_ir_insn_t *in)
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
     case EMU_IR_VMEM:
+    case EMU_IR_VMEMS:
         return EMU_IR_F_ALL;
     default:
         return 0u;
@@ -739,6 +808,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
         case EMU_IR_VMEM: /* its helper may */
+        case EMU_IR_VMEMS:
             /* May touch anything. */
             for (uint32_t r = 0; r < IR_MAX_GUEST_REGS; r++) {
                 cur[r] = EMU_IR_NO_TEMP;
@@ -840,6 +910,7 @@ static bool op_observes_state(uint8_t op)
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
     case EMU_IR_VMEM:
+    case EMU_IR_VMEMS:
     case EMU_IR_EXIT:
     case EMU_IR_EXIT_IF:
         return true;

@@ -1372,6 +1372,32 @@ static bool vop_lowerable(uint8_t aux)
     }
 }
 
+/* What each single-width reduction combines with, as an EMU_IR_V_* op. */
+static const uint8_t k_vred_vop[8] = {
+    EMU_IR_V_ADD,  EMU_IR_V_AND, EMU_IR_V_OR,   EMU_IR_V_XOR,
+    EMU_IR_V_MINU, EMU_IR_V_MIN, EMU_IR_V_MAXU, EMU_IR_V_MAX,
+};
+
+/*
+ * SSE2 for the sums and the logic, an 8-bit unsigned and a 16-bit
+ * signed minimum and maximum; SSE4.1 the rest of those, as EMU_IR_VOP.
+ * The widening sums from bytes and halfwords.
+ */
+static bool vred_lowerable(uint8_t aux)
+{
+    const uint32_t rop = EMU_IR_VRED_OP(aux);
+    const uint32_t sew = EMU_IR_VRED_SEW(aux);
+
+    if ((host_simd() & HOST_SIMD_SSE2) == 0u || sew > 2u ||
+        rop >= EMU_IR_R_COUNT) {
+        return false;
+    }
+    if (EMU_IR_R_IS_WIDE(rop)) {
+        return sew <= 1u;
+    }
+    return vop_lowerable(EMU_IR_VOP_AUX(k_vred_vop[rop], sew, false));
+}
+
 #endif /* EMU_IR_VECTOR */
 
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
@@ -1388,10 +1414,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
                !EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(aux)) && vop_lowerable(aux);
     case EMU_IR_VMEM: /* SSE2 moves; without a window, the helper alone */
         return (host_simd() & HOST_SIMD_SSE2) != 0u;
+    case EMU_IR_VRED:
+        return vred_lowerable(aux);
+    case EMU_IR_VMEMS: /* a loop of moves; without a window, the helper */
+        return true;
 #else
     case EMU_IR_VOP:
     case EMU_IR_VOPM:
     case EMU_IR_VMEM:
+    case EMU_IR_VRED:
+    case EMU_IR_VMEMS:
         return false;
 #endif
     /*
@@ -2137,6 +2169,219 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     note_exit(x86_jcc32(X86_CC_NE));
     if (done != NULL) {
         x86_patch_rel32(done, emu_jit_here());
+    }
+}
+
+/* The signed maximum and minimum of a lane, by width: MIN's and MAX's
+ * identities. */
+static const uint8_t k_vred_smax[3][16] = {
+    {0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F,
+     0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F},
+    {0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F,
+     0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F},
+    {0xFF, 0xFF, 0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0x7F,
+     0xFF, 0xFF, 0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0x7F},
+};
+static const uint8_t k_vred_smin[3][16] = {
+    {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+     0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80},
+    {0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+     0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80},
+    {0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80,
+     0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80},
+};
+
+/*
+ * EMU_IR_VRED. A register of vs2's group at a time into xmm0, its
+ * inactive elements -- past vl, or with their mask bit clear -- replaced
+ * by the operation's identity in xmm2 (for a widening sum, by 0, before
+ * each half is extended), and combined into the accumulator xmm6 lane by
+ * lane; then the lanes folded into lane 0 by shifting the register right
+ * by half, a quarter, ... of itself; then vs1's element 0; then lane 0
+ * written into vd past the window's mask of the result's bytes -- unless
+ * vl is 0, which writes nothing. Every source is read before vd is.
+ */
+static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t rop = EMU_IR_VRED_OP(in->aux);
+    const uint32_t sew = EMU_IR_VRED_SEW(in->aux);
+    const bool masked = EMU_IR_VRED_MASKED(in->aux);
+    const bool wide = EMU_IR_R_IS_WIDE(rop);
+    const uint32_t rsew = wide ? sew + 1u : sew; /* the result's width */
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+    const uint32_t code = vop_opcode(wide ? EMU_IR_V_ADD : k_vred_vop[rop], rsew);
+
+    ld_operand(T2, in->b);
+    if (sew != 0u) {
+        x86_shift_imm(T2, X86_SHL, sew); /* vl in bytes */
+    }
+    if (wide) {
+        x86_pxor(X86_XMM6, X86_XMM6);
+    } else {
+        switch (rop) {
+        case EMU_IR_R_AND:
+        case EMU_IR_R_MINU:
+            x86_sse_66(0x74u, X86_XMM2, X86_XMM2); /* pcmpeqb: all ones */
+            break;
+        case EMU_IR_R_MIN:
+            x86_mov_imm64(T0, (uint64_t)(uintptr_t)k_vred_smax[sew]);
+            x86_movdqu_ld_reg(X86_XMM2, T0);
+            break;
+        case EMU_IR_R_MAX:
+            x86_mov_imm64(T0, (uint64_t)(uintptr_t)k_vred_smin[sew]);
+            x86_movdqu_ld_reg(X86_XMM2, T0);
+            break;
+        default: /* the sum, OR, XOR, the unsigned maximum */
+            x86_pxor(X86_XMM2, X86_XMM2);
+            break;
+        }
+        x86_sse_66(0x6Fu, X86_XMM6, X86_XMM2); /* movdqa */
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + r));
+        /* The mask of this register's first (vl bytes - 16r) bytes. */
+        x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
+        x86_sub64_rr(T0, T2);
+        x86_movdqu_ld_reg(X86_XMM3, T0);
+        if (masked) {
+            vop_elem_mask(t, EMU_IR_VOP_MREG(in->imm), sew, r);
+            x86_sse_66(0xDBu, X86_XMM3, X86_XMM5); /* pand */
+        }
+        x86_sse_66(0xDBu, X86_XMM0, X86_XMM3); /* pand: the active */
+        if (!wide) {
+            x86_sse_66(0xDFu, X86_XMM3, X86_XMM2); /* pandn: identity */
+            x86_sse_66(0xEBu, X86_XMM0, X86_XMM3); /* por */
+            vop_apply(code, X86_XMM6, X86_XMM0);
+            continue;
+        }
+        /* Each half extended to twice the width, then both added. */
+        x86_sse_66(0x6Fu, X86_XMM1, X86_XMM0);
+        if (rop == EMU_IR_R_WSUMU) {
+            x86_pxor(X86_XMM4, X86_XMM4);
+            x86_sse_66((sew == 0u) ? 0x60u : 0x61u, X86_XMM0, X86_XMM4);
+            x86_sse_66((sew == 0u) ? 0x68u : 0x69u, X86_XMM1, X86_XMM4);
+        } else {
+            x86_sse_66((sew == 0u) ? 0x60u : 0x61u, X86_XMM0, X86_XMM0);
+            x86_sse_66((sew == 0u) ? 0x68u : 0x69u, X86_XMM1, X86_XMM1);
+            /* psraw 8 or psrad 16: the high copy's sign */
+            x86_sse_shift_imm((sew == 0u) ? 0x71u : 0x72u, 4u, X86_XMM0,
+                              (uint8_t)(8u << sew));
+            x86_sse_shift_imm((sew == 0u) ? 0x71u : 0x72u, 4u, X86_XMM1,
+                              (uint8_t)(8u << sew));
+        }
+        vop_apply(code, X86_XMM6, X86_XMM0);
+        vop_apply(code, X86_XMM6, X86_XMM1);
+    }
+    /* The lanes into lane 0: psrldq by 8, 4, ... down to the width. */
+    for (uint32_t step = 8u; step >= (1u << rsew); step >>= 1) {
+        x86_sse_66(0x6Fu, X86_XMM4, X86_XMM6);
+        x86_sse_shift_imm(0x73u, 3u, X86_XMM4, (uint8_t)step);
+        vop_apply(code, X86_XMM6, X86_XMM4);
+    }
+    x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs1));
+    vop_apply(code, X86_XMM6, X86_XMM1);
+
+    x86_alu_rr(X86_TEST, T2, T2);
+    uint8_t *const none = x86_jcc32(X86_CC_E); /* vl 0: vd as it was */
+
+    x86_movdqu_ld_cpu(X86_XMM2, t->vreg_offset(vd));
+    x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u - (1u << rsew)));
+    x86_movdqu_ld_reg(X86_XMM3, T0);
+    x86_sse_66(0xDBu, X86_XMM6, X86_XMM3); /* pand */
+    x86_sse_66(0xDFu, X86_XMM3, X86_XMM2); /* pandn: the rest of vd */
+    x86_sse_66(0xEBu, X86_XMM6, X86_XMM3); /* por */
+    x86_movdqu_st_cpu(t->vreg_offset(vd), X86_XMM6);
+    x86_patch_rel32(none, emu_jit_here());
+}
+
+/*
+ * EMU_IR_VMEMS. Inline when vl is not 0, the stride is under
+ * EMU_IR_VMEMS_STRIDE_MAX, and the first and last elements both lie in
+ * the RAM window -- and so every one between, the addresses being in a
+ * line -- as offsets: the first against the window's size less an
+ * element, the last, first + (vl - 1) * stride, the same way as an
+ * unsigned word, which a stride that small cannot carry past 2^32 the
+ * wrong way. Then a loop: ecx the element's offset in the window, r9 the
+ * window's host address, edi the element's offset in the cpu, edx where
+ * it stops, r8 the element. Otherwise the helper, rdi the cpu and then
+ * imm, the address and vl.
+ */
+static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t eew = EMU_IR_VMEM_EEW(in->imm);
+    const uint32_t esz = 1u << eew;
+    const bool store = EMU_IR_VMEM_STORE(in->imm);
+    const uint32_t voff = t->vreg_offset(EMU_IR_VMEM_VD(in->imm));
+    uint8_t *slow[4];
+    uint32_t ns = 0u;
+    uint8_t *done[2];
+    uint32_t nd = 0u;
+
+    if (g_has_fast && g_fast.size >= esz) {
+        const uint32_t lim = g_fast.size - esz;
+
+        ld_operand(T2, in->b);
+        x86_alu_rr(X86_TEST, T2, T2);
+        done[nd++] = x86_jcc32(X86_CC_E); /* vl 0: nothing moves */
+        ld_operand(X86_ESI, in->c);
+        x86_mov_rr(T0, X86_ESI);
+        x86_alu_imm32(X86_X_ADD, T0, EMU_IR_VMEMS_STRIDE_MAX);
+        x86_alu_imm32(X86_X_CMP, T0, 2u * EMU_IR_VMEMS_STRIDE_MAX);
+        slow[ns++] = x86_jcc32(X86_CC_AE); /* a stride too large */
+        ld_operand(T1, in->a);
+        x86_alu_imm32(X86_X_SUB, T1, g_fast.base);
+        x86_alu_imm32(X86_X_CMP, T1, lim);
+        slow[ns++] = x86_jcc32(X86_CC_A); /* the first element outside */
+        x86_mov_rr(T0, T2);
+        x86_alu_imm32(X86_X_SUB, T0, 1u);
+        x86_imul_rr(T0, X86_ESI);
+        x86_alu_rr(X86_ADD, T0, T1);
+        x86_alu_imm32(X86_X_CMP, T0, lim);
+        slow[ns++] = x86_jcc32(X86_CC_A); /* the last element outside */
+        if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+            x86_cmp8_cpu_imm(g_fast.store_guard_offset, 0u);
+            slow[ns++] = x86_jcc32(X86_CC_NE);
+        }
+        x86_mov_imm64(X86_R9, (uint64_t)(uintptr_t)g_fast.host);
+        x86_mov_imm32(X86_EDI, voff);
+        if (eew != 0u) {
+            x86_shift_imm(T2, X86_SHL, eew);
+        }
+        x86_alu_imm32(X86_X_ADD, T2, voff); /* the end, in the cpu */
+
+        uint8_t *const loop = emu_jit_here();
+
+        if (store) {
+            (void)x86_ld_idx(X86_R8, X86_CPU, X86_EDI, esz, false);
+            (void)x86_st_idx(X86_R8, X86_R9, X86_ECX, esz);
+        } else {
+            (void)x86_ld_idx(X86_R8, X86_R9, X86_ECX, esz, false);
+            (void)x86_st_idx(X86_R8, X86_CPU, X86_EDI, esz);
+        }
+        x86_alu_rr(X86_ADD, X86_ECX, X86_ESI);
+        x86_alu_imm32(X86_X_ADD, X86_EDI, esz);
+        x86_alu_rr(X86_CMP, X86_EDI, T2);
+        (void)x86_patch_rel8(x86_jcc8(X86_CC_NE), loop);
+        done[nd++] = x86_jmp32();
+        for (uint32_t i = 0; i < ns; i++) {
+            x86_patch_rel32(slow[i], emu_jit_here());
+        }
+    }
+    ld_operand(X86_ECX, in->b);
+    ld_operand(X86_EDX, in->a);
+    x86_mov_imm32(X86_ESI, in->imm);
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0x89);
+    emu_jit_emit8(0xDF); /* mov rdi, rbx */
+    x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->helpers[in->aux]);
+    x86_call_rax();
+    x86_alu_rr(X86_TEST, X86_EAX, X86_EAX);
+    note_exit(x86_jcc32(X86_CC_NE));
+    for (uint32_t i = 0; i < nd; i++) {
+        x86_patch_rel32(done[i], emu_jit_here());
     }
 }
 
@@ -3176,6 +3421,21 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             return false;
         }
         lower_vmem(in, t);
+        break;
+
+    case EMU_IR_VRED:
+        if (!emu_ir_can_lower(EMU_IR_VRED, in->aux) || t->vreg_offset == NULL) {
+            return false;
+        }
+        lower_vred(in, t);
+        break;
+
+    case EMU_IR_VMEMS:
+        if (t->vreg_offset == NULL || t->helpers == NULL ||
+            in->aux >= t->helper_count) {
+            return false;
+        }
+        lower_vmems(in, t);
         break;
 #endif
 

@@ -121,6 +121,22 @@ narrowing forms stay the helper. vecbench has no masked operation, and
 on the F746 its figure moved only with the layout: 27.85 with the same
 translated code, 28.02 and 27.67 with the code moved 1 KB and 2.8 KB.
 
+**Reductions and strided accesses are inline too.** The eight
+single-width reductions and the two widening sums, masked or not, become
+`EMU_IR_VRED` wherever the block knows vtype: vd's element 0 from vs1's
+and every active element of vs2's group, vd any register -- v0 under a
+mask included, which a reduction may write -- and nothing written when
+vl is 0. A widening sum from e32 (its 64 bits are past ELEN) and a
+misaligned vs2 stay the helper's illegal instruction. Unmasked strided
+loads and stores of one field become `EMU_IR_VMEMS`: inline when the
+stride is under 2^24 either way and the first and last elements lie in
+the RAM window -- every element between lies on the line between them
+-- and the helper otherwise, which rebuilds the instruction from the
+op's imm (vd, rs1, rs2), so a fault is rv_hart_vec's. vecbench under the
+JIT on the host: 12.9M to 11.9M host instructions, the vector helper
+1.26M to 0.14M of them; on the F746 27.85 to 25.44, the checksum the
+host's.
+
 **On the F746**, vecbench, host cycles a guest instruction, the checksum
 the host's in every row:
 
@@ -134,6 +150,7 @@ the host's in every row:
 | the widening multiply-adds | | 37.68 |
 | the narrowing shifts and clip | | 27.54 |
 | masked operations (vecbench has none); 27.67 to 28.02 at three layouts | | 27.85 |
+| reductions and strided accesses (`EMU_IR_VRED`, `EMU_IR_VMEMS`); the same at two layouts | | 25.44 |
 
 **Unit-stride loads and stores are inline too** (`rv_ir_vmem`): an
 unmasked access of one field, in a block that knows vtype and has the

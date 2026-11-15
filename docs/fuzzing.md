@@ -137,8 +137,9 @@ keeps, and all of data RAM. Then, per target:
   Its seeds are `seeds/rv32-vec-jit/` (a strip-mined loop, every width
   and grouping, the helper between lowered operations, vl 0 and a kept
   vl, the averages and multiply-adds under a vxrm that changes between
-  trips, masked operations and merges under four masks) and vecbench's
-  text. The averages' seed finds vxrm dropped from the block's context
+  trips, masked operations and merges under four masks, reductions and
+  strided accesses, the widening sum from e32 that is reserved) and
+  vecbench's text. The averages' seed finds vxrm dropped from the block's context
   in 10 s.
 - **ARMv7-M.** The flags translated code keeps in four words are packed
   into xPSR before comparing. The core's own retired count is compared,
@@ -457,6 +458,25 @@ different in the second half, and its mask not ANDed in, 306 and 317.
 Among the `rv32-vec` seeds, `masked.S` makes a masked operation allowed
 to write v0 -- reserved, which the interpreter refuses -- a difference
 in 5 s; two minutes of `rv32-vec`, 6,997 programs compared clean.
+
+**And `EMU_IR_VRED`, `EMU_IR_VMEMS`** (kinds 20 and 21): a reduction of
+any operation, width, group and mask, vd and vs1 anywhere and vd at
+vs2's start a quarter of the time; a strided access whose stride -- from
+a table of 0, +-1, +-4, 16, -12, 3 and either side of the 2^24 bound, or
+three random bytes -- is written to a register first and read back by
+the reference helper from the register imm names, as RV32's helper
+reads rs2. Two minutes on the host, 246,856 blocks compared clean; the
+reduction's identity not filled found at input #1705 and the stride
+never added at #186. On the F746 the corpus, 10,370 inputs, found the
+Thumb-2 loop's exit for vl 0 patched as an unconditional branch (263
+different in one slice), then ran clean. The rv32-vec seed
+`reduce-and-stride.S` first reserved its widening sum from e32 in the
+middle: the trap ended the run there, and `FUZZ_SHOW=1` said 30
+instructions of 52 had run -- the vl-0 case and every strided access
+after it never had. A seed takes one trap, at its end; the reserved
+sum is `wide-sum-e32.S`'s now. Each translator mutant tried -- the
+reductions' operations swapped, the helper's rs1 and rs2 swapped --
+diverged in 5 s.
 
 The corpus outgrew the replay's flash during these sessions -- 7,086
 inputs, 1,015,565 bytes packed, the link 29,484 bytes over -- so

@@ -293,11 +293,49 @@ static uint32_t h_vmem(emu_cpu_t *cpu, uint32_t c, uint32_t addr, uint32_t vl)
     return 0u;
 }
 
+/*
+ * EMU_IR_VMEMS's helper and its reference: element i at addr + i *
+ * stride, a byte at a time through the target's accessors, the stride
+ * read from the register imm names -- as RV32's rebuilds its instruction
+ * and reads rs2 -- which the generator wrote just before. Not logged,
+ * as h_vmem is not.
+ */
+static uint32_t h_vmems(emu_cpu_t *cpu, uint32_t imm, uint32_t addr,
+                        uint32_t vl)
+{
+    fcpu_t *const f = (fcpu_t *)(void *)cpu;
+    uint8_t *const reg = (uint8_t *)f->v + EMU_IR_VMEM_VD(imm) * EMU_IR_VREG_BYTES;
+    const uint32_t eb = 1u << EMU_IR_VMEM_EEW(imm);
+    const bool store = EMU_IR_VMEM_STORE(imm);
+    const uint32_t stride = f->r[EMU_IR_VMEMS_ARG(imm) & 15u];
+
+    g_st.helpers++;
+    for (uint32_t i = 0; i < vl; i++) {
+        for (uint32_t k = 0; k < eb; k++) {
+            const uint32_t a = addr + i * stride + k;
+            uint32_t v = reg[i * eb + k];
+
+            if (store) {
+                if (f_store(cpu, a, EMU_IR_MEM_AUX(1u, 0u), v) != 0u) {
+                    return 1u;
+                }
+            } else {
+                if (f_load(cpu, a, EMU_IR_MEM_AUX(1u, 0u), &v) != 0u) {
+                    return 1u;
+                }
+                reg[i * eb + k] = (uint8_t)v;
+            }
+        }
+    }
+    return 0u;
+}
+
 static const void *const k_helpers[] = {
     (const void *)h_mix, (const void *)h_peek, (const void *)h_poke,
-    (const void *)h_trap, (const void *)h_vmem};
+    (const void *)h_trap, (const void *)h_vmem, (const void *)h_vmems};
 #define H_TRAP 3u
 #define H_VMEM 4u
+#define H_VMEMS 5u
 
 static void f_fp_flags(emu_cpu_t *cpu, uint32_t flags)
 {
@@ -336,7 +374,7 @@ static uint32_t off_vreg(uint32_t n)
         .reg_offset = (ro), .flags_offset = offsetof(fcpu_t, flags),          \
         .flag_bit = {(z), (s), (v), (cy)}, .reg_is_zero = (rz),                \
         .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
-        .helper_count = 5u, .load = f_load, .store = f_store,                  \
+        .helper_count = 6u, .load = f_load, .store = f_store,                  \
         .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
         .vreg_offset = off_vreg, .vsat_offset = offsetof(fcpu_t, vsat),       \
     }
@@ -616,7 +654,7 @@ static uint16_t divisor(uint16_t d)
  */
 static bool one(in_t *in, uint32_t pc, uint32_t next)
 {
-    const uint32_t kind = pick(in, 20u);
+    const uint32_t kind = pick(in, 22u);
     uint16_t d = EMU_IR_NO_TEMP;
 
     if (byte(in) < 200u) {
@@ -883,6 +921,62 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
                     emu_ir_const(&g_built, vd | ((1u << eew) << 8) |
                                                (store ? 0x10000u : 0u)),
                     EMU_IR_VMEM_IMM(vd, glg, eew, store));
+        break;
+    }
+    case 20: { /* a reduction: vd and vs1 anywhere, vs2's group aligned */
+        const uint32_t rop = pick(in, EMU_IR_R_COUNT);
+        const uint32_t sew = pick(in, 3u);
+        const uint32_t lg = pick(in, 4u);
+        const bool masked = (byte(in) & 1u) != 0u;
+        const uint8_t aux = EMU_IR_VRED_AUX(rop, sew, masked);
+        const uint32_t vs2 = pick(in, 32u >> lg) << lg;
+        const uint32_t vd = (byte(in) < 64u) ? vs2 : pick(in, 32u);
+        const uint32_t vs1 = pick(in, 32u);
+        const uint32_t vmr = pick(in, 32u);
+        const uint32_t lanes = (EMU_IR_VREG_BYTES << lg) >> sew;
+        const uint32_t vl = (byte(in) < 64u) ? lanes : pick(in, lanes + 1u);
+
+        if (!emu_ir_can_lower(EMU_IR_VRED, aux)) {
+            break;
+        }
+        (void)E(EMU_IR_VRED, aux, EMU_IR_NO_TEMP, emu_ir_const(&g_built, vl),
+                EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vmr), 0u);
+        break;
+    }
+    case 21: { /* a strided access: its stride written to a register first */
+        static const int32_t k_strides[] = {
+            0, 1, 2, 4, -4, 16, -12, 3, -1, 0x00FFFFFF, -0x01000000, 0x01000000,
+        };
+        const uint32_t glg = pick(in, 4u);
+        const uint32_t eew = pick(in, 3u);
+        const bool store = (byte(in) & 1u) != 0u;
+        const uint32_t vd = pick(in, 32u >> glg) << glg;
+        const uint32_t full = (16u << glg) >> eew;
+        const uint32_t vl = (byte(in) < 128u) ? full : pick(in, full + 1u);
+        const uint32_t sr = 1u + pick(in, 14u); /* neither r0 nor the pc */
+        const uint32_t sel = byte(in);
+        uint32_t stride = (uint32_t)k_strides[pick(in, sizeof(k_strides) / sizeof(k_strides[0]))];
+        uint16_t a;
+
+        if (!emu_ir_can_lower(EMU_IR_VMEMS, 0u)) {
+            break;
+        }
+        if (byte(in) < 32u) {
+            stride = (uint32_t)byte(in) | ((uint32_t)byte(in) << 8) |
+                     ((uint32_t)byte(in) << 24);
+        }
+        if (sel < 96u) { /* in RAM, anywhere */
+            a = emu_ir_const(&g_built, RAM_BASE + pick(in, PAGE));
+        } else if (sel < 192u) { /* the last element near RAM's end */
+            a = emu_ir_const(&g_built,
+                             RAM_BASE + PAGE - (full - 1u) * (stride & 0xFFu) -
+                                 (1u << eew) + (uint32_t)((int32_t)pick(in, 9u) - 4));
+        } else {
+            a = val(in);
+        }
+        emu_ir_put(&g_built, sr, emu_ir_const(&g_built, stride));
+        emu_ir_vmems(&g_built, (uint8_t)H_VMEMS, a, emu_ir_const(&g_built, vl),
+                     emu_ir_get(&g_built, sr), EMU_IR_VMEMS_IMM(vd, eew, store, sr));
         break;
     }
     case 17: { /* the guest's vector registers, within the op's contract */
@@ -1169,7 +1263,8 @@ static const char *op_name(uint8_t op)
         N(FMUL),    N(FDIV),      N(FSQRT),     N(FMA),       N(FMIN),
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
-        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM)};
+        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM),
+        N(VRED),      N(VMEMS)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }

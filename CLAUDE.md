@@ -286,7 +286,9 @@ Each has cost more than one session, and every one recurred.
   operations in a block (`efpu-mid-block.S`).
   G4MH's LDSR to PLMR never made the core look for an interrupt; both
   backends run LDSR in the interpreter, so they agreed, and the seed
-  written to reach it took no interrupt.
+  written to reach it took no interrupt. A seed takes one trap, at its
+  end: a reserved instruction mid-seed ended `reduce-and-stride.S` at
+  30 of 52 instructions, past everything it was for.
 
 ### Measuring
 
@@ -670,7 +672,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   through `encode.c`/`emit_cmp_hi`.
 - **`MOVS` writes N and Z**: set the false value before the compare.
 - **Branch range is a silent cliff**: pick the encoding by reach
-  (`emit_bcond_back`).
+  (`emit_bcond_back`). And a branch's kind is part of its encoding: a
+  `B<c>.W` patched with `B.W`'s fields is a `B.W` -- the strided
+  loop's vl-0 exit, 263 inputs on the board. Record the kind where the
+  branch is emitted; `t2-check-encodings` is a ctest.
 - **ARM orders FP flags opposite to RISC-V** (`RBIT`, `LSR #27`); set
   FPSCR.DN, clear FZ; float-to-int differs only on NaN (`VCVTR`, then
   fix with `VCMP` and `IT VS`).

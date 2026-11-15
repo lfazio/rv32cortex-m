@@ -146,6 +146,11 @@ void t2_rbit(uint32_t rd, uint32_t rm);
 void t2_clz(uint32_t rd, uint32_t rm);
 
 void t2_sxtb(uint32_t rd, uint32_t rm);
+#define T2_XTA_SXTAH 0u
+#define T2_XTA_UXTAH 1u
+#define T2_XTA_SXTAB16 2u
+#define T2_XTA_UXTAB16 3u
+void t2_xta(uint32_t kind, uint32_t rd, uint32_t rn, uint32_t rm, uint32_t rot);
 void t2_sxth(uint32_t rd, uint32_t rm);
 void t2_uxtb(uint32_t rd, uint32_t rm);
 void t2_uxth(uint32_t rd, uint32_t rm);

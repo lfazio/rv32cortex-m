@@ -1227,6 +1227,8 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_VOP:
     case EMU_IR_VOPM:
     case EMU_IR_VMEM:
+    case EMU_IR_VRED:
+    case EMU_IR_VMEMS:
         return T2_BISECT >= 11;
     default:
         return false;
@@ -1453,10 +1455,18 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         }
         return !EMU_IR_V_IS_WIDE(EMU_IR_VOP_OP(aux)) &&
                !EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(aux)) && vop_lowerable(aux);
+    /* every reduction at every width; the widening sums from 8 and 16 */
+    case EMU_IR_VRED:
+        return EMU_IR_VRED_OP(aux) < EMU_IR_R_COUNT && EMU_IR_VRED_SEW(aux) <= 2u &&
+               (!EMU_IR_R_IS_WIDE(EMU_IR_VRED_OP(aux)) || EMU_IR_VRED_SEW(aux) <= 1u);
+    case EMU_IR_VMEMS: /* a loop of moves; without a window, the helper */
+        return true;
 #else
     case EMU_IR_VOP:
     case EMU_IR_VOPM:
     case EMU_IR_VMEM:
+    case EMU_IR_VRED:
+    case EMU_IR_VMEMS:
         return false;
 #endif
 
@@ -2129,6 +2139,232 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/* What each single-width reduction combines with, as an EMU_IR_V_* op. */
+static const uint8_t k_t2_vred_vop[8] = {
+    EMU_IR_V_ADD,  EMU_IR_V_AND, EMU_IR_V_OR,   EMU_IR_V_XOR,
+    EMU_IR_V_MINU, EMU_IR_V_MIN, EMU_IR_V_MAXU, EMU_IR_V_MAX,
+};
+
+/* A word of the identity: what an inactive lane becomes. */
+static uint32_t vred_identity(uint32_t rop, uint32_t sew)
+{
+    static const uint32_t smax[3] = {0x7F7F7F7Fu, 0x7FFF7FFFu, 0x7FFFFFFFu};
+
+    switch (rop) {
+    case EMU_IR_R_AND:
+    case EMU_IR_R_MINU:
+        return 0xFFFFFFFFu;
+    case EMU_IR_R_MIN:
+        return smax[sew];
+    case EMU_IR_R_MAX:
+        return ~smax[sew];
+    default:
+        return 0u;
+    }
+}
+
+/*
+ * EMU_IR_VRED, a word of vs2's group at a time into r0: the inactive
+ * lanes -- past vl through the window's mask in r2, or with their mask
+ * bit clear -- set to the identity (cleared for the sums, OR, XOR and the
+ * unsigned maximum; set for AND and the unsigned minimum; r12's for the
+ * signed two), then combined into r1 lane by lane with vop_word; the
+ * widening sums add each lane extended instead, SXTAB16/UXTAB16 from
+ * bytes and SXTAH/UXTAH from halfwords, twice a word. Then r1's lanes
+ * folded into lane 0 by rotating it a half and a quarter; then vs1's
+ * element 0; then lane 0 stored into vd unless vl is 0.
+ */
+static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t rop = EMU_IR_VRED_OP(in->aux);
+    const uint32_t sew = EMU_IR_VRED_SEW(in->aux);
+    const bool masked = EMU_IR_VRED_MASKED(in->aux);
+    const bool wide = EMU_IR_R_IS_WIDE(rop);
+    const uint32_t rsew = wide ? sew + 1u : sew;
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vop = wide ? EMU_IR_V_ADD : k_t2_vred_vop[rop];
+    const uint32_t ident = wide ? 0u : vred_identity(rop, sew);
+    const bool ones = ident == 0xFFFFFFFFu;
+    const bool zero = ident == 0u;
+
+    ld_operand(T2_R3, in->b);
+    if (sew != 0u) {
+        t2_shift_imm(T2_LSL, T2_R3, T2_R3, sew); /* vl in bytes */
+    }
+    t2_imm32(T2_R2, (uint32_t)(uintptr_t)(k_vop_window + 128u));
+    t2_sub(T2_R3, T2_R2, T2_R3);
+    t2_imm32(T2_R1, ident);
+    if (!zero && !ones) {
+        t2_imm32(T2_R12, ident);
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        for (uint32_t w = 0; w < EMU_IR_VREG_BYTES / 4u; w++) {
+            t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(vs2 + r) + 4u * w);
+            if (masked) {
+                vop_word_mask(t, EMU_IR_VOP_MREG(in->imm), sew, 4u * r + w);
+            }
+            t2_ldr_imm(T2_R2, T2_R3, 16u * r + 4u * w); /* the tail's mask */
+            if (masked) {
+                t2_and(T2_R2, T2_R2, T2_LR);
+            }
+            if (ones) {
+                t2_mvn(T2_R2, T2_R2);
+                t2_orr(T2_R0, T2_R0, T2_R2);
+            } else {
+                t2_and(T2_R0, T2_R0, T2_R2);
+                if (!zero) {
+                    t2_bic(T2_R2, T2_R12, T2_R2);
+                    t2_orr(T2_R0, T2_R0, T2_R2);
+                }
+            }
+            if (wide) {
+                const bool u = rop == EMU_IR_R_WSUMU;
+                const uint32_t kind = (sew == 0u)
+                                          ? (u ? T2_XTA_UXTAB16 : T2_XTA_SXTAB16)
+                                          : (u ? T2_XTA_UXTAH : T2_XTA_SXTAH);
+
+                t2_xta(kind, T2_R1, T2_R1, T2_R0, 0u);
+                t2_xta(kind, T2_R1, T2_R1, T2_R0, (sew == 0u) ? 1u : 2u);
+            } else {
+                vop_word(vop, sew, T2_R1);
+                t2_mov(T2_R1, T2_R0);
+            }
+        }
+    }
+    /* r1's lanes into lane 0: with itself rotated by 16, then by 8. */
+    for (uint32_t rot = 16u; rot >= (8u << rsew); rot >>= 1) {
+        t2_shift_imm(T2_ROR, T2_R0, T2_R1, rot);
+        vop_word(vop, rsew, T2_R1);
+        t2_mov(T2_R1, T2_R0);
+    }
+    t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(EMU_IR_VOP_VS1(in->imm)));
+    vop_word(vop, rsew, T2_R1);
+
+    ld_operand(T2_R2, in->b);
+    (void)t2_cmp_imm8(T2_R2, 0u);
+    uint8_t *const none = t2_bcond_forward(0x0u); /* EQ: vl 0, vd kept */
+
+    t2_imm32(T2_R1, t->vreg_offset(EMU_IR_VOP_VD(in->imm)));
+    (void)t2_st_reg(T2_R0, T2_CPU, T2_R1, 1u << rsew);
+    patch_branch(none, emu_jit_here(), true);
+}
+
+/*
+ * EMU_IR_VMEMS: inline when vl is not 0, the stride under
+ * EMU_IR_VMEMS_STRIDE_MAX, and the first and last elements both in the
+ * window -- as x86-64's, the last as first + (vl - 1) * stride in an
+ * unsigned word -- then a loop: r12 the window's host address, r3 the
+ * element's offset in it, r2 its offset in the cpu, lr where that stops,
+ * r0 the element, the stride where use_reg left it. The M7 does an
+ * unaligned halfword or word for normal memory. Otherwise the helper,
+ * r0 the cpu and then imm, the address and vl.
+ */
+static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t eew = EMU_IR_VMEM_EEW(in->imm);
+    const uint32_t esz = 1u << eew;
+    const bool store = EMU_IR_VMEM_STORE(in->imm);
+    const uint32_t voff = t->vreg_offset(EMU_IR_VMEM_VD(in->imm));
+    uint8_t *slow[4];
+    uint32_t ns = 0u;
+    /* Patched by kind: a B<c>.W given B.W's fields becomes a B.W. */
+    uint8_t *none = NULL;
+    uint8_t *done = NULL;
+    uint16_t enc;
+
+    if (g_has_fast && g_fast.size >= esz) {
+        const uint32_t lim = g_fast.size - esz;
+
+        ld_operand(T2_R3, in->b);
+        (void)t2_cmp_imm8(T2_R3, 0u);
+        none = t2_bcond_forward(0x0u); /* EQ: vl 0, nothing moves */
+
+        const uint32_t rs = use_reg(in->c, T2_R1);
+
+        (void)t2_expand_imm(EMU_IR_VMEMS_STRIDE_MAX, &enc);
+        t2_add_imm(T2_R0, rs, enc);
+        (void)t2_expand_imm(2u * EMU_IR_VMEMS_STRIDE_MAX, &enc);
+        t2_cmp_imm(T2_R0, enc);
+        slow[ns++] = t2_bcond_forward(0x2u); /* HS: a stride too large */
+
+        const uint32_t ra = use_reg(in->a, T2_R2);
+
+        if (t2_expand_imm(g_fast.base, &enc)) {
+            t2_sub_imm(T2_R2, ra, enc);
+        } else {
+            emit_pooled(T2_R12, g_fast.base);
+            t2_sub(T2_R2, ra, T2_R12);
+        }
+        emit_pooled(T2_R12, lim);
+        t2_cmp(T2_R2, T2_R12);
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: the first outside */
+        (void)t2_expand_imm(1u, &enc);
+        t2_sub_imm(T2_R0, T2_R3, enc);
+        t2_mul(T2_R0, T2_R0, rs);
+        t2_add(T2_R0, T2_R0, T2_R2);
+        t2_cmp(T2_R0, T2_R12);
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: the last outside */
+        if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+            t2_ldrb_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
+            (void)t2_cmp_imm8(T2_R0, 0u);
+            slow[ns++] = t2_bcond_forward(0x1u); /* NE: a reservation */
+        }
+        t2_shift_imm(T2_LSL, T2_LR, T2_R3, eew);
+        t2_imm32(T2_R12, voff);
+        t2_add(T2_LR, T2_LR, T2_R12); /* the end, in the cpu */
+        t2_mov(T2_R3, T2_R2);
+        t2_mov(T2_R2, T2_R12);
+        emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+
+        uint8_t *const loop = emu_jit_here();
+
+        if (store) {
+            (void)t2_ld_reg(T2_R0, T2_CPU, T2_R2, esz, false);
+            (void)t2_st_reg(T2_R0, T2_R12, T2_R3, esz);
+        } else {
+            (void)t2_ld_reg(T2_R0, T2_R12, T2_R3, esz, false);
+            (void)t2_st_reg(T2_R0, T2_CPU, T2_R2, esz);
+        }
+        t2_add(T2_R3, T2_R3, rs);
+        (void)t2_expand_imm(esz, &enc);
+        t2_add_imm(T2_R2, T2_R2, enc);
+        t2_cmp(T2_R2, T2_LR);
+
+        uint8_t *const back = t2_bcond_forward(0x1u); /* NE: the next */
+
+        patch_branch(back, loop, true);
+        done = t2_b_forward();
+        for (uint32_t i = 0; i < ns; i++) {
+            patch_branch(slow[i], emu_jit_here(), true);
+        }
+    }
+    if (g_has_fp) {
+        emit_fp_harvest(t, true);
+    }
+
+    const uint32_t rb = use_reg(in->b, T2_R3);
+
+    if (rb != T2_R3) {
+        t2_mov(T2_R3, rb);
+    }
+
+    const uint32_t ra = use_reg(in->a, T2_R2);
+
+    if (ra != T2_R2) {
+        t2_mov(T2_R2, ra);
+    }
+    t2_imm32(T2_R1, in->imm);
+    t2_mov(T2_R0, T2_CPU);
+    t2_call(t->helpers[in->aux]);
+    (void)t2_cmp_imm8(T2_R0, 0u);
+    note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+    if (none != NULL) {
+        patch_branch(none, emu_jit_here(), true);
+        patch_branch(done, emu_jit_here(), false);
+    }
+}
+
 /*
  * EMU_IR_VMEM: the inline copy when the block has a RAM window that can
  * hold the group -- vl's bytes against the group's, the offset in the
@@ -2788,6 +3024,21 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             return false;
         }
         lower_vmem(in, t);
+        break;
+
+    case EMU_IR_VRED:
+        if (!emu_ir_can_lower(EMU_IR_VRED, in->aux) || t->vreg_offset == NULL) {
+            return false;
+        }
+        lower_vred(in, t);
+        break;
+
+    case EMU_IR_VMEMS:
+        if (t->vreg_offset == NULL || t->helpers == NULL ||
+            in->aux >= t->helper_count) {
+            return false;
+        }
+        lower_vmems(in, t);
         break;
 #endif
 

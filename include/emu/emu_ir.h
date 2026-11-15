@@ -180,6 +180,46 @@ extern "C" {
     (EMU_IR_VOP_IMM(vd, vs2, vs1, lg) | ((uint32_t)(vm) << 17))
 #define EMU_IR_VOP_MREG(imm) (((uint32_t)(imm) >> 17) & 31u)
 
+/*
+ * EMU_IR_VRED's operations: vd[0] = vs1[0] op every active element of
+ * vs2's group, at the element's width -- or, for the two widening sums,
+ * at twice it, each element zero- or sign-extended.
+ */
+#define EMU_IR_R_SUM 0u
+#define EMU_IR_R_AND 1u
+#define EMU_IR_R_OR 2u
+#define EMU_IR_R_XOR 3u
+#define EMU_IR_R_MINU 4u
+#define EMU_IR_R_MIN 5u
+#define EMU_IR_R_MAXU 6u
+#define EMU_IR_R_MAX 7u
+#define EMU_IR_R_WSUMU 8u
+#define EMU_IR_R_WSUM 9u
+#define EMU_IR_R_COUNT 10u
+#define EMU_IR_R_IS_WIDE(rop) ((rop) >= EMU_IR_R_WSUMU)
+
+#define EMU_IR_VRED_AUX(rop, sew, masked)                                      \
+    ((uint8_t)((rop) | ((masked) ? 0x10u : 0u) | ((uint32_t)(sew) << 5)))
+#define EMU_IR_VRED_OP(aux) ((uint32_t)(aux) & 15u)
+#define EMU_IR_VRED_MASKED(aux) (((uint32_t)(aux) & 0x10u) != 0u)
+#define EMU_IR_VRED_SEW(aux) (((uint32_t)(aux) >> 5) & 3u) /* log2 bytes */
+
+/*
+ * EMU_IR_VMEMS's imm: the layout EMU_IR_VMEM's has, less the group (bits
+ * 0-9), and in bits 10-31 the frontend's own: the whole imm is the
+ * helper's argument, which is how it names the access without a fourth
+ * operand.
+ */
+#define EMU_IR_VMEMS_IMM(vd, eew, store, arg)                                  \
+    ((uint32_t)(vd) | ((uint32_t)(eew) << 7) | ((store) ? 0x200u : 0u) |      \
+     ((uint32_t)(arg) << 10))
+#define EMU_IR_VMEMS_ARG(imm) ((uint32_t)(imm) >> 10)
+/*
+ * The strides the inline path takes: |stride| below 2^24, so that vl - 1
+ * times it fits a signed word on every host. Any other is the helper's.
+ */
+#define EMU_IR_VMEMS_STRIDE_MAX 0x01000000u
+
 #define EMU_IR_VMEM_IMM(vd, glg, eew, store)                                   \
     ((uint32_t)(vd) | ((uint32_t)(glg) << 5) | ((uint32_t)(eew) << 7) |        \
      ((store) ? 0x200u : 0u))
@@ -207,6 +247,17 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 void emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                      const uint8_t *mask, uint32_t scalar, uint8_t aux,
                      uint32_t nregs, uint32_t vl);
+
+/*
+ * EMU_IR_VRED's meaning: vd (a register) element 0, at the result's
+ * width, from vs1's element 0 and the first vl elements of the group at
+ * vs2 -- those whose bit in `mask` is set, if it is not NULL. Nothing is
+ * written when vl is 0, and nothing but element 0 ever: every source is
+ * read before it, so vd may be any of them.
+ */
+void emu_ir_vred_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+                     const uint8_t *mask, uint8_t aux, uint32_t nregs,
+                     uint32_t vl);
 
 /*
  * The narrowing operations' reference, which also says whether an
@@ -675,6 +726,44 @@ typedef enum emu_ir_op {
      */
     EMU_IR_VMEM,
 
+    /*
+     * A reduction of a register group to one element.
+     *
+     *   aux  EMU_IR_VRED_AUX(rop, sew, masked): the operation
+     *        (EMU_IR_R_*), log2 of the element's bytes, and whether
+     *        the mask register in imm selects the elements
+     *   imm  EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vm): vd and vs1 are single
+     *        registers, vs2 the first of a group of 1 << lg; the mask
+     *        register is read only when aux says masked
+     *   b    vl, at most the group's element count
+     *
+     * vd's element 0 = vs1's element 0 op each active element of vs2,
+     * below vl; the rest of vd is left as it was, and when vl is 0 all of
+     * it. As EMU_IR_VOP, it reads and writes only the vector registers.
+     * emu_ir_vred_ref is its meaning.
+     */
+    EMU_IR_VRED,
+
+    /*
+     * A strided vector load or store: element i of EEW at a + i * c, for
+     * i below vl, into or out of the group at vd -- the rest of the
+     * group left as it was.
+     *
+     *   imm  EMU_IR_VMEMS_IMM(vd, eew, store, arg)
+     *   a    the guest address
+     *   b    vl
+     *   c    the stride, a signed byte count
+     *   aux  the helper, helpers[aux]
+     *
+     * **Inline when every element lies in the block's RAM window** (and
+     * for a store, the store guard is clear) and the stride is below
+     * EMU_IR_VMEMS_STRIDE_MAX either way; otherwise r = helpers[aux](cpu,
+     * imm, a, vl), a non-zero r a trap, as EMU_IR_VMEM's. The helper is
+     * the meaning, and the IR interpreter always calls it; every pass
+     * treats this as it treats a helper.
+     */
+    EMU_IR_VMEMS,
+
     EMU_IR_OP_COUNT
 } emu_ir_op_t;
 
@@ -1140,6 +1229,10 @@ uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
 /* EMU_IR_VMEM, which has three operands and no result (emu_ir.h above). */
 void emu_ir_vmem(emu_ir_block_t *b, uint8_t helper, uint16_t addr, uint16_t vl,
                  uint16_t arg, uint32_t imm);
+
+/* EMU_IR_VMEMS: four values and no result; the helper's argument is imm. */
+void emu_ir_vmems(emu_ir_block_t *b, uint8_t helper, uint16_t addr,
+                  uint16_t vl, uint16_t stride, uint32_t imm);
 
 /*
  * A LOAD or STORE that happens only when `pred` is non-zero; `pred` of

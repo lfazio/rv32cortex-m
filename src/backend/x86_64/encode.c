@@ -536,6 +536,15 @@ void x86_imul_imm32(int r, uint32_t imm)
     emu_jit_emit32(imm);
 }
 
+/* imul dst, src: 0F AF /r, the low 32 bits of the product. */
+void x86_imul_rr(int dst, int src)
+{
+    emit_rex(0u, (unsigned)dst, (unsigned)src);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0xAF);
+    modrm_rr(dst, src);
+}
+
 /* shr r64, imm8: REX.W C1 /5 ib. */
 void x86_shr64_imm(int r, uint8_t n)
 {

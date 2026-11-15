@@ -709,6 +709,18 @@ void t2_sxtb(uint32_t rd, uint32_t rm)
 {
     t2_emit32(0xFA4Fu, (uint16_t)(0xF080u | (rd << 8) | rm));
 }
+/*
+ * The extend-and-add family: rd = rn + extend(rm ROR 8*rot), by `kind`
+ * (T2_XTA_*): SXTAH, UXTAH, SXTAB16, UXTAB16 -- the last two two
+ * halfword lanes, each adding the byte below it. rn of 15 is the plain
+ * extend, which t2_sxth and the rest are.
+ */
+void t2_xta(uint32_t kind, uint32_t rd, uint32_t rn, uint32_t rm, uint32_t rot)
+{
+    t2_emit32((uint16_t)(0xFA00u | (kind << 4) | rn),
+              (uint16_t)(0xF080u | (rd << 8) | ((rot & 3u) << 4) | rm));
+}
+
 void t2_sxth(uint32_t rd, uint32_t rm)
 {
     t2_emit32(0xFA0Fu, (uint16_t)(0xF080u | (rd << 8) | rm));

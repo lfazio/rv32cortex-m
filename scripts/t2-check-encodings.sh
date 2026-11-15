@@ -82,6 +82,41 @@ sdiv    r0, r2, r3
 udiv    r0, r2, r3
 sdiv    r1, r2, r3
 mls     r0, r1, r3, r2
+uadd8   r0, r0, r1
+sadd16  r0, r0, r12
+usub8   r2, r0, r1
+ssub16  r2, r0, lr
+uhadd8  r0, r0, r1
+shadd16 r12, r0, r1
+sel     r0, r0, r1
+sel     r0, r12, r0
+smulbb  r2, r0, r1
+smultt  r0, r0, r12
+smlabb  r2, r0, r1, r2
+smlatt  lr, r0, r12, lr
+pkhbt   r0, r2, r0, lsl #16
+bic.w   r1, r1, r2
+bic.w   r2, r12, r2
+ssat    r0, #16, r1
+msr     APSR_nzcvq, r0
+mvn.w   r2, r2
+sxtah   r1, r1, r0
+sxtah   r1, r1, r0, ror #16
+uxtah   r1, r1, r0
+uxtah   r1, r1, r0, ror #16
+sxtab16 r1, r1, r0
+sxtab16 r1, r1, r0, ror #8
+uxtab16 r1, r1, r0
+uxtab16 r12, lr, r12, ror #24
+ror.w   r0, r1, #16
+ror.w   r0, r1, #8
+mul     r0, r0, r12
+add.w   r0, r1, #0x1000000
+cmp.w   r0, #0x2000000
+ldr.w   r0, [r4, r2]
+ldrh.w  r0, [r4, r2]
+strh.w  r0, [r12, r3]
+strb.w  r0, [r4, r1]
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -95,7 +130,7 @@ uint8_t *emu_jit_cursor;
 uint8_t *emu_jit_limit;
 bool emu_jit_overflow;
 
-static uint8_t buf[256];
+static uint8_t buf[512];
 
 /*
  * t2_sync_code reaches the platform for cache maintenance. Nothing here
@@ -193,6 +228,52 @@ int main(void)
     t2_udiv(0u, 2u, 3u);
     t2_sdiv(1u, 2u, 3u);
     t2_mls(0u, 1u, 3u, 2u);
+
+    /*
+     * The DSP extension's SIMD within a register, for the guest's vector
+     * registers (EMU_IR_VOP, EMU_IR_VRED), and the strided loop's moves.
+     */
+    t2_par(T2_PAR_ADD8, true, 0u, 0u, 1u);
+    t2_par(T2_PAR_ADD16, false, 0u, 0u, 12u);
+    t2_par(T2_PAR_SUB8, true, 2u, 0u, 1u);
+    t2_par(T2_PAR_SUB16, false, 2u, 0u, 14u);
+    t2_par_h(T2_PAR_ADD8, true, 0u, 0u, 1u);
+    t2_par_h(T2_PAR_ADD16, false, 12u, 0u, 1u);
+    t2_sel(0u, 0u, 1u);
+    t2_sel(0u, 12u, 0u);
+    t2_smulxy(2u, 0u, 1u, false, false);
+    t2_smulxy(0u, 0u, 12u, true, true);
+    t2_smlaxy(2u, 0u, 1u, 2u, false, false);
+    t2_smlaxy(14u, 0u, 12u, 14u, true, true);
+    t2_pkhbt16(0u, 2u, 0u);
+    t2_bic(1u, 1u, 2u);
+    t2_bic(2u, 12u, 2u);
+    t2_ssat16(0u, 1u);
+    t2_msr_apsr_nzcvq(0u);
+    t2_mvn(2u, 2u);
+    t2_xta(T2_XTA_SXTAH, 1u, 1u, 0u, 0u);
+    t2_xta(T2_XTA_SXTAH, 1u, 1u, 0u, 2u);
+    t2_xta(T2_XTA_UXTAH, 1u, 1u, 0u, 0u);
+    t2_xta(T2_XTA_UXTAH, 1u, 1u, 0u, 2u);
+    t2_xta(T2_XTA_SXTAB16, 1u, 1u, 0u, 0u);
+    t2_xta(T2_XTA_SXTAB16, 1u, 1u, 0u, 1u);
+    t2_xta(T2_XTA_UXTAB16, 1u, 1u, 0u, 0u);
+    t2_xta(T2_XTA_UXTAB16, 12u, 14u, 12u, 3u);
+    t2_shift_imm(T2_ROR, 0u, 1u, 16u);
+    t2_shift_imm(T2_ROR, 0u, 1u, 8u);
+    t2_mul(0u, 0u, 12u);
+    {
+        uint16_t enc;
+
+        (void)t2_expand_imm(0x01000000u, &enc);
+        t2_add_imm(0u, 1u, enc);
+        (void)t2_expand_imm(0x02000000u, &enc);
+        t2_cmp_imm(0u, enc);
+    }
+    (void)t2_ld_reg(0u, 4u, 2u, 4u, false);
+    (void)t2_ld_reg(0u, 4u, 2u, 2u, false);
+    (void)t2_st_reg(0u, 12u, 3u, 2u);
+    (void)t2_st_reg(0u, 4u, 1u, 1u);
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

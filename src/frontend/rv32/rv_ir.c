@@ -771,15 +771,39 @@ static uint32_t rv_ir_vec_helper(emu_cpu_t *cpu, uint32_t insn,
     ir_trap(h, e, tval);
     return 1u;
 }
+
+/*
+ * EMU_IR_VMEMS's helper, given its imm: the strided access it stands for
+ * rebuilt -- vlse<eew>.v or vsse<eew>.v, unmasked, one field, with the
+ * vd, rs1 and rs2 rv_ir_vmem put in imm -- and run as any other, so a
+ * fault is rv_hart_vec's and tval the same bits.
+ */
+static uint32_t rv_ir_vmems_helper(emu_cpu_t *cpu, uint32_t imm, uint32_t addr,
+                                   uint32_t vl)
+{
+    const uint32_t eew = EMU_IR_VMEM_EEW(imm);
+    const uint32_t arg = EMU_IR_VMEMS_ARG(imm);
+    const uint32_t insn = (EMU_IR_VMEM_STORE(imm) ? 0x27u : 0x07u) |
+                          (EMU_IR_VMEM_VD(imm) << 7) |
+                          (((eew == 0u) ? 0u : eew + 4u) << 12) |
+                          ((arg & 31u) << 15) | (((arg >> 5) & 31u) << 20) |
+                          (1u << 25) | (2u << 26);
+
+    (void)addr;
+    (void)vl;
+    return rv_ir_vec_helper(cpu, insn, 0u);
+}
 #define RV_IR_H_VEC ((const void *)rv_ir_vec_helper)
+#define RV_IR_H_VMEMS ((const void *)rv_ir_vmems_helper)
 #else
 #define RV_IR_H_VEC ((const void *)rv_ir_helper_absent)
+#define RV_IR_H_VMEMS ((const void *)rv_ir_helper_absent)
 #endif
 
 static const void *const rv_ir_helpers[] = {
     RV_IR_H_FP,     RV_IR_H_AMO,   (const void *)rv_ir_csr_helper,
     (const void *)rv_ir_muldiv_helper, RV_IR_H_BITOP, RV_IR_H_CRYPTO,
-    RV_IR_H_VEC};
+    RV_IR_H_VEC,    RV_IR_H_VMEMS};
 #define RV_IR_HELPER_FP 0u
 #define RV_IR_HELPER_AMO 1u
 #define RV_IR_HELPER_CSR 2u
@@ -787,6 +811,7 @@ static const void *const rv_ir_helpers[] = {
 #define RV_IR_HELPER_BITOP 4u
 #define RV_IR_HELPER_CRYPTO 5u
 #define RV_IR_HELPER_VEC 6u
+#define RV_IR_HELPER_VMEMS 7u
 
 /* One instruction, handed whole to rv_ir_bitop_helper. */
 static bool rv_ir_bitop_call(emu_ir_block_t *b, uint32_t insn)
@@ -1355,9 +1380,7 @@ static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                     emu_ir_const(b, insn), EMU_IR_VMEM_IMM(vd, glg, ew, store));
         return true;
     }
-    if (h_vs_off(cpu) || g_vt == RV_IR_VT_UNKNOWN || !b->has_fast ||
-        (insn >> 25) != 1u /* nf, mew, mop 0, vm 1 */ ||
-        ((insn >> 20) & 31u) != 0u /* a plain unit-stride access */) {
+    if (h_vs_off(cpu) || g_vt == RV_IR_VT_UNKNOWN || !b->has_fast) {
         return false;
     }
     switch (width) {
@@ -1367,6 +1390,31 @@ static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     default: return false; /* EEW 64: past ELEN */
     }
     const uint32_t bytes = rv_vec_vlmax(g_vt) << eew;
+
+    /*
+     * Strided (mop 2), unmasked, one field: EMU_IR_VMEMS, inline where
+     * every element lies in the window. vd, rs1 and rs2 go in its imm,
+     * from which the helper rebuilds this instruction.
+     */
+    if ((insn >> 25) == 0x05u /* nf 0, mew 0, mop 2, vm 1 */) {
+        const uint32_t rs2 = (insn >> 20) & 31u;
+
+        if ((bytes != 16u && bytes != 32u && bytes != 64u && bytes != 128u) ||
+            vd % (bytes / RV_VLENB) != 0u || !emu_ir_can_lower(EMU_IR_VMEMS, 0u)) {
+            return false;
+        }
+        vs_mark(b);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        emu_ir_vmems(b, (uint8_t)RV_IR_HELPER_VMEMS, emu_ir_get(b, rv_rs1(insn)),
+                     emu_ir_get(b, RV_IR_VL), emu_ir_get(b, rs2),
+                     EMU_IR_VMEMS_IMM(vd, eew, store, rv_rs1(insn) | (rs2 << 5)));
+        return true;
+    }
+    if ((insn >> 25) != 1u /* nf, mew, mop 0, vm 1 */ ||
+        ((insn >> 20) & 31u) != 0u /* a plain unit-stride access */) {
+        return false;
+    }
     uint32_t glg;
 
     switch (bytes) {
@@ -1389,6 +1437,36 @@ static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 #endif
 }
 
+/*
+ * The reductions -- vredsum, vredand, vredor, vredxor, vredminu,
+ * vredmin, vredmaxu, vredmax (OPMVV, funct6 0-7), and vwredsumu and
+ * vwredsum (OPIVV, 0x30 and 0x31) -- to EMU_IR_VRED: vd[0] from vs1[0]
+ * and vs2's group, masked or not, vd any register, v0 included. vstart
+ * is 0 wherever this block knows vtype. vs2's group misaligned, and a
+ * widening sum from 32 bits (64 is past ELEN), are the helper's illegal
+ * instruction.
+ */
+static bool rv_ir_vred(emu_ir_block_t *b, uint32_t f3, uint32_t f6, bool vm,
+                       uint32_t vd, uint32_t vs2, uint32_t vs1)
+{
+    const uint32_t sew = (g_vt >> 3) & 7u;
+    const int32_t lg = ((g_vt & 7u) >= 4u) ? (int32_t)(g_vt & 7u) - 8
+                                           : (int32_t)(g_vt & 7u);
+    const uint32_t nlg = (lg > 0) ? (uint32_t)lg : 0u;
+    const uint32_t rop = (f3 == 2u) ? f6
+                         : (f6 == 0x30u) ? EMU_IR_R_WSUMU : EMU_IR_R_WSUM;
+    const uint8_t aux = EMU_IR_VRED_AUX(rop, sew, !vm);
+
+    if (vs2 % (1u << nlg) != 0u || (EMU_IR_R_IS_WIDE(rop) && sew > 1u) ||
+        !emu_ir_can_lower(EMU_IR_VRED, aux)) {
+        return false;
+    }
+    vs_mark(b);
+    (void)emu_ir_emit(b, EMU_IR_VRED, aux, EMU_IR_NO_TEMP, emu_ir_get(b, RV_IR_VL),
+                      EMU_IR_VOPM_IMM(vd, vs2, vs1, nlg, 0u), 0u);
+    return true;
+}
+
 static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
 {
     const uint32_t f3 = (insn >> 12) & 7u;
@@ -1403,6 +1481,10 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     }
     if (f3 == 7u) {
         return rv_ir_vset(b, insn);
+    }
+    if (g_vt != RV_IR_VT_UNKNOWN &&
+        ((f3 == 2u && f6 <= 0x07u) || (f3 == 0u && (f6 == 0x30u || f6 == 0x31u)))) {
+        return rv_ir_vred(b, f3, f6, vm, vd, vs2, r1);
     }
     /*
      * Masked (vm 0) forms are EMU_IR_VOPM, under v0; a masked operation

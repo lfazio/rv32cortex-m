@@ -409,20 +409,24 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
             break;
 #if EMU_IR_VECTOR
         case EMU_IR_VMEM:
+        case EMU_IR_VMEMS:
             if (t->helpers == NULL || in->aux >= t->helper_count) {
                 return false;
             }
             break;
         case EMU_IR_VOP:
         case EMU_IR_VOPM:
+        case EMU_IR_VRED:
             if (t->vreg_offset == NULL) {
                 return false;
             }
             break;
 #else
         case EMU_IR_VMEM:
+        case EMU_IR_VMEMS:
         case EMU_IR_VOP:
         case EMU_IR_VOPM:
+        case EMU_IR_VRED:
             return false; /* not built: EMU_IR_VECTOR */
 #endif
         case EMU_IR_OP_COUNT:
@@ -978,6 +982,26 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
                 0u) {
                 return IR_RUN_DONE;
             }
+            continue;
+        }
+
+        case EMU_IR_VMEMS: /* the helper too, given imm */
+            if (((ir_vmem_fn)(uintptr_t)t->helpers[in->aux])(cpu, in->imm, a,
+                                                             bv) != 0u) {
+                return IR_RUN_DONE;
+            }
+            continue;
+
+        case EMU_IR_VRED: {
+            uint8_t *const base = (uint8_t *)cpu;
+
+            emu_ir_vred_ref(base + t->vreg_offset(EMU_IR_VOP_VD(in->imm)),
+                            base + t->vreg_offset(EMU_IR_VOP_VS2(in->imm)),
+                            base + t->vreg_offset(EMU_IR_VOP_VS1(in->imm)),
+                            EMU_IR_VRED_MASKED(in->aux)
+                                ? base + t->vreg_offset(EMU_IR_VOP_MREG(in->imm))
+                                : NULL,
+                            in->aux, EMU_IR_VOP_NREGS(in->imm), bv);
             continue;
         }
 

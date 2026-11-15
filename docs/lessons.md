@@ -5010,6 +5010,34 @@ session, and every one of them recurred:
   printed nothing for a run that had found 72. The summary lines are
   printed whatever the count now.
 
+- **A lesson kept in a comment protects only the code under it.**
+  Thumb-2's exit table records whether each branch is conditional,
+  under a comment saying why: a `B<c>.W` patched with `B.W`'s fields
+  lands "somewhere plausible instead of somewhere right". The strided
+  access's own lowering had two local branches -- the conditional exit
+  for vl 0 and the unconditional end of its inline path -- and patched
+  both in one loop as unconditional. The conditional one became a plain
+  `B.W`, and every inline strided access on the board jumped past
+  itself: 263 of 3,456 replayed inputs different, the registers or RAM
+  exactly as they had been. No host suite executes Thumb-2; the corpus
+  replay found it on its first run. **Patch a branch by the kind it was
+  emitted as, recorded where it was emitted.**
+
+- **A seed takes one trap, at its end.** `reduce-and-stride.S` put the
+  reserved widening sum from e32 among its reductions, to check that it
+  reached the helper's illegal instruction. It did, and the trap ended
+  the run: `FUZZ_SHOW=1` said 30 instructions had retired of 52, and the
+  vl-0 reduction and every strided access after it -- what the seed was
+  for -- never ran. Both backends agreed, so nothing else would have
+  said so. The reserved case is a seed of its own now.
+
+- **An encoding check nobody runs checks nothing.**
+  `scripts/t2-check-encodings.sh` compared the backend's encodings with
+  arm-none-eabi-as, and was run by hand when someone remembered; the
+  vector lowering's fifteen DSP forms had been checked once, in a
+  scratch file. It holds them and the extend-and-add forms now, and is
+  the ctest `t2-check-encodings` wherever the assembler is installed.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

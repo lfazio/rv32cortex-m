@@ -180,6 +180,29 @@ half's count was lost: `ir-board.sh` printed sixty differing cases and
 cut the summary after them, and prints it always now -- and with the
 mask not ANDed in, 306 and 317.
 
+A reduction (`EMU_IR_VRED`) goes a word of vs2's group at a time into r0,
+its inactive lanes set to the identity -- cleared, set, or r12's signed
+maximum or minimum -- and combined into r1 with the operation's
+`vop_word`; then r1 rotated by 16 and by 8 and combined again, which
+leaves lane 0 the whole reduction; then vs1's element 0; then lane 0
+stored with a store of the result's width, skipped when vl is 0. The
+widening sums add each lane extended with `SXTAB16`/`UXTAB16` from
+bytes and `SXTAH`/`UXTAH` from halfwords, a word twice (unrotated, and
+by 8 or 16). A strided access (`EMU_IR_VMEMS`) is a loop of
+register-offset moves, r12 the window's host address and r3 the
+element's offset in it, r2 its offset in the cpu, lr the end; the bounds
+are x86-64's.
+
+**The first replay with them differed in 263 of 3,456 inputs**: the
+loop's exit for vl 0 was a `B<c>.W`, and it was patched with `B.W`'s
+fields alongside the loop's unconditional end -- which made it a `B.W`,
+and every inline strided access jumped straight past itself. Each
+branch is patched by its own kind now. With that, the corpus, 10,370
+inputs in three slices, ran clean; the signed identity not set, 5
+different in one slice, the stride never added, 44. The encodings --
+these and the DSP ones the vector lowering had been checked against by
+hand -- are `scripts/t2-check-encodings.sh`'s, a ctest now (72 match).
+
 **The unrolled words cost vecbench nothing yet.** Its translations reach
 53 KB of the 64 KB buffer, which read as a reason to loop over an m4 or
 m8 group's words rather than unroll them. At a 32 KB buffer it runs at
