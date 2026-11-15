@@ -1270,8 +1270,8 @@ static bool rv_ir_vset(emu_ir_block_t *b, uint32_t insn)
  * rv_vec.c's opi_forms allows, so a form that does not exist still
  * reaches the helper and its illegal instruction.
  */
-static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t vxrm,
-                         uint32_t *op, uint32_t *forms)
+static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t *op,
+                         uint32_t *forms)
 {
     if (f3 == 2u || f3 == 6u) { /* OPMVV, OPMVX: .vv and .vx each */
         *forms = 3u;
@@ -1284,10 +1284,10 @@ static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t vxrm,
         /*
          * The averaging adds round by vxrm, which the block is
          * specialised on (rv_jit_ctx_key), so the mode is a constant
-         * here; only rnu has an operation.
+         * here, and goes in the operation's imm (rv_ir_vec).
          */
-        case 0x08u: *op = EMU_IR_V_AADDU_RNU; return vxrm == 0u;
-        case 0x09u: *op = EMU_IR_V_AADD_RNU; return vxrm == 0u;
+        case 0x08u: *op = EMU_IR_V_AADDU; return true;
+        case 0x09u: *op = EMU_IR_V_AADD; return true;
         /* widening: vd twice SEW in twice the registers (rv_ir_vec) */
         case 0x3Cu: *op = EMU_IR_V_WMACCU; return true;
         case 0x3Du: *op = EMU_IR_V_WMACC; return true;
@@ -1323,8 +1323,8 @@ static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t vxrm,
     /* narrowing: vs2 twice SEW in twice the registers (rv_ir_vec) */
     case 0x2Cu: *op = EMU_IR_V_NSRL; *forms = 7u; return true;
     case 0x2Du: *op = EMU_IR_V_NSRA; *forms = 7u; return true;
-    case 0x2Eu: *op = EMU_IR_V_NCLIPU_RNU; *forms = 7u; return vxrm == 0u;
-    case 0x2Fu: *op = EMU_IR_V_NCLIP_RNU; *forms = 7u; return vxrm == 0u;
+    case 0x2Eu: *op = EMU_IR_V_NCLIPU; *forms = 7u; return true;
+    case 0x2Fu: *op = EMU_IR_V_NCLIP; *forms = 7u; return true;
     default: return false;
     }
 }
@@ -1514,10 +1514,14 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     uint32_t vop;
     uint32_t forms;
 
-    if (!rv_ir_vop_of(f3, f6, ((const rv_hart_t *)cpu)->vxrm & 3u, &vop,
-                      &forms)) {
+    if (!rv_ir_vop_of(f3, f6, &vop, &forms)) {
         return false;
     }
+    /* vxrm, for the averages and the clips: in the context, so constant */
+    const uint32_t rmi = (vop == EMU_IR_V_AADDU || vop == EMU_IR_V_AADD ||
+                          vop == EMU_IR_V_NCLIPU || vop == EMU_IR_V_NCLIP)
+                             ? EMU_IR_VOP_IMM_RM(((const rv_hart_t *)cpu)->vxrm & 3u)
+                             : 0u;
     const uint32_t form = (f3 == 0u || f3 == 2u) ? 1u : (f3 == 3u) ? 4u : 2u;
     const uint32_t sew = (g_vt >> 3) & 7u; /* log2 bytes: 0-2, vill aside */
     const int32_t lg = ((g_vt & 7u) >= 4u) ? (int32_t)(g_vt & 7u) - 8
@@ -1588,11 +1592,11 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     vs_mark(b);
     if (!vm) {
         (void)emu_ir_emit(b, EMU_IR_VOPM, maux, scalar, emu_ir_get(b, RV_IR_VL),
-                          EMU_IR_VOPM_IMM(vd, vs2, r1, nlg, 0u), 0u);
+                          EMU_IR_VOPM_IMM(vd, vs2, r1, nlg, 0u) | rmi, 0u);
         return true;
     }
     (void)emu_ir_emit(b, EMU_IR_VOP, aux, scalar, emu_ir_get(b, RV_IR_VL),
-                      EMU_IR_VOP_IMM(vd, vs2, r1, nlg), 0u);
+                      EMU_IR_VOP_IMM(vd, vs2, r1, nlg) | rmi, 0u);
     return true;
 }
 #endif

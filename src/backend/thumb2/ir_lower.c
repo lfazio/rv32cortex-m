@@ -1293,8 +1293,8 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_SRL:
     case EMU_IR_V_SRA:
         return sew == 2u && EMU_IR_VOP_VX(aux);
-    case EMU_IR_V_AADDU_RNU:
-    case EMU_IR_V_AADD_RNU:
+    case EMU_IR_V_AADDU:
+    case EMU_IR_V_AADD:
         return true;
     case EMU_IR_V_MACC: /* MLA and MLS: a word; narrower has no register */
     case EMU_IR_V_NMSAC:
@@ -1310,7 +1310,7 @@ static bool vop_lowerable(uint8_t aux)
      */
     case EMU_IR_V_NSRL:
     case EMU_IR_V_NSRA:
-    case EMU_IR_V_NCLIP_RNU:
+    case EMU_IR_V_NCLIP:
         return sew == 1u && EMU_IR_VOP_VX(aux);
     default:
         return false;
@@ -1747,7 +1747,7 @@ static const uint8_t k_vop_window[256] = {
  * instruction here carries to the next -- EXIT_IF compares for itself,
  * SETF recomputes its result.
  */
-static void vop_word(uint32_t op, uint32_t sew, uint32_t rb)
+static void vop_word(uint32_t op, uint32_t sew, uint32_t rb, uint32_t rm)
 {
     const uint32_t add = (sew == 0u) ? T2_PAR_ADD8 : T2_PAR_ADD16;
     const uint32_t subp = (sew == 0u) ? T2_PAR_SUB8 : T2_PAR_SUB16;
@@ -1828,22 +1828,45 @@ static void vop_word(uint32_t op, uint32_t sew, uint32_t rb)
      * ((a + b) >> 1) + ((a + b) & 1), and the lane cannot carry out. At 32
      * bits (a | b) - ((a ^ b) >> 1), arithmetic for the signed form.
      */
-    case EMU_IR_V_AADDU_RNU:
-    case EMU_IR_V_AADD_RNU: {
-        const bool u = op == EMU_IR_V_AADDU_RNU;
+    case EMU_IR_V_AADDU:
+    case EMU_IR_V_AADD: {
+        /*
+         * The other modes from the floor and the lost bit lb, by lane:
+         * rne adds lb & floor, rdn is the floor, rod ORs lb in. At 32 bits
+         * the floor is (a & b) + ((a ^ b) >> 1), one ADD with a shifted
+         * operand, lb then (a ^ b) & 1.
+         */
+        const bool u = op == EMU_IR_V_AADDU;
+        uint16_t enc;
 
         t2_eor(T2_R2, T2_R0, rb);
-        if (sew == 2u) {
+        if (sew == 2u && rm == EMU_IR_RM_RNU) {
             t2_shift_imm(u ? T2_LSR : T2_ASR, T2_R2, T2_R2, 1u);
             t2_orr(T2_R0, T2_R0, rb);
             t2_sub(T2_R0, T2_R0, T2_R2);
+            break;
+        }
+        if (sew == 2u) {
+            t2_and(T2_R0, T2_R0, rb);
+            t2_add_shifted(T2_R0, T2_R0, T2_R2, u ? T2_LSR : T2_ASR, 1u);
+            (void)t2_expand_imm(1u, &enc);
+            t2_and_imm(T2_R2, T2_R2, enc);
         } else {
-            uint16_t enc;
-
             (void)t2_expand_imm((sew == 0u) ? 0x01010101u : 0x00010001u, &enc);
             t2_and_imm(T2_R2, T2_R2, enc);
             t2_par_h(add, u, T2_R0, T2_R0, rb);
-            t2_par(add, true, T2_R0, T2_R0, T2_R2);
+        }
+        if (rm == EMU_IR_RM_RNE) {
+            t2_and(T2_R2, T2_R2, T2_R0);
+        }
+        if (rm == EMU_IR_RM_RNU || rm == EMU_IR_RM_RNE) {
+            if (sew == 2u) {
+                t2_add(T2_R0, T2_R0, T2_R2);
+            } else {
+                t2_par(add, true, T2_R0, T2_R0, T2_R2);
+            }
+        } else if (rm == EMU_IR_RM_ROD) {
+            t2_orr(T2_R0, T2_R0, T2_R2);
         }
         break;
     }
@@ -1974,23 +1997,60 @@ static void vop_word_mask(const emu_ir_target_t *t, uint32_t mreg, uint32_t sew,
     t2_mul(T2_LR, T2_LR, T2_R2);
 }
 
-/* One 32-bit source element in `x`, shifted by r12 and, for the clip,
- * rounded up by the bit shifted out last -- ((x << 1) >> sh) & 1, 0 for a
- * shift of 0 -- through lr. */
-static void vop_narrow_word(uint32_t op, uint32_t x)
+/* r = (r != 0): CLZ is 32 only for 0, so bit 5 of it is the test. */
+static void t2_nonzero(uint32_t r)
 {
+    t2_clz(r, r);
+    t2_shift_imm(T2_LSR, r, r, 5u);
+    t2_eor_imm(r, r, 1u);
+}
+
+/*
+ * One 32-bit source element in `x`, shifted by r12 and, for the clip,
+ * rounded by rm through lr (and r2 for rne): v[d-1] is ((x << 1) >> d)
+ * & 1, 0 for a shift of 0; the bits below it are x & ((1 << d) - 1) --
+ * for rne, (1 << d) >> 1 less 1 -- tested for 0 by t2_nonzero; v[d] is
+ * bit 0 after the shift. rdn is the shift alone, rod ORs "anything
+ * shifted out" in.
+ */
+static void vop_narrow_word(uint32_t op, uint32_t x, uint32_t rm)
+{
+    const bool clip = op == EMU_IR_V_NCLIP;
+
     if (op == EMU_IR_V_NSRL) {
         t2_shift_reg(T2_LSR, x, x, T2_R12);
         return;
     }
-    if (op == EMU_IR_V_NCLIP_RNU) {
+    if (clip && (rm == EMU_IR_RM_RNU || rm == EMU_IR_RM_RNE)) {
         t2_shift_imm(T2_LSL, T2_LR, x, 1u);
         t2_shift_reg(T2_LSR, T2_LR, T2_LR, T2_R12);
         t2_and_imm(T2_LR, T2_LR, 1u);
     }
+    if (clip && rm == EMU_IR_RM_ROD) {
+        t2_imm32(T2_LR, 1u);
+        t2_shift_reg(T2_LSL, T2_LR, T2_LR, T2_R12);
+        t2_sub_imm(T2_LR, T2_LR, 1u);
+        t2_and(T2_LR, T2_LR, x);
+        t2_nonzero(T2_LR);
+    }
+    if (clip && rm == EMU_IR_RM_RNE) {
+        t2_imm32(T2_R2, 1u);
+        t2_shift_reg(T2_LSL, T2_R2, T2_R2, T2_R12);
+        t2_shift_imm(T2_LSR, T2_R2, T2_R2, 1u);
+        t2_sub_imm(T2_R2, T2_R2, 1u);
+        t2_and(T2_R2, T2_R2, x);
+        t2_nonzero(T2_R2);
+    }
     t2_shift_reg(T2_ASR, x, x, T2_R12);
-    if (op == EMU_IR_V_NCLIP_RNU) {
+    if (clip && rm == EMU_IR_RM_RNE) {
+        t2_orr(T2_R2, T2_R2, x); /* or v[d] */
+        t2_and(T2_LR, T2_LR, T2_R2);
+        t2_and_imm(T2_LR, T2_LR, 1u);
+    }
+    if (clip && (rm == EMU_IR_RM_RNU || rm == EMU_IR_RM_RNE)) {
         t2_add(x, x, T2_LR);
+    } else if (clip && rm == EMU_IR_RM_ROD) {
+        t2_orr(x, x, T2_LR);
     }
 }
 
@@ -2008,7 +2068,7 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
     const uint32_t vd = EMU_IR_VOP_VD(in->imm);
     const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
-    const bool clip = op == EMU_IR_V_NCLIP_RNU;
+    const bool clip = op == EMU_IR_V_NCLIP;
 
     ld_operand(T2_R12, in->a);
     t2_and_imm(T2_R12, T2_R12, 31u); /* the count, mod 32 */
@@ -2029,8 +2089,8 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         t2_ldr_imm(T2_R0, T2_CPU, o0);
         t2_ldr_imm(T2_R1, T2_CPU, o1);
-        vop_narrow_word(op, T2_R0);
-        vop_narrow_word(op, T2_R1);
+        vop_narrow_word(op, T2_R0, EMU_IR_VOP_RM(in->imm));
+        vop_narrow_word(op, T2_R1, EMU_IR_VOP_RM(in->imm));
         t2_ldr_imm(T2_R2, T2_R3, 4u * k); /* the mask */
         if (clip) {
             t2_sxth(T2_LR, T2_R2);
@@ -2124,7 +2184,7 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 t2_and(T2_R2, rb, T2_LR);
                 t2_orr(T2_R0, T2_R0, T2_R2);
             } else {
-                vop_word(op, sew, rb);
+                vop_word(op, sew, rb, EMU_IR_VOP_RM(in->imm));
             }
             t2_ldr_imm(T2_R2, T2_R3, 16u * r + 4u * w); /* the mask */
             if (masked && op != EMU_IR_V_MERGE) {
@@ -2227,7 +2287,7 @@ static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 t2_xta(kind, T2_R1, T2_R1, T2_R0, 0u);
                 t2_xta(kind, T2_R1, T2_R1, T2_R0, (sew == 0u) ? 1u : 2u);
             } else {
-                vop_word(vop, sew, T2_R1);
+                vop_word(vop, sew, T2_R1, EMU_IR_RM_RNU);
                 t2_mov(T2_R1, T2_R0);
             }
         }
@@ -2235,11 +2295,11 @@ static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     /* r1's lanes into lane 0: with itself rotated by 16, then by 8. */
     for (uint32_t rot = 16u; rot >= (8u << rsew); rot >>= 1) {
         t2_shift_imm(T2_ROR, T2_R0, T2_R1, rot);
-        vop_word(vop, rsew, T2_R1);
+        vop_word(vop, rsew, T2_R1, EMU_IR_RM_RNU);
         t2_mov(T2_R1, T2_R0);
     }
     t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(EMU_IR_VOP_VS1(in->imm)));
-    vop_word(vop, rsew, T2_R1);
+    vop_word(vop, rsew, T2_R1, EMU_IR_RM_RNU);
 
     ld_operand(T2_R2, in->b);
     (void)t2_cmp_imm8(T2_R2, 0u);

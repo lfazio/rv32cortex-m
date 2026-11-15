@@ -1337,8 +1337,8 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_SRL:
     case EMU_IR_V_SRA:
         return sew != 0u && EMU_IR_VOP_VX(aux);
-    case EMU_IR_V_AADDU_RNU:
-    case EMU_IR_V_AADD_RNU:
+    case EMU_IR_V_AADDU:
+    case EMU_IR_V_AADD:
         return true;
     case EMU_IR_V_MACC:
     case EMU_IR_V_NMSAC:
@@ -1363,9 +1363,9 @@ static bool vop_lowerable(uint8_t aux)
      */
     case EMU_IR_V_NSRL:
     case EMU_IR_V_NSRA:
-    case EMU_IR_V_NCLIP_RNU:
+    case EMU_IR_V_NCLIP:
         return sew <= 1u && EMU_IR_VOP_VX(aux);
-    case EMU_IR_V_NCLIPU_RNU:
+    case EMU_IR_V_NCLIPU:
         return sew <= 1u && EMU_IR_VOP_VX(aux) && sse41;
     default:
         return false;
@@ -1680,6 +1680,20 @@ static const uint8_t k_vop_bias16[16] = {
     0x00u, 0x80u, 0x00u, 0x80u, 0x00u, 0x80u, 0x00u, 0x80u,
 };
 
+static const uint8_t k_vop_one8[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+static const uint8_t k_vop_one32[16] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+static const uint8_t k_vop_one16[16] = {1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0};
+static const uint8_t k_vop_max16[16] = {0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0,
+                                        0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0};
+static const uint8_t k_vop_max8[16] = {0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0,
+                                       0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0};
+
+static void vop_const(int xmm, const uint8_t *k)
+{
+    x86_mov_imm64(T0, (uint64_t)(uintptr_t)k);
+    x86_movdqu_ld_reg(xmm, T0);
+}
+
 /*
  * The averaging adds and the multiply-adds, on xmm0 (s2), xmm1 (s1) and
  * xmm2 (d as it was), into xmm0, xmm3 and xmm4 free. Round-to-nearest-up
@@ -1688,25 +1702,35 @@ static const uint8_t k_vop_bias16[16] = {
  * order onto the unsigned; at 32 bits, (a | b) - ((a ^ b) >> 1), the
  * shift arithmetic for the signed form.
  */
-static void vop_special(uint32_t op, uint32_t sew)
+static void vop_special(uint32_t op, uint32_t sew, uint32_t rm)
 {
     const uint32_t mul = vop_opcode(EMU_IR_V_MUL, sew);
     const uint32_t add = vop_opcode(EMU_IR_V_ADD, sew);
     const uint32_t subc = vop_opcode(EMU_IR_V_SUB, sew);
 
     switch (op) {
-    case EMU_IR_V_AADDU_RNU:
-    case EMU_IR_V_AADD_RNU:
+    case EMU_IR_V_AADDU:
+    case EMU_IR_V_AADD:
+        /*
+         * Every mode from the rnu result, the ceiling: the floor is it
+         * less the lost bit, lb = (a ^ b) & 1 by lane, in xmm6; then rne
+         * adds lb & floor, rdn is the floor, rod ORs lb in.
+         */
+        if (rm != EMU_IR_RM_RNU) {
+            x86_sse_66(0x6Fu, X86_XMM6, X86_XMM0);
+            x86_sse_66(0xEFu, X86_XMM6, X86_XMM1);
+            vop_const(X86_XMM3, (sew == 0u) ? k_vop_one8
+                                : (sew == 1u) ? k_vop_one16 : k_vop_one32);
+            x86_sse_66(0xDBu, X86_XMM6, X86_XMM3);
+        }
         if (sew == 2u) {
             x86_sse_66(0x6Fu, X86_XMM4, X86_XMM0);
             x86_sse_66(0xEFu, X86_XMM4, X86_XMM1); /* a ^ b */
-            x86_sse_shift_imm(0x72u, (op == EMU_IR_V_AADD_RNU) ? 4u : 2u,
+            x86_sse_shift_imm(0x72u, (op == EMU_IR_V_AADD) ? 4u : 2u,
                               X86_XMM4, 1u); /* psrad / psrld */
             x86_sse_66(0xEBu, X86_XMM0, X86_XMM1); /* a | b */
             x86_sse_66(0xFAu, X86_XMM0, X86_XMM4); /* psubd */
-            break;
-        }
-        if (op == EMU_IR_V_AADD_RNU) {
+        } else if (op == EMU_IR_V_AADD) {
             x86_mov_imm64(T0, (uint64_t)(uintptr_t)((sew == 0u) ? k_vop_bias8
                                                                : k_vop_bias16));
             x86_movdqu_ld_reg(X86_XMM3, T0);
@@ -1717,6 +1741,16 @@ static void vop_special(uint32_t op, uint32_t sew)
             x86_sse_66(0xEFu, X86_XMM0, X86_XMM3);
         } else {
             x86_sse_66((sew == 0u) ? 0xE0u : 0xE3u, X86_XMM0, X86_XMM1); /* pavg */
+        }
+        if (rm != EMU_IR_RM_RNU) {
+            vop_apply(subc, X86_XMM0, X86_XMM6); /* the floor */
+            if (rm == EMU_IR_RM_RNE) {
+                x86_sse_66(0x6Fu, X86_XMM4, X86_XMM6);
+                x86_sse_66(0xDBu, X86_XMM4, X86_XMM0);
+                vop_apply(add, X86_XMM0, X86_XMM4);
+            } else if (rm == EMU_IR_RM_ROD) {
+                x86_sse_66(0xEBu, X86_XMM0, X86_XMM6);
+            }
         }
         break;
     case EMU_IR_V_MACC: /* d + s1 * s2 */
@@ -1848,18 +1882,6 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 }
 
 /* Per-lane constants: 1, and the unsigned maximum, by width. */
-static const uint8_t k_vop_one32[16] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
-static const uint8_t k_vop_one16[16] = {1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0};
-static const uint8_t k_vop_max16[16] = {0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0,
-                                        0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0};
-static const uint8_t k_vop_max8[16] = {0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0,
-                                       0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0};
-
-static void vop_const(int xmm, const uint8_t *k)
-{
-    x86_mov_imm64(T0, (uint64_t)(uintptr_t)k);
-    x86_movdqu_ld_reg(xmm, T0);
-}
 
 /*
  * One source register of a narrowing operation, in xmm `x`: shifted by
@@ -1867,7 +1889,7 @@ static void vop_const(int xmm, const uint8_t *k)
  * the bit shifted out last, and 0 for a shift of 0 -- with xmm2 for the
  * rounding bit and xmm7 holding the lanes' 1.
  */
-static void vop_narrow_shift(uint32_t op, uint32_t sew, int x)
+static void vop_narrow_shift(uint32_t op, uint32_t sew, int x, uint32_t rm)
 {
     /* sew is d's: the source lanes are 32 bits (sew 1) or 16 (sew 0) */
     const uint8_t grp = (sew == 1u) ? 0x72u : 0x71u; /* psXd / psXw imm */
@@ -1875,19 +1897,46 @@ static void vop_narrow_shift(uint32_t op, uint32_t sew, int x)
     const uint8_t sra = (sew == 1u) ? 0xE2u : 0xE1u;
     const uint8_t sll = (sew == 1u) ? 0xF2u : 0xF1u;
     const uint8_t add = (sew == 1u) ? 0xFEu : 0xFDu;
-    const bool sign = op == EMU_IR_V_NSRA || op == EMU_IR_V_NCLIP_RNU;
-    const bool clip = op == EMU_IR_V_NCLIP_RNU || op == EMU_IR_V_NCLIPU_RNU;
+    const bool sign = op == EMU_IR_V_NSRA || op == EMU_IR_V_NCLIP;
+    const bool clip = op == EMU_IR_V_NCLIP || op == EMU_IR_V_NCLIPU;
 
-    if (clip) {
+    const uint8_t cmpeq = (sew == 1u) ? 0x76u : 0x75u;
+
+    if (clip && (rm == EMU_IR_RM_RNU || rm == EMU_IR_RM_RNE)) {
         x86_sse_66(0x6Fu, X86_XMM2, x);
         x86_sse_shift_imm(grp, 6u, X86_XMM2, 1u); /* << 1 */
         x86_sse_66(srl, X86_XMM2, X86_XMM6);
-        x86_sse_66(0xDBu, X86_XMM2, X86_XMM7); /* & 1 */
+        x86_sse_66(0xDBu, X86_XMM2, X86_XMM7); /* & 1: v[d-1] */
+    }
+    if (clip && (rm == EMU_IR_RM_RNE || rm == EMU_IR_RM_ROD)) {
+        /*
+         * xmm4 = 1 where the bits below -- v[d-2:0] for rne, v[d-1:0] for
+         * rod -- are not all 0: esi's mask of d bits, by lane.
+         */
+        x86_movd_to_xmm(X86_XMM4, X86_ESI);
+        x86_pshufd(X86_XMM4, X86_XMM4, 0x00u);
+        if (rm == EMU_IR_RM_RNE) {
+            x86_sse_shift_imm(grp, 2u, X86_XMM4, 1u); /* d - 1 bits */
+        }
+        x86_sse_66(0xDBu, X86_XMM4, x);
+        x86_pxor(X86_XMM5, X86_XMM5);
+        x86_sse_66(cmpeq, X86_XMM4, X86_XMM5);
+        x86_sse_66(0xDFu, X86_XMM4, X86_XMM7); /* pandn: 1 where not 0 */
     }
     (void)sll;
     x86_sse_66(sign ? sra : srl, x, X86_XMM6);
-    if (clip) {
+    if (clip && rm == EMU_IR_RM_RNU) {
         x86_sse_66(add, x, X86_XMM2);
+    } else if (clip && rm == EMU_IR_RM_RNE) {
+        /* v[d-1] and (below or v[d]), v[d] being the shifted bit 0 */
+        x86_sse_66(0x6Fu, X86_XMM5, x);
+        x86_sse_66(0xDBu, X86_XMM5, X86_XMM7);
+        x86_sse_66(0xEBu, X86_XMM4, X86_XMM5);
+        x86_sse_66(0xDBu, X86_XMM2, X86_XMM4);
+        x86_sse_66(add, x, X86_XMM2);
+    } else if (clip && rm == EMU_IR_RM_ROD) {
+        /* jam: v[d] set already, or set by the OR -- either way odd */
+        x86_sse_66(0xEBu, x, X86_XMM4);
     }
 }
 
@@ -1902,7 +1951,7 @@ static void vop_narrow_exact(uint32_t op, uint32_t sew, int x, int eq)
     const uint8_t cmp = (sew == 1u) ? 0x76u : 0x75u; /* pcmpeqd / w */
 
     x86_sse_66(0x6Fu, eq, x);
-    if (op == EMU_IR_V_NCLIP_RNU) {
+    if (op == EMU_IR_V_NCLIP) {
         const uint8_t half = (sew == 1u) ? 16u : 8u;
 
         x86_sse_shift_imm(grp, 6u, eq, half); /* << half */
@@ -1930,8 +1979,9 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
     const uint32_t vd = EMU_IR_VOP_VD(in->imm);
     const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
-    const bool clip = op == EMU_IR_V_NCLIP_RNU || op == EMU_IR_V_NCLIPU_RNU;
+    const bool clip = op == EMU_IR_V_NCLIP || op == EMU_IR_V_NCLIPU;
     const uint8_t packs = (sew == 1u) ? 0x6Bu : 0x63u; /* packssdw / packsswb */
+    const uint32_t rm = EMU_IR_VOP_RM(in->imm);
 
     ld_operand(T2, in->b);
     if (sew != 0u) {
@@ -1940,6 +1990,16 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     ld_operand(T0, in->a);
     x86_alu_imm32(4u, T0, (16u << sew) - 1u); /* the count, mod 2 * SEW */
     x86_movd_to_xmm(X86_XMM6, T0);
+    if (clip && (rm == EMU_IR_RM_RNE || rm == EMU_IR_RM_ROD)) {
+        /* esi = (1 << count) - 1, in each 16-bit half for 16-bit lanes */
+        x86_mov_rr(X86_ECX, T0);
+        x86_mov_imm32(X86_ESI, 1u);
+        x86_shift_cl(X86_ESI, X86_SHL);
+        x86_alu_imm32(X86_X_SUB, X86_ESI, 1u);
+        if (sew == 0u) {
+            x86_imul_imm32(X86_ESI, 0x00010001u);
+        }
+    }
     if (clip) {
         x86_mov_imm32(T1, 0u); /* the saturated lanes, gathered */
     }
@@ -1949,17 +2009,17 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (clip) {
             vop_const(X86_XMM7, (sew == 1u) ? k_vop_one32 : k_vop_one16);
         }
-        vop_narrow_shift(op, sew, X86_XMM0);
-        vop_narrow_shift(op, sew, X86_XMM1);
+        vop_narrow_shift(op, sew, X86_XMM0, rm);
+        vop_narrow_shift(op, sew, X86_XMM1, rm);
         if (clip) {
-            if (op == EMU_IR_V_NCLIPU_RNU) {
+            if (op == EMU_IR_V_NCLIPU) {
                 vop_const(X86_XMM7, (sew == 1u) ? k_vop_max16 : k_vop_max8);
             }
             vop_narrow_exact(op, sew, X86_XMM0, X86_XMM4);
             vop_narrow_exact(op, sew, X86_XMM1, X86_XMM5);
             x86_sse_66(packs, X86_XMM4, X86_XMM5); /* exact, by d's lane */
         }
-        if (op == EMU_IR_V_NCLIPU_RNU) {
+        if (op == EMU_IR_V_NCLIPU) {
             const uint8_t minu = (sew == 1u) ? 0x3Bu : 0x3Au;
 
             x86_sse_0f38(minu, X86_XMM0, X86_XMM7);
@@ -1970,7 +2030,7 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 x86_sse_66(0x67u, X86_XMM0, X86_XMM1); /* packuswb */
             }
         } else {
-            if (op != EMU_IR_V_NCLIP_RNU) {
+            if (op != EMU_IR_V_NCLIP) {
                 const uint8_t grp = (sew == 1u) ? 0x72u : 0x71u;
                 const uint8_t half = (sew == 1u) ? 16u : 8u;
 
@@ -2084,8 +2144,8 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 x86_sse_66(0x6Fu, X86_XMM4, X86_XMM1);
                 vop_apply(code, X86_XMM4, X86_XMM0);
                 x86_sse_66(0x6Fu, X86_XMM0, X86_XMM4);
-            } else if (op >= EMU_IR_V_AADDU_RNU) {
-                vop_special(op, sew);
+            } else if (op >= EMU_IR_V_AADDU) {
+                vop_special(op, sew, EMU_IR_VOP_RM(in->imm));
             } else {
                 vop_apply(code, X86_XMM0, X86_XMM1);
             }

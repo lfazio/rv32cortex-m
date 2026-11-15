@@ -166,6 +166,20 @@ unsigned clip keeps the helper: USAT reads its 32-bit input as signed.
 vecbench 37.68 to 27.54; the replay 7,900 clean, and with the tail not
 zeroed 16 different.
 
+**The other rounding modes**: an average's from the halving add (the
+floor) and the lost bit -- at 32 bits the floor is one `ADD` with
+`LSR`/`ASR #1` of a ^ b -- rne adding lb & floor, rdn nothing, rod an
+`ORR`; the signed clip's per element, rod ORing in `CLZ`-tested "a bit
+shifted out was set", rne adding v[d-1] where the bits below or the
+shifted value's low bit are set. **The corpus could not test the clip's
+modes**: a random word shifted by a few bits saturates to 16, which
+hides its rounding, and no input of 12,003 told rod from rdn there --
+the rod mutant ran clean on all three slices, and fuzzing for 300 s at
+an x86 mutant of the same case found nothing either. `vecround.c`
+(ties, small values) printed the host's checksum on the F746, and
+`c8878003` and `6a173d2c` with rod's ORR or rne's low bit dropped. The
+average's rne made rnu, 13 and 8 different in the replay.
+
 Masked (`EMU_IR_VOPM`), a word's mask bits go to lr: the mask
 register's byte holding the word's first element, shifted and cut to
 the word's 1, 2 or 4 bits, then spread to its lanes -- negated for a

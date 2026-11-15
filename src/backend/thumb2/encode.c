@@ -174,6 +174,15 @@ void t2_sub(uint32_t rd, uint32_t rn, uint32_t rm)
  * the same reason is worth the check: `add.w r0, r4, r0, lsl #4` is
  * eb04 1000 by the assembler, which is what this emits.
  */
+/* ADD.W rd, rn, rm, <type> #sh: T2_LSL, T2_LSR, T2_ASR; sh 1-31. */
+void t2_add_shifted(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t type,
+                    uint32_t sh)
+{
+    t2_emit32((uint16_t)(0xEB00u | rn),
+              (uint16_t)((((sh >> 2) & 7u) << 12) | (rd << 8) |
+                         ((sh & 3u) << 6) | ((type & 3u) << 4) | rm));
+}
+
 void t2_add_lsl(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t sh)
 {
     t2_emit32((uint16_t)(0xEB00u | rn),

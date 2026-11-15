@@ -5050,6 +5050,17 @@ session, and every one of them recurred:
   at the size the figure was taken at, and count what the slow path is
   called for before naming it.**
 
+- **A rounding difference needs a tie, and random data has none.** The
+  Thumb-2 clip's rod and rne passed the corpus replay with their own
+  instructions removed: a random 32-bit element shifted by a few bits
+  saturates to 16 bits, and saturation hides the rounding. fuzz-ir drew
+  every mode, biased the count small, and 300 s of fuzzing at an x86
+  mutant of exactly that case found nothing. A twenty-line kernel of
+  small values with exact halves -- `vecround.c` -- told every mode
+  apart on both hosts and the board. **Where a difference lives on a
+  relation (a tie, an equality, a boundary), construct the relation;
+  coverage feedback cannot see it.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

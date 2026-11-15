@@ -3,7 +3,8 @@
  * and 2, .wx and .wi with counts of 0, 1 and past the width, vl short so
  * a tail element that would saturate must not set vxsat -- read after
  * each clip and cleared -- vd at vs2's own start, which the
- * specification allows, and the rdn clip the block leaves to the helper.
+ * specification allows, and a clip under rdn (rounding-modes.S has all
+ * four).
  */
     li      t1, 0x7FFF0123
     vsetivli zero, 4, e32, m2, ta, ma
@@ -26,5 +27,5 @@
     vnclip.wi v8, v8, 2                  /* vd at vs2's start */
     csrr    a6, vxsat
     csrwi   vxrm, 2
-    vnclip.wi v12, v16, 3                /* rdn: the helper */
+    vnclip.wi v12, v16, 3                /* rdn */
     ecall

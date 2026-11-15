@@ -1024,19 +1024,33 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
                                  ? EMU_IR_V_MERGE
                                  : vop;
         const uint8_t maux = EMU_IR_VOP_AUX(mop, sew, vx);
+        /* the averages and clips under any rounding mode, drawn only for them */
+        const uint32_t rmi = (vop == EMU_IR_V_AADDU || vop == EMU_IR_V_AADD ||
+                              vop == EMU_IR_V_NCLIPU || vop == EMU_IR_V_NCLIP)
+                                 ? EMU_IR_VOP_IMM_RM(pick(in, 4u))
+                                 : 0u;
+
+        /*
+         * A narrowing count of 0 to 3 half the time: rounding differs most
+         * at the smallest shifts -- rne from rnu at a count of 1 for a
+         * quarter of all values -- which a random word reaches once in 32.
+         */
+        const uint16_t sc = !vx ? EMU_IR_NO_TEMP
+                            : (narrow && (byte(in) & 1u) != 0u)
+                                ? emu_ir_const(&g_built, pick(in, 4u))
+                                : val(in);
 
         if (masked && emu_ir_can_lower(EMU_IR_VOPM, maux)) {
-            (void)E(EMU_IR_VOPM, maux, vx ? val(in) : EMU_IR_NO_TEMP,
+            (void)E(EMU_IR_VOPM, maux, sc,
                     emu_ir_const(&g_built, vl),
-                    EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vmr), 0u);
+                    EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vmr) | rmi, 0u);
             break;
         }
         if (vop == EMU_IR_V_MERGE) {
             break; /* a merge has no unmasked form */
         }
-        (void)E(EMU_IR_VOP, aux, vx ? val(in) : EMU_IR_NO_TEMP,
-                emu_ir_const(&g_built, vl), EMU_IR_VOP_IMM(vd, vs2, vs1, lg),
-                0u);
+        (void)E(EMU_IR_VOP, aux, sc, emu_ir_const(&g_built, vl),
+                EMU_IR_VOP_IMM(vd, vs2, vs1, lg) | rmi, 0u);
         break;
     }
     default: /* a write of the result to a register, below */

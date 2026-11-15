@@ -478,6 +478,15 @@ sum is `wide-sum-e32.S`'s now. Each translator mutant tried -- the
 reductions' operations swapped, the helper's rs1 and rs2 swapped --
 diverged in 5 s.
 
+**And every rounding mode**: kind 17 draws a mode for the averages and
+the clips, and a narrowing count of 0 to 3 half the time. It is not
+enough for the clips: a random word shifted a few bits saturates, which
+hides the rounding, and neither the corpus nor 300 s of fuzzing at a
+mutant found an input telling rne from rnu for the signed clip to 16
+bits. `tests/guest/vecround.c` is that test instead, ties by
+construction, on both host backends and the F746. The rv32-vec seed
+`rounding-modes.S` runs each mode's averages and clips.
+
 The corpus outgrew the replay's flash during these sessions -- 7,086
 inputs, 1,015,565 bytes packed, the link 29,484 bytes over -- so
 `ir-board.sh` given no slice runs one as large as `IR_BOARD_MAX` allows

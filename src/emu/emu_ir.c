@@ -25,11 +25,35 @@
 
 #if EMU_IR_VECTOR
 /*
+ * v >> d rounded by rm, as RISC-V's fixed-point rounding (emu_ir.h,
+ * EMU_IR_VOP_RM), for a signed v of at most 34 bits and d of at most 32:
+ * the increment from the bits shifted out and the one above them.
+ */
+static int64_t vround(int64_t v, uint32_t d, uint32_t rm)
+{
+    const uint64_t u = (uint64_t)v;
+    const uint64_t below = (d == 0u) ? 0u : (u >> (d - 1u)) & 1u; /* v[d-1] */
+    const uint64_t rest = (d <= 1u) ? 0u : u & (((uint64_t)1 << (d - 1u)) - 1u);
+    const uint64_t out = (d == 0u) ? 0u : u & (((uint64_t)1 << d) - 1u);
+    const uint64_t at = (u >> d) & 1u; /* v[d] */
+    uint64_t r;
+
+    switch (rm) {
+    case EMU_IR_RM_RNU: r = below; break;
+    case EMU_IR_RM_RNE: r = below & ((rest != 0u) | at); break;
+    case EMU_IR_RM_RDN: r = 0u; break;
+    default: r = (at == 0u) & (out != 0u); break; /* rod */
+    }
+    return (v >> d) + (int64_t)r;
+}
+
+/*
  * EMU_IR_VOP's meaning (emu_ir.h). Element i of a group is bytes
  * i * w to i * w + w - 1 from the group's first register, little-endian.
  */
 void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
-                    uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl)
+                    uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl,
+                    uint32_t rm)
 {
     const uint32_t w = 1u << EMU_IR_VOP_SEW(aux);
     const uint32_t bits = 8u * w;
@@ -94,11 +118,11 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
             d = (d << 8) | vd[i * w + k];
         }
         switch (EMU_IR_VOP_OP(aux)) {
-        case EMU_IR_V_AADDU_RNU: /* (a + b + 1) >> 1, in 33 bits */
-            r = (uint32_t)(((uint64_t)a + b + 1u) >> 1);
+        case EMU_IR_V_AADDU: /* (a + b) >> 1 in 33 bits, rounded */
+            r = (uint32_t)vround((int64_t)a + b, 1u, rm);
             break;
-        case EMU_IR_V_AADD_RNU:
-            r = (uint32_t)(((int64_t)sa + sb + 1) >> 1);
+        case EMU_IR_V_AADD:
+            r = (uint32_t)vround((int64_t)sa + sb, 1u, rm);
             break;
         case EMU_IR_V_MACC: r = d + b * a; break;
         case EMU_IR_V_NMSAC: r = d - b * a; break;
@@ -129,35 +153,43 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 #endif /* EMU_IR_VECTOR */
 
 #if EMU_IR_VECTOR
-void emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+bool emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                      const uint8_t *mask, uint32_t scalar, uint8_t aux,
-                     uint32_t nregs, uint32_t vl)
+                     uint32_t nregs, uint32_t vl, uint32_t rm)
 {
+    const uint32_t op = EMU_IR_VOP_OP(aux);
     const uint32_t w = 1u << EMU_IR_VOP_SEW(aux);
     const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
     const uint32_t n = (vl < lanes) ? vl : lanes;
+    /* vd's element and group: twice the width, and the registers, wide */
+    const uint32_t dw = EMU_IR_V_IS_WIDE(op) ? 2u * w : w;
+    const uint32_t dregs = EMU_IR_V_IS_WIDE(op) ? 2u * nregs : nregs;
     uint8_t res[8u * EMU_IR_VREG_BYTES];
 
+    if (EMU_IR_V_IS_NARROW(op)) {
+        return emu_ir_vop_narrow_ref(vd, vs2, vs1, mask, scalar, aux, nregs, vl, rm);
+    }
     /* Every element below vl computed unmasked, into a copy of vd... */
-    memcpy(res, vd, nregs * EMU_IR_VREG_BYTES);
+    memcpy(res, vd, dregs * EMU_IR_VREG_BYTES);
     if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
         const uint8_t mv = EMU_IR_VOP_AUX(EMU_IR_V_MV, EMU_IR_VOP_SEW(aux),
                                           EMU_IR_VOP_VX(aux));
 
-        emu_ir_vop_ref(res, vs2, vs1, scalar, mv, nregs, vl); /* s1 */
+        emu_ir_vop_ref(res, vs2, vs1, scalar, mv, nregs, vl, rm); /* s1 */
     } else {
-        emu_ir_vop_ref(res, vs2, vs1, scalar, aux, nregs, vl);
+        emu_ir_vop_ref(res, vs2, vs1, scalar, aux, nregs, vl, rm);
     }
     /* ...then kept where the bit says, or for a merge, s2 where not. */
     for (uint32_t i = 0; i < n; i++) {
         const bool on = ((mask[i >> 3] >> (i & 7u)) & 1u) != 0u;
 
         if (on) {
-            memcpy(vd + i * w, res + i * w, w);
-        } else if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
+            memcpy(vd + i * dw, res + i * dw, dw);
+        } else if (op == EMU_IR_V_MERGE) {
             memcpy(vd + i * w, vs2 + i * w, w);
         }
     }
+    return false;
 }
 
 /* A little-endian element of w bytes at p. */
@@ -216,8 +248,8 @@ void emu_ir_vred_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 }
 
 bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
-                           uint32_t scalar, uint8_t aux, uint32_t nregs,
-                           uint32_t vl)
+                           const uint8_t *mask, uint32_t scalar, uint8_t aux,
+                           uint32_t nregs, uint32_t vl, uint32_t rm)
 {
     const uint32_t op = EMU_IR_VOP_OP(aux);
     const uint32_t w = 1u << EMU_IR_VOP_SEW(aux);
@@ -234,6 +266,9 @@ bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
         uint32_t x = 0u;
         uint32_t s = 0u;
 
+        if (mask != NULL && ((mask[i >> 3] >> (i & 7u)) & 1u) == 0u) {
+            continue;
+        }
         for (uint32_t k = ww; k-- > 0u;) {
             x = (x << 8) | vs2[i * ww + k];
         }
@@ -246,21 +281,20 @@ bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
         const uint32_t sh = s & (2u * bits - 1u);
         const uint32_t xs = 32u - 2u * bits; /* x as a 2 * SEW signed value */
         const int64_t sx = (int32_t)(x << xs) >> xs;
-        const uint64_t half = (sh == 0u) ? 0u : ((uint64_t)x >> (sh - 1u)) & 1u;
         uint32_t r;
 
         switch (op) {
         case EMU_IR_V_NSRL: r = (uint32_t)((uint64_t)x >> sh); break;
         case EMU_IR_V_NSRA: r = (uint32_t)(sx >> sh); break;
-        case EMU_IR_V_NCLIPU_RNU: {
-            const uint64_t v = ((uint64_t)x >> sh) + half;
+        case EMU_IR_V_NCLIPU: {
+            const uint64_t v = (uint64_t)vround((int64_t)x, sh, rm);
 
             sat = sat || v > umax;
             r = (uint32_t)((v > umax) ? umax : v);
             break;
         }
-        default: { /* EMU_IR_V_NCLIP_RNU */
-            const int64_t v = (sx >> sh) + (int64_t)half;
+        default: { /* EMU_IR_V_NCLIP */
+            const int64_t v = vround(sx, sh, rm);
 
             sat = sat || v > smax || v < -smax - 1;
             r = (uint32_t)((v > smax) ? smax : (v < -smax - 1) ? -smax - 1 : v);

@@ -96,15 +96,19 @@ block, and the helper's `vsetvl` makes the block forget it -- and
 vstart stays 0. Unmasked `vadd`, `vsub`, `vrsub`, `vand`, `vor`,
 `vxor`, `vminu`, `vmin`, `vmaxu`, `vmax`, `vmul`, `vsll`, `vsrl`,
 `vsra`, `vmv.v`, `vmacc`, `vnmsac`, `vmadd`, `vnmsub`, `vaaddu` and
-`vaadd` while vxrm is rnu, and the widening `vwmaccu`, `vwmacc`,
+`vaadd`, and the widening `vwmaccu`, `vwmacc`,
 `vwmaccsu`, `vwmaccus` -- at LMUL 1 to 4, vd's group disjoint from the
-sources -- and the narrowing `vnsrl`, `vnsra`, and `vnclipu` and
-`vnclip` under rnu, by one count (.wx, .wi), vd disjoint from vs2's
+sources -- and the narrowing `vnsrl`, `vnsra`, `vnclipu` and
+`vnclip`, by one count (.wx, .wi), vd disjoint from vs2's
 group or at its start, become `EMU_IR_VOP` when the backend says it
 lowers that form (`emu_ir_can_lower`), and VS is marked Dirty at the
 block's first; the rest stays the helper. vxrm is in the block's
-context (bits 42:41), as frm is: the averages' rounding is resolved at
-translation, and a vxrm write is a CSR write, which ends the block. VS off is in the block's context
+context (bits 42:41), as frm is: the averages' and clips' rounding is
+resolved at translation -- the mode goes in the operation's imm
+(`EMU_IR_VOP_RM`), every mode on both hosts -- and a vxrm write is a CSR
+write, which ends the block. rnu alone was lowered until
+`tests/guest/vecround.c`: every average and clip under each mode on
+ties, one checksum interpreted, translated, and on the F746. VS off is in the block's context
 (`rv_jit_ctx_key` bit 40), as FS off is, because the inline vsetvli has
 no test of its own. The x86-64 lowering is SSE2 and SSE4.1
 ([backend/x86_64.md](../backend/x86_64.md#the-guests-vector-registers-sse2-and-sse41));

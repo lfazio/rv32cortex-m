@@ -215,7 +215,9 @@ Each has cost more than one session, and every one recurred.
   are tested only by running an address twice under different state --
   loop first, then call.
 - **Random operands miss relations**: equal operands, `INT_MIN / -1`,
-  zero divisors. Mutation testing finds the class; put the relation in.
+  zero divisors -- and ties: a clip's rounding shows only on small values
+  at an exact half, which no fuzz-ir input reached; `vecround.c` builds
+  them. Mutation testing finds the class; put the relation in.
 - **A check named for a bug starts from the value the bug destroys**, and
   resets what it depends on inside the case.
 - **A test of a fault checks the address and the cause**, not that it

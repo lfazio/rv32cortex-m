@@ -439,6 +439,13 @@ add_guest_image(vecbench SOURCES start.S vecbench.c
                 FLAGS -march=${RV_GUEST_MARCH}_zve32x
                       -DVECBENCH_ROUNDS=${VECBENCH_ROUNDS})
 
+# The fixed-point rounding modes on data made of ties (vecround.c): what
+# random words hardly reach, so the JIT's lowerings of rne, rdn and rod
+# get a checksum to agree with -- on the host's two backends, and on the
+# F746 against the host.
+add_guest_image(vecround SOURCES start.S vecround.c
+                FLAGS -march=${RV_GUEST_MARCH}_zve32x)
+
 # What the inlined memory path is worth, and what turns it off.
 #
 # Two images from one source, differing in one -D: the kernel between

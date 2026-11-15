@@ -117,6 +117,17 @@ ldr.w   r0, [r4, r2]
 ldrh.w  r0, [r4, r2]
 strh.w  r0, [r12, r3]
 strb.w  r0, [r4, r1]
+add.w   r0, r0, r2, lsr #1
+add.w   r0, r0, r2, asr #1
+add.w   r12, r12, r12, lsl #16
+clz     lr, lr
+clz     r2, r2
+lsl.w   lr, lr, r12
+lsl.w   r2, r2, r12
+asr.w   r1, r1, r12
+eor     r2, r2, #1
+eor     lr, lr, #1
+sub.w   lr, lr, #1
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -274,6 +285,19 @@ int main(void)
     (void)t2_ld_reg(0u, 4u, 2u, 2u, false);
     (void)t2_st_reg(0u, 12u, 3u, 2u);
     (void)t2_st_reg(0u, 4u, 1u, 1u);
+
+    /* The averages' and clips' other rounding modes. */
+    t2_add_shifted(0u, 0u, 2u, T2_LSR, 1u);
+    t2_add_shifted(0u, 0u, 2u, T2_ASR, 1u);
+    t2_add_lsl(12u, 12u, 12u, 16u);
+    t2_clz(14u, 14u);
+    t2_clz(2u, 2u);
+    t2_shift_reg(T2_LSL, 14u, 14u, 12u);
+    t2_shift_reg(T2_LSL, 2u, 2u, 12u);
+    t2_shift_reg(T2_ASR, 1u, 1u, 12u);
+    t2_eor_imm(2u, 2u, 1u);
+    t2_eor_imm(14u, 14u, 1u);
+    t2_sub_imm(14u, 14u, 1u);
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

@@ -122,12 +122,14 @@ extern "C" {
 #define EMU_IR_V_SRA 13u
 #define EMU_IR_V_MV 14u /* d = s1 */
 /*
- * The averaging adds under round-to-nearest-up (RISC-V's vxrm rnu): the
- * sum in one more bit than the element, plus one, halved. Another
- * rounding mode is another operation, which nothing lowers yet.
+ * The averaging adds: the sum in one more bit than the element, halved
+ * and rounded by imm's mode (EMU_IR_VOP_RM). The narrowing clips below
+ * round by it too. Every backend that lowers one of these lowers all
+ * four modes, which is why the mode can live in imm, where
+ * emu_ir_can_lower does not look.
  */
-#define EMU_IR_V_AADDU_RNU 15u
-#define EMU_IR_V_AADD_RNU 16u
+#define EMU_IR_V_AADDU 15u
+#define EMU_IR_V_AADD 16u
 /* The multiply-adds, which read d as well, the product's low half. */
 #define EMU_IR_V_MACC 17u  /* d + s1 * s2 */
 #define EMU_IR_V_NMSAC 18u /* d - s1 * s2 */
@@ -148,19 +150,19 @@ extern "C" {
  * The narrowing shifts and clips: s2 at twice the element width in a
  * group of 2^(lg+1) registers -- lg at most 2 -- d at the element width in
  * 2^lg, and the shift s1 (or the scalar) taken modulo 2 * SEW. The clips
- * round to nearest up and saturate to d's width, and any element they
+ * round by imm's mode and saturate to d's width, and any element they
  * saturate sets the target's saturation word (vsat_offset) to 1; the
  * plain shifts truncate. d's group is disjoint from s2's or starts at it.
  */
 #define EMU_IR_V_NSRL 25u
 #define EMU_IR_V_NSRA 26u
-#define EMU_IR_V_NCLIPU_RNU 27u
-#define EMU_IR_V_NCLIP_RNU 28u
+#define EMU_IR_V_NCLIPU 27u
+#define EMU_IR_V_NCLIP 28u
 /* EMU_IR_VOPM only: d = the mask's bit ? s1 : s2, every element below vl. */
 #define EMU_IR_V_MERGE 29u
 #define EMU_IR_V_COUNT 30u
 #define EMU_IR_V_IS_WIDE(op) ((op) >= EMU_IR_V_WMACCU && (op) <= EMU_IR_V_WMACCUS)
-#define EMU_IR_V_IS_NARROW(op) ((op) >= EMU_IR_V_NSRL && (op) <= EMU_IR_V_NCLIP_RNU)
+#define EMU_IR_V_IS_NARROW(op) ((op) >= EMU_IR_V_NSRL && (op) <= EMU_IR_V_NCLIP)
 
 #define EMU_IR_VOP_AUX(op, sew, vx)                                            \
     ((uint8_t)((op) | ((uint32_t)(sew) << 5) | ((vx) ? 0x80u : 0u)))
@@ -179,6 +181,18 @@ extern "C" {
 #define EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vm)                                  \
     (EMU_IR_VOP_IMM(vd, vs2, vs1, lg) | ((uint32_t)(vm) << 17))
 #define EMU_IR_VOP_MREG(imm) (((uint32_t)(imm) >> 17) & 31u)
+/*
+ * The rounding mode, in bits 23:22, for the averages and the clips:
+ * RISC-V's vxrm -- round to nearest up, to nearest even, down, to odd.
+ * A shift right by d of v adds r to v >> d: rnu v[d-1]; rne v[d-1] and
+ * (v[d-2:0] != 0 or v[d]); rdn 0; rod !v[d] and v[d-1:0] != 0.
+ */
+#define EMU_IR_RM_RNU 0u
+#define EMU_IR_RM_RNE 1u
+#define EMU_IR_RM_RDN 2u
+#define EMU_IR_RM_ROD 3u
+#define EMU_IR_VOP_RM(imm) (((uint32_t)(imm) >> 22) & 3u)
+#define EMU_IR_VOP_IMM_RM(rm) ((uint32_t)(rm) << 22)
 
 /*
  * EMU_IR_VRED's operations: vd[0] = vs1[0] op every active element of
@@ -236,17 +250,20 @@ extern "C" {
  * interpreter's implementation.
  */
 void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
-                    uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl);
+                    uint32_t scalar, uint8_t aux, uint32_t nregs, uint32_t vl,
+                    uint32_t rm);
 
 /*
- * EMU_IR_VOPM's meaning: as emu_ir_vop_ref, but element i is written
- * only where bit i of `mask` (a register, bit i in byte i / 8) is set --
- * and for EMU_IR_V_MERGE every element below vl, from s1 where the bit is
- * set and s2 where it is not. Single-width operations only.
+ * EMU_IR_VOPM's meaning: as emu_ir_vop_ref, but element i of vd -- at
+ * vd's width, twice the element's for a widening operation -- is written
+ * only where bit i of `mask` (a register, bit i in byte i / 8) is set,
+ * and for EMU_IR_V_MERGE every element below vl, from s1 where the bit
+ * is set and s2 where it is not. Returns whether an active element of a
+ * clip saturated.
  */
-void emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
+bool emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                      const uint8_t *mask, uint32_t scalar, uint8_t aux,
-                     uint32_t nregs, uint32_t vl);
+                     uint32_t nregs, uint32_t vl, uint32_t rm);
 
 /*
  * EMU_IR_VRED's meaning: vd (a register) element 0, at the result's
@@ -262,10 +279,12 @@ void emu_ir_vred_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 /*
  * The narrowing operations' reference, which also says whether an
  * element saturated -- the caller sets the target's saturation word.
+ * Under a mask (not NULL) only the elements whose bit is set are
+ * computed, written, and can saturate.
  */
 bool emu_ir_vop_narrow_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
-                           uint32_t scalar, uint8_t aux, uint32_t nregs,
-                           uint32_t vl);
+                           const uint8_t *mask, uint32_t scalar, uint8_t aux,
+                           uint32_t nregs, uint32_t vl, uint32_t rm);
 
 /* ------------------------------------------------------------------ */
 /* Guest condition flags                                               */
