@@ -1451,7 +1451,7 @@ static int64_t rnd_mine(int64_t v, unsigned sh, uint32_t rm)
 
 static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
                      uint32_t scalar, uint32_t vd, uint32_t vs2, uint32_t vs1,
-                     uint32_t vl, uint32_t rm)
+                     uint32_t vl, uint32_t rm, const uint8_t *mask)
 {
     /* The register file as bytes: a group runs past its first row. */
     const uint8_t *const a = (const uint8_t *)c->v + vs2 * EMU_IR_VREG_BYTES;
@@ -1465,6 +1465,12 @@ static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
 
         for (uint32_t i = 0; i < vl; i++) {
             uint8_t sbuf[4] = {(uint8_t)scalar, (uint8_t)(scalar >> 8), 0u, 0u};
+
+            /* under a mask an inactive element is not computed, nor can
+             * it saturate */
+            if (mask != NULL && ((mask[i / 8u] >> (i % 8u)) & 1u) == 0u) {
+                continue;
+            }
             const int64_t sx = vop_lane(a + i * 2u * w, 2u * w, true);
             const int64_t ux = vop_lane(a + i * 2u * w, 2u * w, false);
             const unsigned sh =
@@ -1649,7 +1655,7 @@ static void test_lower_vop(void)
                         want = got;
                         want.pc = 0x1000u; /* the exit's */
                         ref = want;
-                        vop_mine(&want, op, w, vx != 0u, scalar, vd, vs2, vs1, vl, rm);
+                        vop_mine(&want, op, w, vx != 0u, scalar, vd, vs2, vs1, vl, rm, NULL);
                         if (narrow) {
                             if (emu_ir_vop_narrow_ref(
                                     (uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
@@ -1716,13 +1722,14 @@ static void test_lower_vopm(void)
 {
     uint32_t seed = 0x2545F491u;
     unsigned ran = 0u;
+    unsigned expected = 0u;
     unsigned lowerable = 0u;
     unsigned bad = 0u;
 
     for (uint32_t op = 0; op < EMU_IR_V_COUNT; op++) {
-        if (EMU_IR_V_IS_WIDE(op) || EMU_IR_V_IS_NARROW(op)) {
-            continue;
-        }
+        const bool wide = EMU_IR_V_IS_WIDE(op);
+        const bool narrow = EMU_IR_V_IS_NARROW(op);
+
         for (uint32_t sew = 0; sew < 3u; sew++) {
             for (uint32_t vx = 0; vx < 2u; vx++) {
                 const uint8_t aux = EMU_IR_VOP_AUX(op, sew, vx != 0u);
@@ -1731,10 +1738,14 @@ static void test_lower_vopm(void)
                     continue;
                 }
                 lowerable++;
-                for (uint32_t lg = 0; lg < 4u; lg++) {
+                /* a wide or narrow form's vd or vs2 is twice the group:
+                 * at most four registers a group, vd's at most eight */
+                for (uint32_t lg = 0; lg < ((wide || narrow) ? 3u : 4u); lg++) {
                     for (uint32_t pat = 0; pat < 4u; pat++) {
                         const uint32_t nregs = 1u << lg;
                         const uint32_t w = 1u << sew;
+                        /* vd's element width: twice the element's, wide */
+                        const uint32_t dw = wide ? 2u * w : w;
                         const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
                         const uint32_t vl = (pat == 3u) ? lanes - 1u : lanes - (lg + pat) % 3u;
                         const uint32_t scalar = 0x80000000u ^ (op * 0x01010101u) ^ pat;
@@ -1753,29 +1764,34 @@ static void test_lower_vopm(void)
                         un = got;
                         un.pc = 0x1000u;
                         if (op == EMU_IR_V_MERGE) {
-                            vop_mine(&un, EMU_IR_V_MV, w, vx != 0u, scalar, vd, vs2, vs1, vl, 0u);
+                            vop_mine(&un, EMU_IR_V_MV, w, vx != 0u, scalar, vd, vs2, vs1, vl, 0u, NULL);
                         } else {
-                            vop_mine(&un, op, w, vx != 0u, scalar, vd, vs2, vs1, vl, 0u);
+                            vop_mine(&un, op, w, vx != 0u, scalar, vd, vs2, vs1, vl, 0u,
+                                     narrow ? got.v[vmr] : NULL);
                         }
                         want = got;
                         want.pc = 0x1000u;
+                        want.sat = un.sat; /* only active elements set it */
+                        expected++;
                         for (uint32_t i = 0; i < vl; i++) {
                             const bool on = ((got.v[vmr][i >> 3] >> (i & 7u)) & 1u) != 0u;
-                            uint8_t *const dw = (uint8_t *)want.v + vd * EMU_IR_VREG_BYTES + i * w;
+                            uint8_t *const de = (uint8_t *)want.v + vd * EMU_IR_VREG_BYTES + i * dw;
 
                             if (on) {
-                                memcpy(dw, (uint8_t *)un.v + vd * EMU_IR_VREG_BYTES + i * w, w);
+                                memcpy(de, (uint8_t *)un.v + vd * EMU_IR_VREG_BYTES + i * dw, dw);
                             } else if (op == EMU_IR_V_MERGE) {
-                                memcpy(dw, (uint8_t *)got.v + vs2 * EMU_IR_VREG_BYTES + i * w, w);
+                                memcpy(de, (uint8_t *)got.v + vs2 * EMU_IR_VREG_BYTES + i * w, w);
                             }
                         }
                         ref = got;
                         ref.pc = 0x1000u;
-                        emu_ir_vopm_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
-                                        (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
-                                        (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES,
-                                        (uint8_t *)ref.v + vmr * EMU_IR_VREG_BYTES,
-                                        scalar, aux, nregs, vl, 0u);
+                        if (emu_ir_vopm_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
+                                            (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
+                                            (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES,
+                                            (uint8_t *)ref.v + vmr * EMU_IR_VREG_BYTES,
+                                            scalar, aux, nregs, vl, 0u)) {
+                            ref.sat = 1u;
+                        }
                         emu_ir_reset(&g_b);
                         const uint16_t tv = emu_ir_const(&g_b, vl);
                         const uint16_t ts = vx ? emu_ir_const(&g_b, scalar) : EMU_IR_NO_TEMP;
@@ -1804,8 +1820,8 @@ static void test_lower_vopm(void)
         }
     }
     CHECK_EQ(bad, 0u);
-    CHECK(lowerable >= 40u);
-    CHECK_EQ(ran, lowerable * 16u);
+    CHECK(lowerable >= 50u);
+    CHECK_EQ(ran, expected);
 }
 
 

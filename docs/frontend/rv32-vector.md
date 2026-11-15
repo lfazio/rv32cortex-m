@@ -120,8 +120,11 @@ element's bit in v0, read from the register as the operation runs,
 keeps vd's old element where it is clear -- mask undisturbed, which
 `ma` permits -- and `vmerge.vvm`, `.vxm` and `.vim` are its merge, the
 source where the bit is set and vs2 where not. A masked operation
-whose vd is v0 is reserved, and declined; the masked widening and
-narrowing forms stay the helper. vecbench has no masked operation, and
+whose vd is v0 is reserved, and declined. The widening and narrowing
+forms are masked too, the bit by vd's element (twice the width for a
+widening one), and a masked-off clip element cannot set vxsat.
+`tests/guest/vecmask.c` runs them all under masks of both values in
+every byte: one checksum interpreted, translated, and on the F746. vecbench has no masked operation, and
 on the F746 its figure moved only with the layout: 27.85 with the same
 translated code, 28.02 and 27.67 with the code moved 1 KB and 2.8 KB.
 

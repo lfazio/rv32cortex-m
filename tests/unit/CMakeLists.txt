@@ -268,6 +268,13 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-vecround-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    if(TARGET guest-vecmask AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-vecmask-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/vecmask.bin" VECMASK-END)
+        set_tests_properties(guest-vecmask-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     # CoreMark compiled for the vector unit: the same output, CRCs
     # included, interpreted and translated -- code a compiler wrote.
     # With its clock in seconds (--timer-hz 1000000), which reads 0 for a

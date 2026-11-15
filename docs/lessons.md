@@ -5061,6 +5061,17 @@ session, and every one of them recurred:
   relation (a tie, an equality, a boundary), construct the relation;
   coverage feedback cannot see it.**
 
+- **A mask built from data is all ones until the data says otherwise.**
+  `masked.S` computed its widening operation's mask with
+  `vmsne.vi v0, v9, 0`; the fuzzer starts v9 from a pattern with no zero
+  element, so every bit was set and masked was unmasked -- a mutant that
+  ignored the mask passed the seed, and fuzzing found it at input
+  #7515. A mask the seed means to test is written as a constant of both
+  values (`0xA5`). The same week, Thumb-2's masked widening was reached
+  by no corpus input at all; `vecmask.c` puts fixed masks in front of
+  it on the board. **An input is checked against the mutant it is
+  for** (the dictionary lesson, again).
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

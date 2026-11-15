@@ -1573,9 +1573,6 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     }
     const uint8_t maux = EMU_IR_VOP_AUX(vop, sew, form != 1u);
 
-    if (!vm && (EMU_IR_V_IS_WIDE(vop) || EMU_IR_V_IS_NARROW(vop))) {
-        return false; /* not under a mask yet */
-    }
     if (!emu_ir_can_lower(vm ? EMU_IR_VOP : EMU_IR_VOPM, vm ? aux : maux)) {
         return false;
     }

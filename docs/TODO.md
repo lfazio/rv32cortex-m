@@ -218,8 +218,7 @@ From the last measurements in [linux.md](linux.md).
       shifts and clips too, and the single-width forms masked, with
       `vmerge` (`EMU_IR_VOPM`), the reductions (`EMU_IR_VRED`) and
       unmasked strided accesses (`EMU_IR_VMEMS`), the averages and clips
-      under every vxrm mode. Next: the masked widening and narrowing
-      forms; .wv
+      under every vxrm mode, every form masked. Next: .wv
       narrowing (a count a lane: AVX2's); Thumb-2's unsigned and 8-bit
       widening and narrowing and 16-bit multiply-adds; the N6's MVE
       (Helium), a 128-bit unit; the short-trip element loop out of

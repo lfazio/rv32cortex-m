@@ -446,6 +446,12 @@ add_guest_image(vecbench SOURCES start.S vecbench.c
 add_guest_image(vecround SOURCES start.S vecround.c
                 FLAGS -march=${RV_GUEST_MARCH}_zve32x)
 
+# The masked forms under masks of both values (vecmask.c): widening,
+# narrowing, single-width and vmerge -- what the corpus does not reach
+# for Thumb-2's masked widening.
+add_guest_image(vecmask SOURCES start.S vecmask.c
+                FLAGS -march=${RV_GUEST_MARCH}_zve32x)
+
 # What the inlined memory path is worth, and what turns it off.
 #
 # Two images from one source, differing in one -D: the kernel between

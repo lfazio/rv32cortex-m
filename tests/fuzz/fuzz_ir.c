@@ -1018,7 +1018,7 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
          * form: the mask register anywhere outside vd's group.
          */
         const uint32_t vmr = pick(in, 32u);
-        const bool masked = !wide && !narrow && (byte(in) & 1u) != 0u &&
+        const bool masked = (byte(in) & 1u) != 0u &&
                             !(vmr >= vd && vmr < vd + (1u << dlg));
         const uint32_t mop = (masked && vop == EMU_IR_V_MV && (byte(in) & 1u))
                                  ? EMU_IR_V_MERGE

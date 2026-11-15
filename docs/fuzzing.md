@@ -478,6 +478,14 @@ sum is `wide-sum-e32.S`'s now. Each translator mutant tried -- the
 reductions' operations swapped, the helper's rs1 and rs2 swapped --
 diverged in 5 s.
 
+**And the masked widening and narrowing forms**: kind 17 masks them as
+it does the rest. `masked.S`'s first masked widening ran under a mask
+from `vmsne.vi v0, v9, 0`, and v9's reset pattern has no zero element:
+every bit was set, and a mutant ignoring the mask was found only by
+fuzzing. Its mask is `0xA5` in every byte now, and the same mutant
+diverges in 6 s from the seed. Thumb-2's masked widening is reached by
+no corpus input at all; `tests/guest/vecmask.c` tests it on the board.
+
 **And every rounding mode**: kind 17 draws a mode for the averages and
 the clips, and a narrowing count of 0 to 3 half the time. It is not
 enough for the clips: a random word shifted a few bits saturates, which

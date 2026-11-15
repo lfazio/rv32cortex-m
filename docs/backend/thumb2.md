@@ -194,6 +194,15 @@ half's count was lost: `ir-board.sh` printed sixty differing cases and
 cut the summary after them, and prints it always now -- and with the
 mask not ANDed in, 306 and 317.
 
+The narrowing forms take the same mask, after the shifts, where r2 and
+lr are free. The widening one (signed halfwords) has its products in r2
+and lr, so each 32-bit element's bit is tested in place -- `LDRB`, `TST`,
+and under `IT EQ` a `MOV` clearing r0, that word's tail mask. **The
+corpus never reached it**: no input of 12,667 differed with the `MOV`
+made a `NOP`, in any slice. `tests/guest/vecmask.c` did: the host's
+checksum on the F746, `0e09b928` with the `NOP`. The narrowing mask
+dropped, 9 different in the replay.
+
 A reduction (`EMU_IR_VRED`) goes a word of vs2's group at a time into r0,
 its inactive lanes set to the identity -- cleared, set, or r12's signed
 maximum or minimum -- and combined into r1 with the operation's

@@ -1449,12 +1449,11 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         return vop_lowerable(aux);
     case EMU_IR_VMEM: /* word moves; without a window, the helper alone */
         return true;
-    case EMU_IR_VOPM: /* single-width, as unmasked, and the merge */
+    case EMU_IR_VOPM: /* every form as unmasked, and the merge */
         if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
             return EMU_IR_VOP_SEW(aux) <= 2u;
         }
-        return !EMU_IR_V_IS_WIDE(EMU_IR_VOP_OP(aux)) &&
-               !EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(aux)) && vop_lowerable(aux);
+        return vop_lowerable(aux);
     /* every reduction at every width; the widening sums from 8 and 16 */
     case EMU_IR_VRED:
         return EMU_IR_VRED_OP(aux) < EMU_IR_R_COUNT && EMU_IR_VRED_SEW(aux) <= 2u &&
@@ -1911,8 +1910,25 @@ static void vop_word(uint32_t op, uint32_t sew, uint32_t rb, uint32_t rm)
  * the masks and the old words. lr is free inside a block: every block
  * pushes it, and nothing here calls.
  */
+/*
+ * Under a mask, vd's word k -- one 32-bit element of a widening
+ * operation -- is kept only where element k's bit is set: r0, its word
+ * of the window's mask, cleared where it is not. r2 and lr hold the
+ * products, so the bit is tested in place: LDRB, TST, and a MOV under IT.
+ * NZCV go with it, which no IR instruction carries.
+ */
+static void vop_wide_elem_bit(const emu_ir_target_t *t, uint32_t mreg, uint32_t k)
+{
+    t2_ldrb_imm(T2_R1, T2_CPU, t->vreg_offset(mreg) + (k >> 3));
+    (void)t2_tst_imm8(T2_R1, 1u << (k & 7u));
+    t2_emit16((uint16_t)(0xBF00u | (0x0u << 4) | 0x8u)); /* IT EQ */
+    t2_emit16(0x2000u);                                  /* MOV r0, #0 */
+}
+
 static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
+    const bool masked = in->op == (uint8_t)EMU_IR_VOPM;
+    const uint32_t mreg = EMU_IR_VOP_MREG(in->imm);
     const bool vx = EMU_IR_VOP_VX(in->aux);
     const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
     const uint32_t vd = EMU_IR_VOP_VD(in->imm);
@@ -1949,12 +1965,18 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_smlaxy(T2_LR, T2_R0, rb, T2_LR, true, true);
 
             t2_ldr_imm(T2_R0, T2_R3, 4u * k);  /* the masks */
+            if (masked) {
+                vop_wide_elem_bit(t, mreg, k);
+            }
             t2_ldr_imm(T2_R1, T2_CPU, olo);
             t2_and(T2_R2, T2_R2, T2_R0);
             t2_bic(T2_R1, T2_R1, T2_R0);
             t2_orr(T2_R2, T2_R2, T2_R1);
             t2_str_imm(T2_R2, T2_CPU, olo);
             t2_ldr_imm(T2_R0, T2_R3, 4u * (k + 1u));
+            if (masked) {
+                vop_wide_elem_bit(t, mreg, k + 1u);
+            }
             t2_ldr_imm(T2_R1, T2_CPU, ohi);
             t2_and(T2_LR, T2_LR, T2_R0);
             t2_bic(T2_R1, T2_R1, T2_R0);
@@ -2091,7 +2113,14 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_ldr_imm(T2_R1, T2_CPU, o1);
         vop_narrow_word(op, T2_R0, EMU_IR_VOP_RM(in->imm));
         vop_narrow_word(op, T2_R1, EMU_IR_VOP_RM(in->imm));
+        if (in->op == (uint8_t)EMU_IR_VOPM) {
+            /* lr: word k's elements' bits; r2 and lr are free here */
+            vop_word_mask(t, EMU_IR_VOP_MREG(in->imm), 1u, k);
+        }
         t2_ldr_imm(T2_R2, T2_R3, 4u * k); /* the mask */
+        if (in->op == (uint8_t)EMU_IR_VOPM) {
+            t2_and(T2_R2, T2_R2, T2_LR); /* and the set elements only */
+        }
         if (clip) {
             t2_sxth(T2_LR, T2_R2);
             t2_and(T2_R0, T2_R0, T2_LR);

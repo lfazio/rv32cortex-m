@@ -128,6 +128,9 @@ asr.w   r1, r1, r12
 eor     r2, r2, #1
 eor     lr, lr, #1
 sub.w   lr, lr, #1
+tst.w   r1, #128
+it      eq
+moveq   r0, #0
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -298,6 +301,11 @@ int main(void)
     t2_eor_imm(2u, 2u, 1u);
     t2_eor_imm(14u, 14u, 1u);
     t2_sub_imm(14u, 14u, 1u);
+
+    /* A widening operation's element bit under a mask. */
+    (void)t2_tst_imm8(1u, 128u);
+    t2_emit16(0xBF08u); /* IT EQ */
+    t2_emit16(0x2000u); /* MOV r0, #0, in the IT */
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

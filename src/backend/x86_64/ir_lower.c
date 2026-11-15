@@ -1406,12 +1406,11 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 #if EMU_IR_VECTOR
     case EMU_IR_VOP:
         return vop_lowerable(aux);
-    case EMU_IR_VOPM: /* single-width, as unmasked, and the merge */
+    case EMU_IR_VOPM: /* every form as unmasked, and the merge */
         if (EMU_IR_VOP_OP(aux) == EMU_IR_V_MERGE) {
             return EMU_IR_VOP_SEW(aux) <= 2u && (host_simd() & HOST_SIMD_SSE2) != 0u;
         }
-        return !EMU_IR_V_IS_WIDE(EMU_IR_VOP_OP(aux)) &&
-               !EMU_IR_V_IS_NARROW(EMU_IR_VOP_OP(aux)) && vop_lowerable(aux);
+        return vop_lowerable(aux);
     case EMU_IR_VMEM: /* SSE2 moves; without a window, the helper alone */
         return (host_simd() & HOST_SIMD_SSE2) != 0u;
     case EMU_IR_VRED:
@@ -1782,16 +1781,27 @@ static void vop_apply(uint32_t code, int dst, int src)
     }
 }
 
+static void vop_elem_mask(const emu_ir_target_t *t, uint32_t mreg, uint32_t sew,
+                          uint32_t r);
+
 /*
  * xmm0 = (new & mask) | (old & ~mask) for vd's register j, old in `old`,
- * the window's mask through rax and xmm `tmp`; then the store.
+ * the window's mask through rax and xmm `tmp`; then the store. Under a
+ * mask register (mreg below 32) the window's mask is ANDed with its
+ * elements' bits at vd's width dsew first (xmm5, xmm7).
  */
 static void vop_keep_store(const emu_ir_target_t *t, uint32_t vreg, uint32_t j,
-                           int nw, int old, int tmp)
+                           int nw, int old, int tmp, uint32_t mreg, uint32_t dsew)
 {
+    if (mreg < 32u) {
+        vop_elem_mask(t, mreg, dsew, j);
+    }
     x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * j));
     x86_sub64_rr(T0, T2);
     x86_movdqu_ld_reg(tmp, T0);
+    if (mreg < 32u) {
+        x86_sse_66(0xDBu, tmp, X86_XMM5);
+    }
     x86_sse_66(0xDBu, nw, tmp);  /* pand */
     x86_sse_66(0xDFu, tmp, old); /* pandn */
     x86_sse_66(0xEBu, nw, tmp);  /* por */
@@ -1829,6 +1839,9 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
     const bool sign_a = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCUS;
     const bool sign_b = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCSU;
+    /* under a mask: each of vd's elements, at its own width, by its bit */
+    const uint32_t mreg =
+        (in->op == (uint8_t)EMU_IR_VOPM) ? EMU_IR_VOP_MREG(in->imm) : 32u;
 
     ld_operand(T2, in->b);
     x86_shift_imm(T2, X86_SHL, sew + 1u); /* vl in vd's bytes */
@@ -1873,11 +1886,12 @@ static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         x86_movdqu_ld_cpu(X86_XMM4, t->vreg_offset(vd + 2u * r));
         x86_sse_66(add, X86_XMM2, X86_XMM4);
-        vop_keep_store(t, vd + 2u * r, 2u * r, X86_XMM2, X86_XMM4, X86_XMM0);
+        vop_keep_store(t, vd + 2u * r, 2u * r, X86_XMM2, X86_XMM4, X86_XMM0, mreg,
+                       sew + 1u);
         x86_movdqu_ld_cpu(X86_XMM4, t->vreg_offset(vd + 2u * r + 1u));
         x86_sse_66(add, X86_XMM3, X86_XMM4);
         vop_keep_store(t, vd + 2u * r + 1u, 2u * r + 1u, X86_XMM3, X86_XMM4,
-                       X86_XMM0);
+                       X86_XMM0, mreg, sew + 1u);
     }
 }
 
@@ -2041,10 +2055,20 @@ static void lower_vop_narrow(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
             x86_sse_66(packs, X86_XMM0, X86_XMM1);
         }
-        /* The mask of d's register r, then the keep and the store. */
+        /*
+         * The mask of d's register r -- under a mask register, only its
+         * set elements: xmm5 and xmm7 are dead here -- then the keep and
+         * the store. A masked-off clip element cannot set vxsat.
+         */
+        if (in->op == (uint8_t)EMU_IR_VOPM) {
+            vop_elem_mask(t, EMU_IR_VOP_MREG(in->imm), sew, r);
+        }
         x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
         x86_sub64_rr(T0, T2);
         x86_movdqu_ld_reg(X86_XMM3, T0);
+        if (in->op == (uint8_t)EMU_IR_VOPM) {
+            x86_sse_66(0xDBu, X86_XMM3, X86_XMM5);
+        }
         if (clip) {
             x86_sse_66(0xDFu, X86_XMM4, X86_XMM3); /* pandn: inexact & active */
             x86_pmovmskb(X86_EAX, X86_XMM4);
