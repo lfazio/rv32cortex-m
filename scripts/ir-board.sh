@@ -41,7 +41,8 @@ echo "ir-board: $n inputs from $CORPUS, from #$FIRST"
 # -O2 as the firmware's backend is built; the core's own sources, the
 # Thumb-2 backend and the IR interpreter, nothing of a platform.
 arm-none-eabi-gcc -mcpu=cortex-m7 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard \
-    -O2 -g -std=gnu11 -DEMU_IR_BOARD -ffunction-sections -fdata-sections \
+    -O2 -g -std=gnu11 -DEMU_IR_BOARD -DEMU_IR_VECTOR=1 \
+    -ffunction-sections -fdata-sections \
     -Wall -Wextra -I"$ROOT/include" -I"$OUT" \
     --specs=picolibc.specs -nostartfiles \
     -T "$ROOT/tests/ir-board/board.ld" -Wl,--gc-sections \

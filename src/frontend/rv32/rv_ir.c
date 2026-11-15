@@ -1274,6 +1274,64 @@ static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t *op,
     }
 }
 
+/*
+ * A unit-stride vector load or store, unmasked, of one field, to
+ * EMU_IR_VMEM: inline where vl fills the group and the bytes lie in the
+ * block's RAM window, rv_hart_vec through the helper where not -- the
+ * last trip of a strip-mined loop, an address outside, a fault. Its
+ * group is VLMAX elements of EEW, which this block knows from its
+ * vsetvli; a fractional EMUL, under 16 bytes, keeps the helper, as does
+ * a build where a misaligned element must trap.
+ */
+static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
+                       uint32_t pc)
+{
+#if !RV_MISALIGNED_OK
+    (void)cpu;
+    (void)b;
+    (void)insn;
+    (void)pc;
+    return false;
+#else
+    const bool store = (insn & 0x7Fu) == 0x27u;
+    const uint32_t width = (insn >> 12) & 7u;
+    const uint32_t vd = (insn >> 7) & 31u;
+    uint32_t eew;
+
+    if (h_vs_off(cpu) || g_vt == RV_IR_VT_UNKNOWN || !b->has_fast ||
+        (insn >> 25) != 1u /* nf, mew, mop 0, vm 1 */ ||
+        ((insn >> 20) & 31u) != 0u /* a plain unit-stride access */) {
+        return false;
+    }
+    switch (width) {
+    case 0u: eew = 0u; break;
+    case 5u: eew = 1u; break;
+    case 6u: eew = 2u; break;
+    default: return false; /* EEW 64: past ELEN */
+    }
+    const uint32_t bytes = rv_vec_vlmax(g_vt) << eew;
+    uint32_t glg;
+
+    switch (bytes) {
+    case 16u: glg = 0u; break;
+    case 32u: glg = 1u; break;
+    case 64u: glg = 2u; break;
+    case 128u: glg = 3u; break;
+    default: return false;
+    }
+    if (vd % (bytes / RV_VLENB) != 0u || !emu_ir_can_lower(EMU_IR_VMEM, 0u)) {
+        return false;
+    }
+    vs_mark(b);
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, pc,
+                      0u);
+    emu_ir_vmem(b, (uint8_t)RV_IR_HELPER_VEC, emu_ir_get(b, rv_rs1(insn)),
+                emu_ir_get(b, RV_IR_VL), emu_ir_const(b, insn),
+                EMU_IR_VMEM_IMM(vd, glg, eew, store));
+    return true;
+#endif
+}
+
 static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
 {
     const uint32_t f3 = (insn >> 12) & 7u;
@@ -1372,7 +1430,8 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
      */
     if (op == 0x57u ||
         ((op == 0x07u || op == 0x27u) && rv_vec_is_mem(insn))) {
-        if (op == 0x57u && rv_ir_vec(cpu, b, insn)) {
+        if (op == 0x57u ? rv_ir_vec(cpu, b, insn)
+                        : rv_ir_vmem(cpu, b, insn, pc)) {
             return true;
         }
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,

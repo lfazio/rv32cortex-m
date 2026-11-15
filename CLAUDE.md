@@ -401,7 +401,15 @@ Each has cost more than one session, and every one recurred.
   a "not kept" is about the code that was measured.
 - **A row that builds is not a row that runs** (`board_argv` passed
   `--jit` to a JIT-less build); a board change is not done until a board
-  row has linked (libatomic's `__atomic_load_8`).
+  row has linked (libatomic's `__atomic_load_8`) -- every board's, not
+  the one it was for: the Thumb-2 vector lowering put the N6's image 384
+  bytes past its ROM, with no vector unit there to use it
+  (`EMU_IR_VECTOR`).
+- **An index past a row is undefined even where the rows are adjacent**:
+  `v[vd][i]` for a group's i past 15 computed the wrong bytes at -O3 and
+  the right ones at -O2, in a test's reference; address the file as
+  bytes, `(uint8_t *)h->v`. A test that passes in one build type is about
+  that build type.
 - **An `#if` around a `default:` removes the default**, and an LTO object
   holds no code to disassemble (compile `-fno-lto`, assert the count).
 - **`-ffp-contract=fast` breaks error-free transforms** on hosts with an

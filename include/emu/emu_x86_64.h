@@ -178,6 +178,8 @@ void x86_movdqu_st_cpu(uint32_t disp, int xmm);
 void x86_movdqu_ld_reg(int xmm, int base);
 void x86_sse_66(uint8_t op, int dst, int src);
 void x86_sub64_rr(int dst, int src);
+void x86_movdqu_store(int base, uint8_t disp, int xmm);
+void x86_add64_rr(int dst, int src);
 void x86_imul_imm32(int r, uint32_t imm);
 void x86_shr64_imm(int r, uint8_t n);
 void x86_ss_op(uint8_t op2, int dst, int src);

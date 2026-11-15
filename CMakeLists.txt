@@ -844,6 +844,18 @@ target_compile_definitions(emucore PUBLIC
     EMU_HAVE_VIRTIO=$<BOOL:${EMU_VIRTIO_BUILT}>
     EMU_JIT_LOOP_CAP=${EMU_JIT_LOOP_CAP}u)
 
+# The IR's operations on guest vector registers (EMU_IR_VOP, EMU_IR_VMEM)
+# and their lowerings: on every host build, where the fuzzers ask for
+# them, and on a board only with a frontend that emits them -- the N6's
+# image had 384 bytes too few for the Thumb-2 code with no vector unit
+# to use it.
+if(EMU_PLATFORM STREQUAL "host" OR RV32_EXT_ZVE32X)
+    set(_emu_ir_vector 1)
+else()
+    set(_emu_ir_vector 0)
+endif()
+target_compile_definitions(emucore PUBLIC EMU_IR_VECTOR=${_emu_ir_vector})
+
 target_include_directories(emucore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 

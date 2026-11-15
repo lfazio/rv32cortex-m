@@ -154,6 +154,21 @@ this round's vector work (03044e9: vector instructions declined, a byte
 loop an element) it was 441.55, slower than the interpreter's 424.22;
 the interpreter is 226.46 now.
 
+### Vector loads and stores
+
+`EMU_IR_VMEM`, as on x86-64: vl's bytes against the group's (`CMP`
+r3), the window offset against its size less the group's, the guard
+byte for a store, then a word at a time through r12 -- unaligned, which
+the M7 reads and writes for normal memory -- and the helper, with r0
+the cpu and then the instruction, the address and vl, wherever not.
+Listed in `bisect_allows` from the first: vecbench on the F746 under the
+JIT 134.22 to 74.29, the code it translated 36,280 bytes to 47,424 --
+an m8 access is 32 word moves, unrolled. The corpus replay compared
+4,938 blocks with none different; the window check 4 bytes loose, 21
+different, every one a VMEM block. With the vector unit off the RV32
+CoreMark firmware is unchanged (10.75 both sides, two layouts), and the
+code is not built (`EMU_IR_VECTOR`).
+
 ## Calling convention
 
 Cortex-M selects instruction set with the low bit of a branch target, so

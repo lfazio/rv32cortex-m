@@ -4953,6 +4953,29 @@ session, and every one of them recurred:
   reads it whole**: `build-matrix-table` requires --list to reach the
   last row.
 
+- **An index past a row is undefined even where the next row is the
+  memory you meant.** The vector registers are `uint8_t v[32][16]`, and
+  a group of eight runs 128 bytes from its first. The unit test for the
+  inline vector load passed in the RelWithDebInfo build and failed four
+  cases in the Release one -- every case of more than one register --
+  while the lowering was right: the test's own reference helper wrote
+  `m->v[vd][i]` with i up to 127, and at -O3 GCC took the row's bound as
+  a fact. rv_vec.c's element pointer was `&h->v[0][0] + n`, the same
+  thing said differently, and vmv<n>r copied from `h->v[vd]` across rows.
+  All go through `(uint8_t *)h->v` now, which reaches the whole object
+  as bytes. **A test that passes in one build type has said something
+  about that build type; run the suite where -O3 is.**
+
+- **A board change is a change to every board.** The Thumb-2 lowering
+  of the vector operations went into every Thumb-2 firmware, the vector
+  unit or not, and the N6 -- whose image the boot ROM loads, with a few
+  hundred bytes to spare since the speed libc was declined there --
+  stopped linking, 384 bytes over. Found because the N6 rows were built
+  before the commit, not by any test of the work. The operations, their
+  reference and both lowerings are under `EMU_IR_VECTOR` now: on for a
+  host, on a board only with a vector unit. **Build the boards a change
+  does not mean to touch.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

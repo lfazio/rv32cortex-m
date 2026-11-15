@@ -459,6 +459,26 @@ void x86_sse_66(uint8_t op, int dst, int src)
     sse_rr(0x66u, op, (unsigned)dst, (unsigned)src);
 }
 
+/* movdqu [base + disp8], xmm: F3 0F 7F /r, mod 01; base not rsp or r12. */
+void x86_movdqu_store(int base, uint8_t disp, int xmm)
+{
+    emu_jit_emit8(0xF3);
+    emit_rex(0u, (unsigned)xmm, (unsigned)base);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0x7F);
+    emu_jit_emit8((uint8_t)(0x40u | (((unsigned)xmm & 7u) << 3) |
+                            ((unsigned)base & 7u)));
+    emu_jit_emit8(disp);
+}
+
+/* add r64, r64: REX.W 01 /r. */
+void x86_add64_rr(int dst, int src)
+{
+    emit_rex(1u, (unsigned)src, (unsigned)dst);
+    emu_jit_emit8(0x01);
+    modrm_rr(src, dst);
+}
+
 /* sub r64, r64: REX.W 29 /r. */
 void x86_sub64_rr(int dst, int src)
 {

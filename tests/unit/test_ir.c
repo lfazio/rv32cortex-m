@@ -1377,6 +1377,7 @@ static void test_lower_crypto_ops(void)
  * silent drop it ends at the block's fall-through address with the
  * marker written, having run straight past a branch that was taken.
  */
+#if EMU_IR_VECTOR
 /*
  * EMU_IR_VOP, lowered and run, against two readings: emu_ir_vop_ref --
  * the IR interpreter's -- and the one below, element by element through
@@ -1430,9 +1431,10 @@ static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
                      uint32_t scalar, uint32_t vd, uint32_t vs2, uint32_t vs1,
                      uint32_t vl)
 {
-    const uint8_t *const a = c->v[vs2];
-    const uint8_t *const b = c->v[vs1];
-    uint8_t *const d = c->v[vd];
+    /* The register file as bytes: a group runs past its first row. */
+    const uint8_t *const a = (const uint8_t *)c->v + vs2 * EMU_IR_VREG_BYTES;
+    const uint8_t *const b = (const uint8_t *)c->v + vs1 * EMU_IR_VREG_BYTES;
+    uint8_t *const d = (uint8_t *)c->v + vd * EMU_IR_VREG_BYTES;
     const uint64_t m = (w == 4u) ? 0xFFFFFFFFull : ((1ull << (8u * w)) - 1u);
 
     for (uint32_t i = 0; i < vl; i++) {
@@ -1539,13 +1541,16 @@ static void test_lower_vop(void)
                             ((uint8_t *)got.v)[i] = x;
                         }
                         for (uint32_t i = 0; i < nregs * EMU_IR_VREG_BYTES; i++) {
-                            got.v[vd][i] = 0xA5u; /* no result is all A5 */
+                            ((uint8_t *)got.v)[vd * EMU_IR_VREG_BYTES + i] =
+                                0xA5u; /* no result is all A5 */
                         }
                         want = got;
                         want.pc = 0x1000u; /* the exit's */
                         ref = want;
                         vop_mine(&want, op, w, vx != 0u, scalar, vd, vs2, vs1, vl);
-                        emu_ir_vop_ref(ref.v[vd], ref.v[vs2], ref.v[vs1], scalar,
+                        emu_ir_vop_ref((uint8_t *)ref.v + vd * EMU_IR_VREG_BYTES,
+                                       (uint8_t *)ref.v + vs2 * EMU_IR_VREG_BYTES,
+                                       (uint8_t *)ref.v + vs1 * EMU_IR_VREG_BYTES, scalar,
                                        aux, nregs, vl);
 
                         emu_ir_reset(&g_b);
@@ -1585,6 +1590,184 @@ static void test_lower_vop(void)
     CHECK(lowerable >= 36u);
     CHECK_EQ(ran, lowerable * 4u * 8u);
 }
+
+/*
+ * EMU_IR_VMEM, lowered and run: the inline copy where vl fills the group
+ * and every byte is in the window, the helper everywhere else -- a short
+ * vl, an address below the window, one whose group ends one byte past
+ * it, a store while the reservation guard is set -- and the helper's
+ * calls counted, so a case that should have been inline and was not
+ * fails as surely as a wrong byte. The helper here is the reference: a
+ * byte copy of vl elements, from the cpu's own record of the layout.
+ */
+typedef struct {
+    uint32_t pc;
+    uint32_t vl_seen;
+    uint8_t guard;
+    uint8_t pad[7];
+    uint8_t v[32][EMU_IR_VREG_BYTES];
+} vmem_cpu_t;
+
+static uint8_t g_vmem_ram[512];
+static uint32_t g_vmem_calls;
+#define VMEM_BASE 0x1000u
+
+/* c is the layout: vd, bytes of the group, element bytes, store. */
+static uint32_t vmem_helper(emu_cpu_t *cpu, uint32_t c, uint32_t addr,
+                            uint32_t vl)
+{
+    vmem_cpu_t *const m = (vmem_cpu_t *)(void *)cpu;
+    /* As bytes: m->v[vd][i] past 15 is undefined, and -O3 used it. */
+    uint8_t *const reg = (uint8_t *)m->v + (c & 31u) * EMU_IR_VREG_BYTES;
+    const uint32_t eb = (c >> 8) & 0xFFu;
+    const bool store = (c & 0x10000u) != 0u;
+
+    g_vmem_calls++;
+    m->vl_seen = vl;
+    for (uint32_t i = 0; i < vl * eb; i++) {
+        const uint32_t a = addr + i - VMEM_BASE;
+
+        if (a >= sizeof(g_vmem_ram)) {
+            return 1u; /* a fault: the block stops */
+        }
+        if (store) {
+            g_vmem_ram[a] = reg[i];
+        } else {
+            reg[i] = g_vmem_ram[a];
+        }
+    }
+    return 0u;
+}
+
+static const void *const k_vmem_helpers[] = {(const void *)vmem_helper};
+
+static uint32_t vmem_vreg_offset(uint32_t n)
+{
+    return (uint32_t)offsetof(vmem_cpu_t, v) + n * EMU_IR_VREG_BYTES;
+}
+
+static const emu_ir_target_t g_vmem_target = {
+    .reg_offset = vop_reg_offset,
+    .vreg_offset = vmem_vreg_offset,
+    .pc_offset = (uint32_t)offsetof(vmem_cpu_t, pc),
+    .helpers = k_vmem_helpers,
+    .helper_count = 1u,
+};
+
+static bool vmem_run(vmem_cpu_t *c, uint32_t addr, uint32_t vl, uint32_t vd,
+                     uint32_t glg, uint32_t eew, bool store, bool guard_set)
+{
+    static uint8_t *exec;
+
+    if (exec == NULL) {
+        void *const p =
+            mmap(NULL, IR_TEST_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            return false;
+        }
+        exec = (uint8_t *)p;
+    }
+    emu_ir_reset(&g_b);
+    g_b.has_fast = true;
+    g_b.fast.base = VMEM_BASE;
+    g_b.fast.size = sizeof(g_vmem_ram);
+    g_b.fast.host = g_vmem_ram;
+    g_b.fast.store_guard_offset = (uint32_t)offsetof(vmem_cpu_t, guard);
+    c->guard = guard_set ? 1u : 0u;
+
+    const uint32_t layout = vd | ((1u << eew) << 8) | (store ? 0x10000u : 0u);
+
+    emu_ir_vmem(&g_b, 0u, emu_ir_const(&g_b, addr), emu_ir_const(&g_b, vl),
+                emu_ir_const(&g_b, layout),
+                EMU_IR_VMEM_IMM(vd, glg, eew, store));
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      0x2000u, 0u);
+    emu_ir_optimise(&g_b, &g_vmem_target, EMU_IR_F_ALL, NULL);
+    emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
+    if (!emu_ir_lower(&g_b, &g_vmem_target) || emu_jit_overflowed()) {
+        return false;
+    }
+    ((uint32_t (*)(void *))(void *)exec)(c);
+    return true;
+}
+
+static void test_lower_vmem(void)
+{
+    /* addr, vl, glg, eew, store, guard, inline? */
+    static const struct {
+        uint32_t addr, vl, glg, eew;
+        bool store, guard, fast;
+    } k[] = {
+        {VMEM_BASE + 3u, 16u, 0u, 0u, false, false, true},   /* e8 m1, odd */
+        {VMEM_BASE + 64u, 8u, 1u, 2u, false, false, true},   /* e32 m2 */
+        {VMEM_BASE + 0u, 64u, 3u, 1u, false, false, true},   /* e16 m8 */
+        {VMEM_BASE + 384u, 32u, 3u, 2u, false, false, true}, /* ends at the end */
+        {VMEM_BASE + 385u, 32u, 3u, 2u, false, false, false}, /* a byte past */
+        {VMEM_BASE - 16u, 4u, 0u, 2u, false, false, false},   /* below: faults */
+        {VMEM_BASE + 32u, 7u, 1u, 2u, false, false, false},  /* vl short */
+        {VMEM_BASE + 32u, 0u, 0u, 0u, false, false, false},  /* vl 0 */
+        {VMEM_BASE + 100u, 32u, 2u, 1u, true, false, true},  /* store e16 m4 */
+        {VMEM_BASE + 101u, 4u, 0u, 2u, true, false, true},   /* store, odd */
+        {VMEM_BASE + 101u, 4u, 0u, 2u, true, true, false},   /* the guard */
+        {VMEM_BASE + 200u, 3u, 0u, 2u, true, false, false},  /* store short */
+    };
+    unsigned bad = 0u;
+
+    for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        vmem_cpu_t got;
+        uint8_t ram_want[sizeof(g_vmem_ram)];
+        vmem_cpu_t want;
+
+        for (uint32_t j = 0; j < sizeof(g_vmem_ram); j++) {
+            g_vmem_ram[j] = (uint8_t)(j * 7u + 1u);
+        }
+        memset(&got, 0, sizeof(got));
+        for (uint32_t j = 0; j < sizeof(got.v); j++) {
+            ((uint8_t *)got.v)[j] = (uint8_t)(0xA0u ^ j);
+        }
+        const uint32_t vd = 8u;
+
+        /* What the access should leave: the reference helper, on copies. */
+        want = got;
+        memcpy(ram_want, g_vmem_ram, sizeof(ram_want));
+        {
+            uint8_t save[sizeof(g_vmem_ram)];
+            const uint32_t layout =
+                vd | ((1u << k[i].eew) << 8) | (k[i].store ? 0x10000u : 0u);
+
+            memcpy(save, g_vmem_ram, sizeof(save));
+            (void)vmem_helper((emu_cpu_t *)(void *)&want, layout, k[i].addr,
+                              k[i].vl);
+            memcpy(ram_want, g_vmem_ram, sizeof(ram_want));
+            memcpy(g_vmem_ram, save, sizeof(save));
+        }
+        g_vmem_calls = 0u;
+        if (!vmem_run(&got, k[i].addr, k[i].vl, vd, k[i].glg, k[i].eew,
+                      k[i].store, k[i].guard)) {
+            bad++;
+            continue;
+        }
+        want.pc = got.pc; /* the exit's, or the trap's untouched */
+        want.vl_seen = got.vl_seen;
+        want.guard = got.guard;
+        const bool path_ok = (g_vmem_calls == 0u) == k[i].fast;
+
+        if (memcmp(got.v, want.v, sizeof(got.v)) != 0 ||
+            memcmp(g_vmem_ram, ram_want, sizeof(ram_want)) != 0 || !path_ok) {
+            if (bad++ < 4u) {
+                printf("  vmem case %u: %s%s%s\n", i,
+                       memcmp(got.v, want.v, sizeof(got.v)) ? "registers " : "",
+                       memcmp(g_vmem_ram, ram_want, sizeof(ram_want)) ? "ram "
+                                                                       : "",
+                       path_ok ? "" : "path");
+            }
+        }
+    }
+    CHECK_EQ(bad, 0u);
+}
+
+#endif /* EMU_IR_VECTOR */
 
 static void test_lower_more_exits_than_the_table(void)
 {
@@ -3292,7 +3475,10 @@ void test_ir(void)
     test_lower_add();
     test_unkept_counted();
     test_lower_crypto_ops();
+#if EMU_IR_VECTOR
     test_lower_vop();
+    test_lower_vmem();
+#endif
     test_lower_zero_register();
     test_lower_more_exits_than_the_table();
     test_zero_register_write_then_read();

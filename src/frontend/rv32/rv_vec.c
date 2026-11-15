@@ -158,16 +158,28 @@ static rv_exc_t vsetvl(rv_hart_t *h, uint32_t insn, uint32_t *tval)
  * little-endian -- which is the host's order on every host this runs on
  * (emu_bus.h), so an element is one load. A byte loop was most of what
  * a vector instruction cost.
+ *
+ * **Through the register file as one array of bytes**, never v[vr][k]
+ * with k past 15: a group's elements run on into the next registers,
+ * and an index past a row is undefined, which -O3 used -- the unit test's
+ * reference helper, written that way, computed the wrong group in the
+ * Release build and the right one at -O2. Any object may be read as
+ * bytes, so (uint8_t *)h->v reaches all 512.
  */
+static uint8_t *vfile(rv_hart_t *h)
+{
+    return (uint8_t *)h->v;
+}
+
 static uint8_t *el_ptr(rv_hart_t *h, uint32_t vr, uint32_t i, uint32_t eb)
 {
-    return &h->v[0][0] + vr * RV_VLENB + i * eb;
+    return vfile(h) + vr * RV_VLENB + i * eb;
 }
 
 static uint32_t el_get(const rv_hart_t *h, uint32_t vr, uint32_t i,
                        uint32_t eb)
 {
-    const uint8_t *p = &h->v[0][0] + vr * RV_VLENB + i * eb;
+    const uint8_t *p = (const uint8_t *)h->v + vr * RV_VLENB + i * eb;
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     if (eb == 1u) {
@@ -1076,7 +1088,8 @@ static rv_exc_t vmvnr(rv_hart_t *h, const vop_t *o, uint32_t insn,
         return illegal(insn, tval);
     }
     if (o->vd != o->vs2) {
-        memcpy(h->v[o->vd], h->v[o->vs2], n * RV_VLENB);
+        memcpy(vfile(h) + o->vd * RV_VLENB, vfile(h) + o->vs2 * RV_VLENB,
+               n * RV_VLENB);
     }
     return RV_EXC_NONE;
 }

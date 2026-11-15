@@ -91,6 +91,17 @@ extern "C" {
 /* Guest vector registers: EMU_IR_VOP                                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Whether this build has EMU_IR_VOP and EMU_IR_VMEM's implementations --
+ * the reference, the interpreter's cases, each backend's lowering. Set
+ * by CMake: on for a host, on a board only with a vector unit. Without
+ * them both backends answer emu_ir_can_lower no, and a frontend keeps its
+ * helper, which no frontend then has a vector instruction for.
+ */
+#ifndef EMU_IR_VECTOR
+#define EMU_IR_VECTOR 0
+#endif
+
 /* Bytes a guest vector register holds: RISC-V's VLEN 128. */
 #define EMU_IR_VREG_BYTES 16u
 
@@ -125,6 +136,14 @@ extern "C" {
 #define EMU_IR_VOP_VS2(imm) (((uint32_t)(imm) >> 5) & 31u)
 #define EMU_IR_VOP_VS1(imm) (((uint32_t)(imm) >> 10) & 31u)
 #define EMU_IR_VOP_NREGS(imm) (1u << (((uint32_t)(imm) >> 15) & 3u))
+
+#define EMU_IR_VMEM_IMM(vd, glg, eew, store)                                   \
+    ((uint32_t)(vd) | ((uint32_t)(glg) << 5) | ((uint32_t)(eew) << 7) |        \
+     ((store) ? 0x200u : 0u))
+#define EMU_IR_VMEM_VD(imm) ((uint32_t)(imm) & 31u)
+#define EMU_IR_VMEM_BYTES(imm) (16u << (((uint32_t)(imm) >> 5) & 3u))
+#define EMU_IR_VMEM_EEW(imm) (((uint32_t)(imm) >> 7) & 3u) /* log2 bytes */
+#define EMU_IR_VMEM_STORE(imm) (((uint32_t)(imm) & 0x200u) != 0u)
 
 /*
  * EMU_IR_VOP in C: the group at vd, from the groups at vs2 and vs1 (vs1
@@ -555,6 +574,31 @@ typedef enum emu_ir_op {
      * emu_ir_vop_ref is its meaning, in C.
      */
     EMU_IR_VOP,
+
+    /*
+     * A unit-stride vector load or store that fills or empties a whole
+     * register group, inline where it can be, the frontend's helper
+     * where it cannot.
+     *
+     *   imm  EMU_IR_VMEM_IMM(vd, glg, eew, store): the group's first
+     *        register, log2 of its bytes less 4 (16 to 128), log2 of
+     *        the element's bytes, and the direction
+     *   a    the guest address
+     *   b    vl
+     *   c    the helper's first argument (the instruction, for RV32)
+     *   aux  the helper, helpers[aux]
+     *
+     * **When vl's bytes are the whole group and every byte of it lies in
+     * the block's RAM window** (b->has_fast; for a store, the store
+     * guard clear), the group is copied between that RAM and the
+     * registers. Otherwise -- a shorter vl, an address outside, no
+     * window -- r = helpers[aux](cpu, c, a, vl), and a non-zero r is a
+     * trap, as EMU_IR_HELPER_TRAP's: the block stops there. The two are
+     * the same access, so the helper is the meaning; the IR interpreter
+     * always calls it. A guest register, flag or memory may be touched
+     * by the helper, so every pass treats this one as it treats a helper.
+     */
+    EMU_IR_VMEM,
 
     EMU_IR_OP_COUNT
 } emu_ir_op_t;
@@ -1017,6 +1061,10 @@ uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
  */
 uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
                       uint16_t a, uint16_t bb, uint16_t c);
+
+/* EMU_IR_VMEM, which has three operands and no result (emu_ir.h above). */
+void emu_ir_vmem(emu_ir_block_t *b, uint8_t helper, uint16_t addr, uint16_t vl,
+                 uint16_t arg, uint32_t imm);
 
 /*
  * A LOAD or STORE that happens only when `pred` is non-zero; `pred` of

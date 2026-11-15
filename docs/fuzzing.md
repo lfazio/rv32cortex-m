@@ -436,6 +436,15 @@ at a time. On the host it finds the SSE tail mask a byte late at input
 different**, in 119 s; with Thumb-2's mask read a byte off, 274
 different, the VOP blocks among them named in the dump.
 
+**And `EMU_IR_VMEM`**: a whole group or part of one, in RAM, at its end
+give or take four bytes, or anywhere, through a reference helper that
+moves vl elements a byte at a time by the target's own accessors -- and
+leaves nothing else a comparison can see: the first version logged its
+call, and the inline copy, which makes none, was reported as a
+difference. On the host 686,611 blocks compared clean in five minutes,
+and the window check 4 bytes loose was found at input #1895; on the
+board 4,938 compared clean, and the same mutant gave 21 differences.
+
 
 ## Translation and protection: RV32
 

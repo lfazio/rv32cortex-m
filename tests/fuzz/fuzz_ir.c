@@ -255,10 +255,48 @@ static uint32_t h_trap(emu_cpu_t *cpu, uint32_t a, uint32_t b)
     return 0u;
 }
 
+/*
+ * EMU_IR_VMEM's helper and its reference: vl elements of the group at
+ * vd, a byte at a time through the target's own accessors -- so a device,
+ * the image or a fault is whatever a byte load or store there is. c is
+ * the layout: vd, the element's bytes in bits 8-15, a store in bit 16.
+ * A fault stops it where it was, as a frontend's leaves the elements
+ * before the one that faulted done.
+ */
+static uint32_t h_vmem(emu_cpu_t *cpu, uint32_t c, uint32_t addr, uint32_t vl)
+{
+    fcpu_t *const f = (fcpu_t *)(void *)cpu;
+    uint8_t *const reg = (uint8_t *)f->v + (c & 31u) * EMU_IR_VREG_BYTES;
+    const uint32_t eb = (c >> 8) & 0xFFu;
+    const bool store = (c & 0x10000u) != 0u;
+
+    /*
+     * Not logged: the inline copy is this access without the call, so
+     * the call itself must leave nothing a comparison can see.
+     */
+    g_st.helpers++;
+    for (uint32_t i = 0; i < vl * eb; i++) {
+        uint32_t v = reg[i];
+
+        if (store) {
+            if (f_store(cpu, addr + i, EMU_IR_MEM_AUX(1u, 0u), v) != 0u) {
+                return 1u;
+            }
+        } else {
+            if (f_load(cpu, addr + i, EMU_IR_MEM_AUX(1u, 0u), &v) != 0u) {
+                return 1u;
+            }
+            reg[i] = (uint8_t)v;
+        }
+    }
+    return 0u;
+}
+
 static const void *const k_helpers[] = {
     (const void *)h_mix, (const void *)h_peek, (const void *)h_poke,
-    (const void *)h_trap};
+    (const void *)h_trap, (const void *)h_vmem};
 #define H_TRAP 3u
+#define H_VMEM 4u
 
 static void f_fp_flags(emu_cpu_t *cpu, uint32_t flags)
 {
@@ -297,7 +335,7 @@ static uint32_t off_vreg(uint32_t n)
         .reg_offset = (ro), .flags_offset = offsetof(fcpu_t, flags),          \
         .flag_bit = {(z), (s), (v), (cy)}, .reg_is_zero = (rz),                \
         .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
-        .helper_count = 4u, .load = f_load, .store = f_store,                  \
+        .helper_count = 5u, .load = f_load, .store = f_store,                  \
         .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
         .vreg_offset = off_vreg,                                               \
     }
@@ -817,6 +855,35 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
     case 16: /* the pc, as a value */
         (void)E(EMU_IR_SETPC, 0u, val(in), EMU_IR_NO_TEMP, 0u, 0u);
         break;
+    case 18: { /* a vector access of a whole group, or of part of one */
+        const uint32_t glg = pick(in, 4u);
+        const uint32_t eew = pick(in, 3u);
+        const bool store = (byte(in) & 1u) != 0u;
+        const uint32_t bytes = 16u << glg;
+        const uint32_t vd = pick(in, 32u >> glg) << glg;
+        const uint32_t full = bytes >> eew;
+        /* vl mostly the whole group, the inline case; else shorter */
+        const uint32_t vl = (byte(in) < 176u) ? full : pick(in, full + 1u);
+        const uint32_t sel = byte(in);
+        uint16_t a;
+
+        if (!emu_ir_can_lower(EMU_IR_VMEM, 0u)) {
+            break;
+        }
+        if (sel < 96u) { /* in RAM, anywhere */
+            a = emu_ir_const(&g_built, RAM_BASE + pick(in, PAGE));
+        } else if (sel < 192u) { /* at RAM's end, give or take */
+            a = emu_ir_const(&g_built, RAM_BASE + PAGE - bytes +
+                                           (uint32_t)((int32_t)pick(in, 9u) - 4));
+        } else {
+            a = val(in);
+        }
+        emu_ir_vmem(&g_built, (uint8_t)H_VMEM, a, emu_ir_const(&g_built, vl),
+                    emu_ir_const(&g_built, vd | ((1u << eew) << 8) |
+                                               (store ? 0x10000u : 0u)),
+                    EMU_IR_VMEM_IMM(vd, glg, eew, store));
+        break;
+    }
     case 17: { /* the guest's vector registers, within the op's contract */
         const uint32_t vop = pick(in, EMU_IR_V_COUNT);
         const uint32_t sew = pick(in, 3u);
@@ -1067,7 +1134,7 @@ static const char *op_name(uint8_t op)
         N(FMUL),    N(FDIV),      N(FSQRT),     N(FMA),       N(FMIN),
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
-        N(EXIT),    N(EXIT_IF),   N(VOP)};
+        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VMEM)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }

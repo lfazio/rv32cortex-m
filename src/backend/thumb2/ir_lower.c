@@ -1225,6 +1225,7 @@ static bool bisect_allows(uint8_t op)
      * time vecbench ran with EMU_IR_VOP on this host.
      */
     case EMU_IR_VOP:
+    case EMU_IR_VMEM:
         return T2_BISECT >= 11;
     default:
         return false;
@@ -1251,6 +1252,7 @@ static bool bisect_allows(uint8_t op)
  * VCMPE has to be told apart from VCMP by which NaN raises invalid --
  * and none of it can be tested except by flashing a board.
  */
+#if EMU_IR_VECTOR
 /*
  * Which EMU_IR_VOP forms this host lowers, a word of a register at a
  * time: at 32 bits everything but nothing more than the ALU has -- the
@@ -1292,6 +1294,8 @@ static bool vop_lowerable(uint8_t aux)
         return false;
     }
 }
+
+#endif /* EMU_IR_VECTOR */
 
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
@@ -1418,8 +1422,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
      * a register: listed, because the default below promises whatever it
      * is not told.
      */
+#if EMU_IR_VECTOR
     case EMU_IR_VOP:
         return vop_lowerable(aux);
+    case EMU_IR_VMEM: /* word moves; without a window, the helper alone */
+        return true;
+#else
+    case EMU_IR_VOP:
+    case EMU_IR_VMEM:
+        return false;
+#endif
 
     default:
         return true;
@@ -1669,6 +1681,7 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     st_slot(rd, in->dst);
 }
 
+#if EMU_IR_VECTOR
 /*
  * 128 bytes of ones then 128 of zeros: the word at window + 128 - k is the
  * mask of a word's first k bytes, none for k <= 0 and all for k >= 4, for
@@ -1846,6 +1859,104 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
     }
 }
+
+/*
+ * EMU_IR_VMEM: the inline copy when the block has a RAM window that can
+ * hold the group -- vl's bytes against the group's, the offset in the
+ * window against its size less the group's, the reservation guard for
+ * a store -- a word at a time through r12, which the M7 does unaligned
+ * for normal memory; anything else the helper, called as
+ * EMU_IR_HELPER_TRAP's are with r0 the cpu, then c, the address and vl.
+ */
+static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t bytes = EMU_IR_VMEM_BYTES(in->imm);
+    const uint32_t eew = EMU_IR_VMEM_EEW(in->imm);
+    const bool store = EMU_IR_VMEM_STORE(in->imm);
+    const uint32_t vd = EMU_IR_VMEM_VD(in->imm);
+    uint8_t *slow[3];
+    uint32_t ns = 0u;
+    uint8_t *done = NULL;
+    uint16_t enc;
+
+    if (g_has_fast && g_fast.size >= bytes) {
+        ld_operand(T2_R3, in->b);
+        if (eew != 0u) {
+            t2_shift_imm(T2_LSL, T2_R3, T2_R3, eew); /* vl in bytes */
+        }
+        (void)t2_cmp_imm8(T2_R3, bytes);
+        slow[ns++] = t2_bcond_forward(0x1u); /* NE: not the whole group */
+
+        const uint32_t ra = use_reg(in->a, T2_R1);
+
+        if (t2_expand_imm(g_fast.base, &enc)) {
+            t2_sub_imm(T2_R2, ra, enc);
+        } else {
+            emit_pooled(T2_R12, g_fast.base);
+            t2_sub(T2_R2, ra, T2_R12);
+        }
+        if (t2_expand_imm(g_fast.size - bytes, &enc)) {
+            t2_cmp_imm(T2_R2, enc);
+        } else {
+            emit_pooled(T2_R12, g_fast.size - bytes);
+            t2_cmp(T2_R2, T2_R12);
+        }
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: past the window */
+        if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+            t2_ldrb_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
+            (void)t2_cmp_imm8(T2_R0, 0u);
+            slow[ns++] = t2_bcond_forward(0x1u); /* NE: a reservation */
+        }
+        emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+        t2_add(T2_R12, T2_R12, T2_R2);
+        for (uint32_t k = 0; k < bytes / 4u; k++) {
+            const uint32_t off =
+                t->vreg_offset(vd + k / 4u) + 4u * (k % 4u);
+
+            if (store) {
+                t2_ldr_imm(T2_R0, T2_CPU, off);
+                t2_str_imm(T2_R0, T2_R12, 4u * k);
+            } else {
+                t2_ldr_imm(T2_R0, T2_R12, 4u * k);
+                t2_str_imm(T2_R0, T2_CPU, off);
+            }
+        }
+        done = t2_b_forward();
+        for (uint32_t i = 0; i < ns; i++) {
+            patch_branch(slow[i], emu_jit_here(), true);
+        }
+    }
+    if (g_has_fp) {
+        emit_fp_harvest(t, true);
+    }
+
+    const uint32_t rb = use_reg(in->b, T2_R3);
+
+    if (rb != T2_R3) {
+        t2_mov(T2_R3, rb);
+    }
+
+    const uint32_t ra = use_reg(in->a, T2_R2);
+
+    if (ra != T2_R2) {
+        t2_mov(T2_R2, ra);
+    }
+
+    const uint32_t rc = use_reg(in->c, T2_R1);
+
+    if (rc != T2_R1) {
+        t2_mov(T2_R1, rc);
+    }
+    t2_mov(T2_R0, T2_CPU);
+    t2_call(t->helpers[in->aux]);
+    (void)t2_cmp_imm8(T2_R0, 0u);
+    note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+    if (done != NULL) {
+        patch_branch(done, emu_jit_here(), false);
+    }
+}
+
+#endif /* EMU_IR_VECTOR */
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
@@ -2392,12 +2503,22 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+#if EMU_IR_VECTOR
     case EMU_IR_VOP:
         if (!vop_lowerable(in->aux) || t->vreg_offset == NULL) {
             return false;
         }
         lower_vop(in, t);
         break;
+
+    case EMU_IR_VMEM:
+        if (t->vreg_offset == NULL || t->helpers == NULL ||
+            in->aux >= t->helper_count) {
+            return false;
+        }
+        lower_vmem(in, t);
+        break;
+#endif
 
     case EMU_IR_EXIT_IF: {
         const uint32_t ra = use_reg(in->a, T2_R0);

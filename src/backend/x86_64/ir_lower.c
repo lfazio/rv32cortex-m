@@ -1268,6 +1268,7 @@ static unsigned host_crypto(void)
     return (unsigned)known;
 }
 
+#if EMU_IR_VECTOR
 /*
  * The SIMD this CPU has for EMU_IR_VOP, asked once per thread: SSE2,
  * which every x86-64 has, and SSE4.1 for the 32-bit multiply and the
@@ -1341,11 +1342,21 @@ static bool vop_lowerable(uint8_t aux)
     }
 }
 
+#endif /* EMU_IR_VECTOR */
+
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
     switch (op) {
+#if EMU_IR_VECTOR
     case EMU_IR_VOP:
         return vop_lowerable(aux);
+    case EMU_IR_VMEM: /* SSE2 moves; without a window, the helper alone */
+        return (host_simd() & HOST_SIMD_SSE2) != 0u;
+#else
+    case EMU_IR_VOP:
+    case EMU_IR_VMEM:
+        return false;
+#endif
     /*
      * The immediate ALU forms, which pass_fuse asks about before
      * rewriting a register operation into one. Answering the FP class
@@ -1502,6 +1513,7 @@ static void sm4_affine(uint8_t off)
     x86_pxor(X86_XMM0, X86_XMM4);
 }
 
+#if EMU_IR_VECTOR
 /*
  * 128 bytes of ones then 128 of zeros: sixteen bytes from 128 - k on
  * are the mask of a register's first k bytes -- none for k <= 0, all for
@@ -1620,6 +1632,76 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_movdqu_st_cpu(od, X86_XMM0);
     }
 }
+
+/*
+ * EMU_IR_VMEM. The inline copy when the block has a RAM window that can
+ * hold the group: vl's bytes against the group's, the address's offset
+ * in the window against its size less the group's -- one unsigned
+ * compare for both ends -- and for a store the reservation guard; then
+ * 16 bytes at a time between [rax] and the registers. Anything else
+ * falls through to the helper, called as EMU_IR_HELPER_TRAP's are:
+ * rdi the cpu, then c, the address and vl.
+ */
+static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t bytes = EMU_IR_VMEM_BYTES(in->imm);
+    const uint32_t eew = EMU_IR_VMEM_EEW(in->imm);
+    const bool store = EMU_IR_VMEM_STORE(in->imm);
+    const uint32_t vd = EMU_IR_VMEM_VD(in->imm);
+    uint8_t *slow[3];
+    uint32_t ns = 0u;
+    uint8_t *done = NULL;
+
+    if (g_has_fast && g_fast.size >= bytes) {
+        ld_operand(T2, in->b);
+        if (eew != 0u) {
+            x86_shift_imm(T2, X86_SHL, eew);
+        }
+        x86_alu_imm32(7u, T2, bytes); /* cmp: the whole group? */
+        slow[ns++] = x86_jcc32(X86_CC_NE);
+        ld_operand(T1, in->a);
+        x86_mov_rr(T2, T1);
+        x86_alu_imm32(5u, T2, g_fast.base); /* sub: the offset */
+        x86_alu_imm32(7u, T2, g_fast.size - bytes);
+        slow[ns++] = x86_jcc32(X86_CC_A);
+        if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+            x86_cmp8_cpu_imm(g_fast.store_guard_offset, 0u);
+            slow[ns++] = x86_jcc32(X86_CC_NE);
+        }
+        x86_mov_imm64(T0, (uint64_t)(uintptr_t)g_fast.host);
+        x86_add64_rr(T0, T2);
+        for (uint32_t r = 0; r < bytes / EMU_IR_VREG_BYTES; r++) {
+            const uint32_t off = t->vreg_offset(vd + r);
+
+            if (store) {
+                x86_movdqu_ld_cpu(X86_XMM0, off);
+                x86_movdqu_store(T0, (uint8_t)(16u * r), X86_XMM0);
+            } else {
+                x86_movdqu_load(X86_XMM0, T0, (uint8_t)(16u * r));
+                x86_movdqu_st_cpu(off, X86_XMM0);
+            }
+        }
+        done = x86_jmp32();
+        for (uint32_t i = 0; i < ns; i++) {
+            x86_patch_rel32(slow[i], emu_jit_here());
+        }
+    }
+    ld_operand(X86_ECX, in->b);
+    ld_operand(X86_EDX, in->a);
+    ld_operand(X86_ESI, in->c);
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0x89);
+    emu_jit_emit8(0xDF); /* mov rdi, rbx */
+    x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->helpers[in->aux]);
+    x86_call_rax();
+    x86_alu_rr(X86_TEST, X86_EAX, X86_EAX);
+    note_exit(x86_jcc32(X86_CC_NE));
+    if (done != NULL) {
+        x86_patch_rel32(done, emu_jit_here());
+    }
+}
+
+#endif /* EMU_IR_VECTOR */
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
@@ -2639,12 +2721,22 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+#if EMU_IR_VECTOR
     case EMU_IR_VOP:
         if (!emu_ir_can_lower(EMU_IR_VOP, in->aux) || t->vreg_offset == NULL) {
             return false;
         }
         lower_vop(in, t);
         break;
+
+    case EMU_IR_VMEM:
+        if (t->vreg_offset == NULL || t->helpers == NULL ||
+            in->aux >= t->helper_count) {
+            return false;
+        }
+        lower_vmem(in, t);
+        break;
+#endif
 
     /*
      * The AES S-box: the byte in all sixteen lanes, then AESENCLAST (or

@@ -23,6 +23,7 @@
 /* Building                                                            */
 /* ------------------------------------------------------------------ */
 
+#if EMU_IR_VECTOR
 /*
  * EMU_IR_VOP's meaning (emu_ir.h). Element i of a group is bytes
  * i * w to i * w + w - 1 from the group's first register, little-endian.
@@ -76,6 +77,8 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
         }
     }
 }
+
+#endif /* EMU_IR_VECTOR */
 
 void emu_ir_reset(emu_ir_block_t *b)
 {
@@ -264,6 +267,9 @@ static bool op_writes(emu_ir_op_t op)
     case EMU_IR_BITOP_CLR:
     case EMU_IR_BITOP_INV:
     case EMU_IR_BITOP_TST:
+    /* The guest's vector registers are a place, not a temp. */
+    case EMU_IR_VOP:
+    case EMU_IR_VMEM:
         return false;
     default:
         return true;
@@ -312,6 +318,17 @@ uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
         b->insn[b->count - 1u].c = c;
     }
     return dst;
+}
+
+void emu_ir_vmem(emu_ir_block_t *b, uint8_t helper, uint16_t addr, uint16_t vl,
+                 uint16_t arg, uint32_t imm)
+{
+    const uint32_t before = b->count;
+
+    (void)emu_ir_emit(b, EMU_IR_VMEM, helper, addr, vl, imm, 0u);
+    if (b->count > before) {
+        b->insn[b->count - 1u].c = arg;
+    }
 }
 
 uint16_t emu_ir_mem_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
@@ -398,6 +415,7 @@ static uint8_t op_reads_flags(const emu_ir_insn_t *in)
     case EMU_IR_BITOP_TST:
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
+    case EMU_IR_VMEM:
         return EMU_IR_F_ALL;
     default:
         return 0u;
@@ -579,6 +597,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
 
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
+        case EMU_IR_VMEM: /* its helper may */
             /* May touch anything. */
             for (uint32_t r = 0; r < IR_MAX_GUEST_REGS; r++) {
                 cur[r] = EMU_IR_NO_TEMP;
@@ -679,6 +698,7 @@ static bool op_observes_state(uint8_t op)
     case EMU_IR_BITOP_TST:
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
+    case EMU_IR_VMEM:
     case EMU_IR_EXIT:
     case EMU_IR_EXIT_IF:
         return true;

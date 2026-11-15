@@ -407,11 +407,22 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
                 return false;
             }
             break;
+#if EMU_IR_VECTOR
+        case EMU_IR_VMEM:
+            if (t->helpers == NULL || in->aux >= t->helper_count) {
+                return false;
+            }
+            break;
         case EMU_IR_VOP:
             if (t->vreg_offset == NULL) {
                 return false;
             }
             break;
+#else
+        case EMU_IR_VMEM:
+        case EMU_IR_VOP:
+            return false; /* not built: EMU_IR_VECTOR */
+#endif
         case EMU_IR_OP_COUNT:
             return false;
         default:
@@ -432,6 +443,9 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
  * parameters ignores the rest under both conventions, as it does when
  * compiled code calls it.
  */
+/* EMU_IR_VMEM's helper: (cpu, c, address, vl). */
+typedef uint32_t (*ir_vmem_fn)(emu_cpu_t *cpu, uint32_t c, uint32_t addr,
+                               uint32_t vl);
 typedef uint32_t (*ir_helper_fn)(emu_cpu_t *cpu, uint32_t a, uint32_t b,
                                  uint32_t aux);
 
@@ -953,6 +967,18 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * first register of its group: emu_ir_vop_ref reads them where
          * they are, which is where the lowerings read them too.
          */
+#if EMU_IR_VECTOR
+        /* Always the helper: the inline copy is the same access. */
+        case EMU_IR_VMEM: {
+            const uint32_t cv = (in->c != EMU_IR_NO_TEMP) ? tmp[in->c] : 0u;
+
+            if (((ir_vmem_fn)(uintptr_t)t->helpers[in->aux])(cpu, cv, a, bv) !=
+                0u) {
+                return IR_RUN_DONE;
+            }
+            continue;
+        }
+
         case EMU_IR_VOP: {
             uint8_t *const base = (uint8_t *)cpu;
 
@@ -962,6 +988,8 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
                            in->aux, EMU_IR_VOP_NREGS(in->imm), bv);
             continue;
         }
+
+#endif /* EMU_IR_VECTOR */
 
         default:
             return IR_RUN_DECLINED; /* interp_models said so first */

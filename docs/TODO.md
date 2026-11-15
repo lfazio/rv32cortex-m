@@ -212,12 +212,14 @@ From the last measurements in [linux.md](linux.md).
 - [ ] **The vector unit's SIMD lowering, past its first set**: unmasked
       single-width integer operations lower after an inline vsetvli
       (`EMU_IR_VOP`), to SSE2/SSE4.1 on x86-64 and the DSP extension on
-      Thumb-2. Most of vecbench's time is now the helper's loads and
-      stores, a call each: unit-stride ones inline through the RAM
-      window next; then the multiply-adds; `vaaddu` and `vaadd` under
-      `rnu` as `pavgb`/`pavgw` (vxrm in the context); masked forms; on
-      Thumb-2 a loop over the words of an m4 or m8 operation rather than
-      a kilobyte unrolled; the N6's MVE (Helium), a 128-bit unit
+      Thumb-2, and unit-stride loads and stores that fill a group copy
+      inline (`EMU_IR_VMEM`). Next, by vecbench's profile: `vaaddu` and
+      `vaadd` under `rnu` as `pavgb`/`pavgw` and `UHADD8`-style forms
+      (vxrm in the context), two thirds of what is left; the
+      multiply-adds; widening and narrowing; masked forms; strided
+      accesses; on Thumb-2 a loop over the words of an m4 or m8
+      operation rather than a kilobyte unrolled, now that vecbench's
+      code is 47 KB of the 64; the N6's MVE (Helium), a 128-bit unit
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
       under the x86-64 JIT now, AES's S-box between two maps of two

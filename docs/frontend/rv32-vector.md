@@ -112,12 +112,30 @@ the host's in every row:
 | 03044e9: vector instructions declined, a byte loop an element | 424.22 | 441.55 |
 | 0b2d2d1: the helper under the JIT, plain-RAM accesses copied | 226.46 | 141.01 |
 | the arithmetic lowered with the DSP extension | | 134.22 |
+| unit-stride loads and stores inline (`EMU_IR_VMEM`) | | 74.29 |
+
+**Unit-stride loads and stores are inline too** (`rv_ir_vmem`): an
+unmasked access of one field, in a block that knows vtype and has the
+RAM window, becomes `EMU_IR_VMEM`. Where vl's bytes fill the group --
+VLMAX elements of EEW, 16 to 128 bytes -- and the whole group lies in
+the window, the backend copies it between RAM and the registers; where
+not -- the short last trip of a strip-mined loop, an address outside,
+a store while an LR reservation is outstanding -- it calls the vector
+helper, which faults as the interpreter does. A fractional EMUL and a
+build that traps misaligned elements keep the helper. vecbench under
+the JIT on the host: 59.0M host instructions to 39.6M.
 
 vecbench under the JIT, one binary, callgrind: the helper alone
 (`EMU_HOST_SIMD=0`) 67.6M host instructions, SSE2 64.6M, SSE4.1 59.0M,
-the same checksum each. What is left is the helper's: the loads and
-stores, a call each, and the forms not lowered -- the averaging add, the
-multiply-adds, widening and narrowing ([TODO](../TODO.md)).
+the same checksum each; 39.6M with the accesses inline (below). What is
+left is the helper's: the forms not lowered -- the averaging add and its
+rounding, two thirds of what remains, the multiply-adds, widening and
+narrowing ([TODO](../TODO.md)).
+
+**Built only where something emits them**: the IR's vector operations,
+their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake
+sets on every host build and on a board only with the vector unit.
+Without it the N6's image was 384 bytes past its ROM.
 
 `fuzz-rv32-jit` built with the unit (`scripts/fuzz.sh SECS rv32-vec`)
 compares the vector registers and CSRs; its first four minutes found an
