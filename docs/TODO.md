@@ -218,10 +218,10 @@ From the last measurements in [linux.md](linux.md).
       shifts and clips too. Next, by vecbench's profile: the reductions,
       strided accesses; masked forms; the other rounding modes; .wv
       narrowing (a count a lane: AVX2's); Thumb-2's unsigned and 8-bit
-      widening and narrowing and 16-bit multiply-adds; there, a loop over
-      the words of an m4 or m8 operation rather than a kilobyte unrolled
-      -- vecbench's code is 53 KB of the 64; the N6's MVE (Helium), a
-      128-bit unit
+      widening and narrowing and 16-bit multiply-adds; the N6's MVE
+      (Helium), a 128-bit unit. Not yet: a loop over an m4 or m8 group's
+      words on Thumb-2 -- vecbench runs the same at a 32 KB buffer as at
+      64 ([backend/thumb2.md](backend/thumb2.md#the-guests-vector-registers-the-dsp-extension))
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
 - [ ] **SM4's affine maps with GFNI.** `sm4ed` and `sm4ks` are native
       under the x86-64 JIT now, AES's S-box between two maps of two

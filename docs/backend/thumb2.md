@@ -164,7 +164,17 @@ active element can set it, read after into the saturation word and
 cleared again. NZCV go with it, which no IR instruction carries. The
 unsigned clip keeps the helper: USAT reads its 32-bit input as signed.
 vecbench 37.68 to 27.54; the replay 7,900 clean, and with the tail not
-zeroed 16 different. The fifteen
+zeroed 16 different.
+
+**The unrolled words cost vecbench nothing yet.** Its translations reach
+53 KB of the 64 KB buffer, which read as a reason to loop over an m4 or
+m8 group's words rather than unroll them. At a 32 KB buffer it runs at
+27.43 cycles a guest instruction against 27.54, with 2 compactions, 15
+blocks evicted and nothing given up on; at 48 KB, 26.64. The hot set
+fits, and most of the 53 KB runs once. A PC profile of it
+(`-DVECBENCH_ROUNDS=2000`) puts two thirds of the guest's time in
+translated code, a sixth in the vector helper -- the strided load and
+the last trip of each loop -- and a sixth in the console. The fifteen
 encodings, r12 in every position, were checked against
 arm-none-eabi-as before the first flash; one byte of the comment
 beside them was not.
