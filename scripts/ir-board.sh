@@ -23,6 +23,12 @@
 #   EMU_PROBE      the probe, required with more than one attached
 #   BOARD_CONSOLE  the console, if not the F746's ST-LINK by-id link
 #   IR_BOARD_SECS  how long to wait for IR-BOARD-END (default 600)
+#   IR_BOARD_MAX   the most packed corpus bytes one firmware holds
+#                  (default 700000); given no slice, a larger corpus is
+#                  run in as many slices as it takes, one after another,
+#                  and the run is clean only if every slice is. It had
+#                  grown to 1,001,391 bytes, and the link failed at
+#                  29,484 bytes past the flash.
 
 set -eu
 
@@ -35,6 +41,23 @@ SECS=${IR_BOARD_SECS:-600}
 mkdir -p "$OUT"
 
 [ -d "$CORPUS" ] || { echo "ir-board: no corpus at $CORPUS (scripts/fuzz.sh SECS ir)" >&2; exit 2; }
+if [ -z "$COUNT" ] && [ "$FIRST" = 0 ]; then
+    total=$(python3 "$ROOT/tests/ir-board/pack.py" "$CORPUS" "$OUT/ir-corpus.bin" 0)
+    bytes=$(stat -c %s "$OUT/ir-corpus.bin")
+    max=${IR_BOARD_MAX:-700000}
+    if [ "$bytes" -gt "$max" ]; then
+        slices=$(( (bytes + max - 1) / max ))
+        per=$(( (total + slices - 1) / slices ))
+        echo "ir-board: $total inputs, $bytes bytes packed: $slices slices of $per"
+        status=0
+        first=0
+        while [ "$first" -lt "$total" ]; do
+            "$0" "$CORPUS" "$first" "$per" || status=1
+            first=$((first + per))
+        done
+        exit $status
+    fi
+fi
 n=$(python3 "$ROOT/tests/ir-board/pack.py" "$CORPUS" "$OUT/ir-corpus.bin" "$FIRST" $COUNT)
 echo "ir-board: $n inputs from $CORPUS, from #$FIRST"
 

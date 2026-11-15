@@ -149,6 +149,7 @@ void x86_st_rsp(int reg, uint32_t disp);
 #define X86_XMM2 2
 #define X86_XMM3 3
 #define X86_XMM4 4
+#define X86_XMM5 5
 
 /* F3 0F xx opcodes for the scalar-single group. */
 #define X86_ADDSS 0x58u

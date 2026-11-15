@@ -1345,6 +1345,17 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_MADD:
     case EMU_IR_V_NMSUB: /* as the multiply */
         return sew == 1u || (sew == 2u && sse41);
+    /*
+     * Widening: from bytes, every sign, the lanes extended and PMULLW's
+     * low half exact; from halfwords, PMULLW with PMULHW or PMULHUW,
+     * which have no mixed-sign form.
+     */
+    case EMU_IR_V_WMACCU:
+    case EMU_IR_V_WMACC:
+        return sew <= 1u;
+    case EMU_IR_V_WMACCSU:
+    case EMU_IR_V_WMACCUS:
+        return sew == 0u;
     default:
         return false;
     }
@@ -1641,6 +1652,105 @@ static void vop_apply(uint32_t code, int dst, int src)
 }
 
 /*
+ * xmm0 = (new & mask) | (old & ~mask) for vd's register j, old in `old`,
+ * the window's mask through rax and xmm `tmp`; then the store.
+ */
+static void vop_keep_store(const emu_ir_target_t *t, uint32_t vreg, uint32_t j,
+                           int nw, int old, int tmp)
+{
+    x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * j));
+    x86_sub64_rr(T0, T2);
+    x86_movdqu_ld_reg(tmp, T0);
+    x86_sse_66(0xDBu, nw, tmp);  /* pand */
+    x86_sse_66(0xDFu, tmp, old); /* pandn */
+    x86_sse_66(0xEBu, nw, tmp);  /* por */
+    x86_movdqu_st_cpu(t->vreg_offset(vreg), nw);
+}
+
+/* dst = src's low (hi false) or high bytes as halfwords, extended. */
+static void vop_widen8(int dst, int src, bool hi, bool sign)
+{
+    x86_sse_66(0x6Fu, dst, src);
+    if (sign) {
+        x86_sse_66(hi ? 0x68u : 0x60u, dst, dst); /* punpck[hl]bw: b b */
+        x86_sse_shift_imm(0x71u, 4u, dst, 8u);   /* psraw 8 */
+    } else {
+        x86_sse_66(hi ? 0x68u : 0x60u, dst, X86_XMM5); /* with zero */
+    }
+}
+
+/*
+ * The widening multiply-adds, a source register at a time: its products
+ * go to vd's registers 2r and 2r + 1, each kept past vl by its own mask
+ * (edx holds vl in vd's bytes). From halfwords: PMULLW and PMULHW (or
+ * PMULHUW) interleaved by PUNPCK[LH]WD into 32-bit products. From bytes:
+ * each half extended to halfwords, then PMULLW, exact in the 16 bits
+ * kept.
+ */
+static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    const uint32_t sew = EMU_IR_VOP_SEW(in->aux);
+    const bool vx = EMU_IR_VOP_VX(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+    const bool sign_a = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCUS;
+    const bool sign_b = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCSU;
+
+    ld_operand(T2, in->b);
+    x86_shift_imm(T2, X86_SHL, sew + 1u); /* vl in vd's bytes */
+    if (vx) {
+        ld_operand(T0, in->a);
+        if (sew == 0u) {
+            x86_alu_imm32(4u, T0, 0xFFu);
+            x86_imul_imm32(T0, 0x01010101u);
+        } else {
+            x86_alu_imm32(4u, T0, 0xFFFFu);
+            x86_imul_imm32(T0, 0x00010001u);
+        }
+        x86_movd_to_xmm(X86_XMM1, T0);
+        x86_pshufd(X86_XMM1, X86_XMM1, 0x00u);
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + r));
+        if (!vx) {
+            x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs1 + r));
+        }
+        if (sew == 1u) {
+            x86_sse_66(0x6Fu, X86_XMM2, X86_XMM0);
+            x86_sse_66(0xD5u, X86_XMM2, X86_XMM1); /* pmullw: low halves */
+            x86_sse_66(0x6Fu, X86_XMM3, X86_XMM0);
+            x86_sse_66(sign_a ? 0xE5u : 0xE4u, X86_XMM3, X86_XMM1); /* pmulh(u)w */
+            x86_sse_66(0x6Fu, X86_XMM4, X86_XMM2);
+            x86_sse_66(0x61u, X86_XMM4, X86_XMM3); /* punpcklwd: lanes 0-3 */
+            x86_sse_66(0x69u, X86_XMM2, X86_XMM3); /* punpckhwd: lanes 4-7 */
+            x86_sse_66(0x6Fu, X86_XMM3, X86_XMM2); /* the high products */
+            x86_sse_66(0x6Fu, X86_XMM2, X86_XMM4); /* the low ones */
+        } else {
+            x86_sse_66(0xEFu, X86_XMM5, X86_XMM5); /* zero */
+            vop_widen8(X86_XMM2, X86_XMM0, false, sign_a);
+            vop_widen8(X86_XMM3, X86_XMM0, true, sign_a);
+            vop_widen8(X86_XMM4, X86_XMM1, false, sign_b);
+            x86_sse_66(0xD5u, X86_XMM2, X86_XMM4); /* pmullw */
+            vop_widen8(X86_XMM4, X86_XMM1, true, sign_b);
+            x86_sse_66(0xD5u, X86_XMM3, X86_XMM4);
+        }
+        /* xmm2: the products for vd + 2r, xmm3 for vd + 2r + 1 */
+        const uint8_t add = (sew == 1u) ? 0xFEu : 0xFDu; /* paddd / paddw */
+
+        x86_movdqu_ld_cpu(X86_XMM4, t->vreg_offset(vd + 2u * r));
+        x86_sse_66(add, X86_XMM2, X86_XMM4);
+        vop_keep_store(t, vd + 2u * r, 2u * r, X86_XMM2, X86_XMM4, X86_XMM0);
+        x86_movdqu_ld_cpu(X86_XMM4, t->vreg_offset(vd + 2u * r + 1u));
+        x86_sse_66(add, X86_XMM3, X86_XMM4);
+        vop_keep_store(t, vd + 2u * r + 1u, 2u * r + 1u, X86_XMM3, X86_XMM4,
+                       X86_XMM0);
+    }
+}
+
+/*
  * EMU_IR_VOP, a register of the group at a time: vs2 into xmm0, the
  * second operand in xmm1 (vs1's register, or the scalar in every lane --
  * a shift's count in its low quadword), the operation into xmm0, then
@@ -1662,6 +1772,10 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
     const uint32_t code = vop_opcode(op, sew);
 
+    if (EMU_IR_V_IS_WIDE(op)) {
+        lower_vop_wide(in, t);
+        return;
+    }
     ld_operand(T2, in->b);
     if (sew != 0u) {
         x86_shift_imm(T2, X86_SHL, sew); /* vl in bytes */

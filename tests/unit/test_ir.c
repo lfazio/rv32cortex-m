@@ -1437,6 +1437,24 @@ static void vop_mine(vop_cpu_t *c, uint32_t op, uint32_t w, bool vx,
     uint8_t *const d = (uint8_t *)c->v + vd * EMU_IR_VREG_BYTES;
     const uint64_t m = (w == 4u) ? 0xFFFFFFFFull : ((1ull << (8u * w)) - 1u);
 
+    if (op >= EMU_IR_V_WMACCU && op <= EMU_IR_V_WMACCUS) {
+        const bool sgn_a = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCUS;
+        const bool sgn_b = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCSU;
+        const uint64_t m2 = (w == 2u) ? 0xFFFFFFFFull : 0xFFFFull;
+
+        for (uint32_t i = 0; i < vl; i++) {
+            uint8_t sbuf[4] = {(uint8_t)scalar, (uint8_t)(scalar >> 8), 0u, 0u};
+            const int64_t x = vop_lane(a + i * w, w, sgn_a);
+            const int64_t y = vop_lane(vx ? sbuf : b + i * w, w, sgn_b);
+            const int64_t acc = vop_lane(d + i * 2u * w, 2u * w, false);
+            const uint64_t r = ((uint64_t)acc + (uint64_t)(x * y)) & m2;
+
+            for (uint32_t k = 0; k < 2u * w; k++) {
+                d[i * 2u * w + k] = (uint8_t)(r >> (8u * k));
+            }
+        }
+        return;
+    }
     for (uint32_t i = 0; i < vl; i++) {
         const int64_t sa = vop_lane(a + i * w, w, true);
         const int64_t ua = vop_lane(a + i * w, w, false);
@@ -1526,6 +1544,12 @@ static void test_lower_vop(void)
                 lowerable++;
                 for (uint32_t lg = 0; lg < 4u; lg++) {
                     const uint32_t nregs = 1u << lg;
+                    const bool wide = EMU_IR_V_IS_WIDE(op);
+
+                    if (wide && lg == 3u) {
+                        ran += 8u; /* vd would be 16 registers: no such form */
+                        continue;
+                    }
                     const uint32_t w = 1u << sew;
                     const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
                     const uint32_t k_vls[] = {0u, 1u, EMU_IR_VREG_BYTES / w - 1u,
@@ -1553,7 +1577,8 @@ static void test_lower_vop(void)
                             }
                             ((uint8_t *)got.v)[i] = x;
                         }
-                        for (uint32_t i = 0; i < nregs * EMU_IR_VREG_BYTES; i++) {
+                        for (uint32_t i = 0;
+                             i < (wide ? 2u : 1u) * nregs * EMU_IR_VREG_BYTES; i++) {
                             ((uint8_t *)got.v)[vd * EMU_IR_VREG_BYTES + i] =
                                 0xA5u; /* no result is all A5 */
                         }

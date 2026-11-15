@@ -644,6 +644,18 @@ void t2_smulxy(uint32_t rd, uint32_t rn, uint32_t rm, bool nt, bool mt)
                          (mt ? 0x10u : 0u) | rm));
 }
 
+/*
+ * SMLA<x><y> rd, rn, rm, ra: ra + rn's halfword times rm's, signed.
+ * Checked against arm-none-eabi-as: smlatt lr, r0, r12, lr is FB10 EE3C.
+ */
+void t2_smlaxy(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool nt,
+               bool mt)
+{
+    t2_emit32((uint16_t)(0xFB10u | rn),
+              (uint16_t)((ra << 12) | (rd << 8) | (nt ? 0x20u : 0u) |
+                         (mt ? 0x10u : 0u) | rm));
+}
+
 /* PKHBT rd, rn, rm, LSL #16: rn's low halfword, rm's low one above it. */
 void t2_pkhbt16(uint32_t rd, uint32_t rn, uint32_t rm)
 {

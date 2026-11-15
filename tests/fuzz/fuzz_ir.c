@@ -888,16 +888,22 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         const uint32_t vop = pick(in, EMU_IR_V_COUNT);
         const uint32_t sew = pick(in, 3u);
         const bool vx = (byte(in) & 1u) != 0u;
-        const uint32_t lg = pick(in, 4u);
+        const bool wide = EMU_IR_V_IS_WIDE(vop);
+        const uint32_t lg = pick(in, wide ? 3u : 4u);
+        const uint32_t dlg = wide ? lg + 1u : lg; /* vd's group */
         const uint8_t aux = EMU_IR_VOP_AUX(vop, sew, vx);
         /* each the first register of a group: same or disjoint */
-        const uint32_t vd = pick(in, 32u >> lg) << lg;
+        const uint32_t vd = pick(in, 32u >> dlg) << dlg;
         const uint32_t vs2 = pick(in, 32u >> lg) << lg;
         const uint32_t vs1 = pick(in, 32u >> lg) << lg;
         const uint32_t lanes = (EMU_IR_VREG_BYTES << lg) >> sew;
 
         if (!emu_ir_can_lower(EMU_IR_VOP, aux)) {
             break; /* a frontend would have kept its helper */
+        }
+        if (wide && ((vd < vs2 + (1u << lg) && vs2 < vd + (2u << lg)) ||
+                     (!vx && vd < vs1 + (1u << lg) && vs1 < vd + (2u << lg)))) {
+            break; /* the contract: vd disjoint from the sources */
         }
         /* vl at most the group's elements; often a register's edge */
         uint32_t vl = pick(in, lanes + 1u);

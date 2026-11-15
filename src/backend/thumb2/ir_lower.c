@@ -1298,6 +1298,8 @@ static bool vop_lowerable(uint8_t aux)
     case EMU_IR_V_MADD:
     case EMU_IR_V_NMSUB:
         return sew == 2u;
+    case EMU_IR_V_WMACC: /* SMLABB and SMLATT: signed halfwords only */
+        return sew == 1u;
     default:
         return false;
     }
@@ -1851,6 +1853,67 @@ static void vop_word(uint32_t op, uint32_t sew, uint32_t rb)
  * less vl's bytes for the whole group, so a word's mask is one LDR from
  * it, and (new & mask) | (old & ~mask) is AND, BIC, ORR.
  */
+/*
+ * vwmacc from signed halfwords: a source word holds elements 2k and
+ * 2k + 1, whose products go to vd's words 2k and 2k + 1 -- SMLABB and
+ * SMLATT, each accumulating into the word it replaces. Both products are
+ * formed before either is kept (r2 and lr), so r0 and r1 are free for
+ * the masks and the old words. lr is free inside a block: every block
+ * pushes it, and nothing here calls.
+ */
+static void lower_vop_wide(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const bool vx = EMU_IR_VOP_VX(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+
+    if (vx) {
+        ld_operand(T2_R12, in->a);
+        t2_uxth(T2_R12, T2_R12);
+        t2_add_lsl(T2_R12, T2_R12, T2_R12, 16u);
+    }
+    ld_operand(T2_R3, in->b);
+    t2_shift_imm(T2_LSL, T2_R3, T2_R3, 2u); /* vl in vd's bytes */
+    t2_imm32(T2_R2, (uint32_t)(uintptr_t)(k_vop_window + 128u));
+    t2_sub(T2_R3, T2_R2, T2_R3);
+
+    for (uint32_t r = 0; r < nregs; r++) {
+        for (uint32_t w = 0; w < EMU_IR_VREG_BYTES / 4u; w++) {
+            /* vd's words 2w and 2w + 1 of its registers 2r and 2r + 1 */
+            const uint32_t k = 8u * r + 2u * w; /* vd's word index */
+            const uint32_t olo = t->vreg_offset(vd + k / 4u) + 4u * (k % 4u);
+            const uint32_t ohi = t->vreg_offset(vd + (k + 1u) / 4u) +
+                                 4u * ((k + 1u) % 4u);
+            uint32_t rb = T2_R12;
+
+            t2_ldr_imm(T2_R0, T2_CPU, t->vreg_offset(vs2 + r) + 4u * w);
+            if (!vx) {
+                t2_ldr_imm(T2_R1, T2_CPU, t->vreg_offset(vs1 + r) + 4u * w);
+                rb = T2_R1;
+            }
+            t2_ldr_imm(T2_R2, T2_CPU, olo);
+            t2_smlaxy(T2_R2, T2_R0, rb, T2_R2, false, false);
+            t2_ldr_imm(T2_LR, T2_CPU, ohi);
+            t2_smlaxy(T2_LR, T2_R0, rb, T2_LR, true, true);
+
+            t2_ldr_imm(T2_R0, T2_R3, 4u * k);  /* the masks */
+            t2_ldr_imm(T2_R1, T2_CPU, olo);
+            t2_and(T2_R2, T2_R2, T2_R0);
+            t2_bic(T2_R1, T2_R1, T2_R0);
+            t2_orr(T2_R2, T2_R2, T2_R1);
+            t2_str_imm(T2_R2, T2_CPU, olo);
+            t2_ldr_imm(T2_R0, T2_R3, 4u * (k + 1u));
+            t2_ldr_imm(T2_R1, T2_CPU, ohi);
+            t2_and(T2_LR, T2_LR, T2_R0);
+            t2_bic(T2_R1, T2_R1, T2_R0);
+            t2_orr(T2_LR, T2_LR, T2_R1);
+            t2_str_imm(T2_LR, T2_CPU, ohi);
+        }
+    }
+}
+
 static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const uint32_t op = EMU_IR_VOP_OP(in->aux);
@@ -1863,6 +1926,10 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     const bool shift =
         op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
 
+    if (EMU_IR_V_IS_WIDE(op)) {
+        lower_vop_wide(in, t);
+        return;
+    }
     if (vx) {
         ld_operand(T2_R12, in->a);
         if (shift) {

@@ -37,6 +37,40 @@ void emu_ir_vop_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
     const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / w;
     const uint32_t n = (vl < lanes) ? vl : lanes;
 
+    if (EMU_IR_V_IS_WIDE(EMU_IR_VOP_OP(aux))) {
+        const uint32_t op = EMU_IR_VOP_OP(aux);
+        const uint32_t sh = 32u - bits;
+        const uint32_t ww = 2u * w; /* d's element */
+
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t a = 0u;
+            uint32_t b = 0u;
+            uint32_t d = 0u;
+
+            for (uint32_t k = w; k-- > 0u;) {
+                a = (a << 8) | vs2[i * w + k];
+                b = (b << 8) | vs1[i * w + k];
+            }
+            for (uint32_t k = ww; k-- > 0u;) {
+                d = (d << 8) | vd[i * ww + k];
+            }
+            if (EMU_IR_VOP_VX(aux)) {
+                b = scalar & mask;
+            }
+            const int32_t sa = (int32_t)(a << sh) >> sh;
+            const int32_t sb = (int32_t)(b << sh) >> sh;
+            const bool sign_a = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCUS;
+            const bool sign_b = op == EMU_IR_V_WMACC || op == EMU_IR_V_WMACCSU;
+            const uint32_t r = d + (sign_b ? (uint32_t)sb : b) *
+                                       (sign_a ? (uint32_t)sa : a);
+
+            for (uint32_t k = 0; k < ww; k++) {
+                vd[i * ww + k] = (uint8_t)(r >> (8u * k));
+            }
+        }
+        return;
+    }
+
     for (uint32_t i = 0; i < n; i++) {
         uint32_t a = 0u;
         uint32_t b = 0u;

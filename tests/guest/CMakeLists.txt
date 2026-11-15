@@ -434,8 +434,10 @@ add_guest_image(bench    SOURCES start.S bench.c)
 # JIT does with the vector unit. Built whatever the emulator's options,
 # as every image is; run only where -DRV32_EXT_ZVE32X=ON, where its test
 # below asks for its markers and its checksum on both backends.
+set(VECBENCH_ROUNDS "40" CACHE STRING "vecbench rounds of its kernels")
 add_guest_image(vecbench SOURCES start.S vecbench.c
-                FLAGS -march=${RV_GUEST_MARCH}_zve32x)
+                FLAGS -march=${RV_GUEST_MARCH}_zve32x
+                      -DVECBENCH_ROUNDS=${VECBENCH_ROUNDS})
 
 # What the inlined memory path is worth, and what turns it off.
 #

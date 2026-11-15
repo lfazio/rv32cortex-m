@@ -447,6 +447,11 @@ difference. On the host 686,611 blocks compared clean in five minutes,
 and the window check 4 bytes loose was found at input #1895; on the
 board 4,938 compared clean, and the same mutant gave 21 differences.
 
+The corpus outgrew the replay's flash during these sessions -- 7,086
+inputs, 1,015,565 bytes packed, the link 29,484 bytes over -- so
+`ir-board.sh` given no slice runs one as large as `IR_BOARD_MAX` allows
+(700,000 bytes) after another, and is clean only if each is.
+
 
 ## Translation and protection: RV32
 

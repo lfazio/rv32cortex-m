@@ -142,7 +142,17 @@ lane cannot carry out -- and at 32 bits `(a | b) - ((a ^ b) >> 1)`; the
 multiply-adds are `MLA` and `MLS` at 32 bits, vd's word loaded first,
 and narrower ones keep the helper: the 16-bit product needs the
 register vd's word is in. vecbench on the F746 74.29 to 48.21; the
-replay 5,604 compared clean, and with the lost bit dropped 64 different. The fifteen
+replay 5,604 compared clean, and with the lost bit dropped 64 different.
+
+`vwmacc` from signed halfwords is what this host has instructions for:
+a source word holds two elements whose products go to vd's next two
+words, `SMLABB` and `SMLATT` each accumulating into the word it
+replaces. Both products are formed before either is kept, in r2 and lr
+-- lr is free inside a block, since every block pushes it and nothing in
+the sequence calls -- leaving r0 and r1 for the masks and the old words.
+The encodings, lr and r12 in each position, were checked against the
+assembler. vecbench 48.21 to 37.68; the corpus replay clean in both its
+halves, and the high element multiplied by SMLABB 77 different. The fifteen
 encodings, r12 in every position, were checked against
 arm-none-eabi-as before the first flash; one byte of the comment
 beside them was not.

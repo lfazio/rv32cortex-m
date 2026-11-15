@@ -1253,6 +1253,11 @@ static bool rv_ir_vop_of(uint32_t f3, uint32_t f6, uint32_t vxrm,
          */
         case 0x08u: *op = EMU_IR_V_AADDU_RNU; return vxrm == 0u;
         case 0x09u: *op = EMU_IR_V_AADD_RNU; return vxrm == 0u;
+        /* widening: vd twice SEW in twice the registers (rv_ir_vec) */
+        case 0x3Cu: *op = EMU_IR_V_WMACCU; return true;
+        case 0x3Du: *op = EMU_IR_V_WMACC; return true;
+        case 0x3Fu: *op = EMU_IR_V_WMACCSU; return true;
+        case 0x3Eu: *op = EMU_IR_V_WMACCUS; *forms = 2u; return true;
         default: return false;
         }
     }
@@ -1380,6 +1385,18 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     if ((forms & form) == 0u || vd % grp != 0u ||
         (vop != EMU_IR_V_MV && vs2 % grp != 0u) ||
         (vop == EMU_IR_V_MV && vs2 != 0u) || (form == 1u && r1 % grp != 0u)) {
+        return false;
+    }
+    /*
+     * Widening: LMUL 1 to 4 and SEW 8 or 16, vd's group of twice the
+     * registers aligned to it, and disjoint from the sources -- the
+     * overlap the specification allows is the helper's to have, as is
+     * every one it reserves.
+     */
+    if (EMU_IR_V_IS_WIDE(vop) &&
+        (lg < 0 || lg > 2 || sew > 1u || vd % (2u * grp) != 0u ||
+         (vd < vs2 + grp && vs2 < vd + 2u * grp) ||
+         (form == 1u && vd < r1 + grp && r1 < vd + 2u * grp))) {
         return false;
     }
     const uint8_t aux = EMU_IR_VOP_AUX(vop, sew, form != 1u);

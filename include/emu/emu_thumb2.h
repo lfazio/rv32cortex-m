@@ -135,6 +135,9 @@ void t2_par_h(uint32_t op1, bool u, uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_sel(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_smulxy(uint32_t rd, uint32_t rn, uint32_t rm, bool nt, bool mt);
 void t2_pkhbt16(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_smlaxy(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool nt,
+               bool mt);
+#define T2_LR 14u
 void t2_bic(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_rev16(uint32_t rd, uint32_t rm);
 void t2_rbit(uint32_t rd, uint32_t rm);

@@ -133,7 +133,19 @@ extern "C" {
 #define EMU_IR_V_NMSAC 18u /* d - s1 * s2 */
 #define EMU_IR_V_MADD 19u  /* s1 * d + s2 */
 #define EMU_IR_V_NMSUB 20u /* s2 - s1 * d */
-#define EMU_IR_V_COUNT 21u
+/*
+ * The widening multiply-adds: s2 and s1 at the element width in a group
+ * of 2^lg registers, d at twice it in a group of twice as many -- lg at
+ * most 2, d's group aligned to its size and disjoint from both sources --
+ * and d[i] += ext(s1[i]) * ext(s2[i]), each extended as named. vl counts
+ * elements, of either width: the tail is d's past vl.
+ */
+#define EMU_IR_V_WMACCU 21u  /* unsigned * unsigned */
+#define EMU_IR_V_WMACC 22u   /* signed * signed */
+#define EMU_IR_V_WMACCSU 23u /* signed s1 * unsigned s2 */
+#define EMU_IR_V_WMACCUS 24u /* unsigned s1 * signed s2 */
+#define EMU_IR_V_COUNT 25u
+#define EMU_IR_V_IS_WIDE(op) ((op) >= EMU_IR_V_WMACCU && (op) <= EMU_IR_V_WMACCUS)
 
 #define EMU_IR_VOP_AUX(op, sew, vx)                                            \
     ((uint8_t)((op) | ((uint32_t)(sew) << 5) | ((vx) ? 0x80u : 0u)))
@@ -578,7 +590,9 @@ typedef enum emu_ir_op {
      *        shift, its low log2(bits) bits), or EMU_IR_NO_TEMP
      *   b    vl: element i is written only for i < vl, every other
      *        element of vd left as it was. vl is at most the group's
-     *        element count.
+     *        element count. The widening operations (EMU_IR_V_IS_WIDE)
+     *        write a vd of twice the element width in twice the
+     *        registers.
      *
      * Reads and writes nothing else -- no guest register, no flag, no
      * memory -- so no pass need treat it as an observer: it is ordered
