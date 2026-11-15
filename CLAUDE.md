@@ -329,7 +329,9 @@ Each has cost more than one session, and every one recurred.
   wrap-correct deltas. A sweep taken with a broken instrument points the
   wrong way, not just at wrong numbers.
 - **Profile before choosing what to optimise, and ask which instruction,
-  not which class.** `rdtime` was 99.2% of a Linux boot's CSR accesses;
+  not which class** -- at the size the figure was taken at: vector
+  CoreMark's helper read idle at 2 iterations and was its whole 4.3% gap
+  at 60. `rdtime` was 99.2% of a Linux boot's CSR accesses;
   a SysTick loop was 16% of ARMv7-M's host instructions; reads of the
   image walking the region table were 38.9% of Dhrystone's under the
   JIT. Split by function before estimating how a total divides. A

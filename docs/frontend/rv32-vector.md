@@ -151,17 +151,20 @@ the host's in every row:
 | the narrowing shifts and clip | | 27.54 |
 | masked operations (vecbench has none); 27.67 to 28.02 at three layouts | | 27.85 |
 | reductions and strided accesses (`EMU_IR_VRED`, `EMU_IR_VMEMS`); the same at two layouts | | 25.44 |
+| a short last trip inline: 62,728 bytes translated against 56,104, every access carrying it | | 25.57 |
 
 **Unit-stride loads and stores are inline too** (`rv_ir_vmem`): an
 unmasked access of one field, in a block that knows vtype and has the
 RAM window, becomes `EMU_IR_VMEM`. Where vl's bytes fill the group --
 VLMAX elements of EEW, 16 to 128 bytes -- and the whole group lies in
 the window, the backend copies it between RAM and the registers; where
-not -- the short last trip of a strip-mined loop, an address outside,
-a store while an LR reservation is outstanding -- it calls the vector
-helper, which faults as the interpreter does. A fractional EMUL and a
-build that traps misaligned elements keep the helper. vecbench under
-the JIT on the host: 59.0M host instructions to 39.6M.
+vl is short of the group but not 0 -- the last trip of a strip-mined
+loop -- and its bytes lie in the window, it moves vl elements with the
+strided access's element loop; anything else -- vl 0, an address
+outside, a store while an LR reservation is outstanding -- calls the
+vector helper, which faults as the interpreter does. A fractional EMUL
+and a build that traps misaligned elements keep the helper. vecbench
+under the JIT on the host: 59.0M host instructions to 39.6M.
 
 vecbench under the JIT, one binary, callgrind: the helper alone
 (`EMU_HOST_SIMD=0`) 67.6M host instructions, SSE2 64.6M, SSE4.1 59.0M,
@@ -188,13 +191,24 @@ vstart 2, and an inline copy that took vstart for 0 fails it.
 and stores, whole-register spills, `vmv.v.x`, `vadd`, `vmul.vx`, `vid`)
 the CRCs are the scalar build's, 0x72be at 2 iterations and 0xd340 at
 120, on both backends on the host and on the F746, and
-`guest-coremark-v-both` holds the two backends to one output. It is not
-faster: on the F746 at 120 iterations, 0.25% more cycles interpreted and
-4.3% under the JIT, and 2.9% more host instructions under the JIT on the
-host -- with the helper all but idle (4,654 host instructions). Its
-vectors are a register or two a trip, and an inline vector operation
-with its vsetvli and tail masks costs about what the scalar instructions
-it replaced did.
+`guest-coremark-v-both` holds the two backends to one output. At 120
+iterations on the F746 it was 0.25% more cycles than the scalar build
+interpreted and 4.3% under the JIT. That was put down to the inline
+vsetvli and tail masks, from a host profile at 2 iterations in which
+the vector helper was 4,654 host instructions -- start-up, not the
+loops. At 60 iterations the helper was 3.0M of 175.2M, the whole of the
+gap to scalar's 172.3M, and a histogram of what it was called for named
+two things: the last trip of each row's loop, a `vle16`/`vse16` with vl
+short of the group (8,642 calls), and a whole-register load at a
+block's start, where vstart is not known (960). The first is inline now
+(above); for the second the translator passes vl as the group's count
+where vstart is 0 at run time and 0 where it is not, which only the
+helper takes (`vec-ramend.S`'s `s8`, a resumed load, fails without it).
+Host instructions under the JIT 175.2M to 172.5M, against scalar's
+172.3M with 0.8% more guest instructions; on the F746, ratio times
+retired, 316.8M cycles against scalar's 317.7M, 0.3% fewer -- from 4.3%
+more -- the same at two layouts. The inline vsetvli was left as it is:
+the vector code has 0.3% left to give.
 
 **Built only where something emits them**: the IR's vector operations,
 their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake

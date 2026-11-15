@@ -1929,9 +1929,10 @@ static void test_lower_vred(void)
 
 /*
  * EMU_IR_VMEM, lowered and run: the inline copy where vl fills the group
- * and every byte is in the window, the helper everywhere else -- a short
- * vl, an address below the window, one whose group ends one byte past
- * it, a store while the reservation guard is set -- and the helper's
+ * and every byte is in the window, the element loop where vl is short
+ * and its bytes are, the helper everywhere else -- vl 0, an address
+ * below the window, an access ending one byte past it, a store while
+ * the reservation guard is set -- and the helper's
  * calls counted, so a case that should have been inline and was not
  * fails as surely as a wrong byte. The helper here is the reference: a
  * byte copy of vl elements, from the cpu's own record of the layout.
@@ -2042,12 +2043,18 @@ static void test_lower_vmem(void)
         {VMEM_BASE + 384u, 32u, 3u, 2u, false, false, true}, /* ends at the end */
         {VMEM_BASE + 385u, 32u, 3u, 2u, false, false, false}, /* a byte past */
         {VMEM_BASE - 16u, 4u, 0u, 2u, false, false, false},   /* below: faults */
-        {VMEM_BASE + 32u, 7u, 1u, 2u, false, false, false},  /* vl short */
+        {VMEM_BASE + 32u, 7u, 1u, 2u, false, false, true},   /* vl short: the loop */
         {VMEM_BASE + 32u, 0u, 0u, 0u, false, false, false},  /* vl 0 */
         {VMEM_BASE + 100u, 32u, 2u, 1u, true, false, true},  /* store e16 m4 */
         {VMEM_BASE + 101u, 4u, 0u, 2u, true, false, true},   /* store, odd */
         {VMEM_BASE + 101u, 4u, 0u, 2u, true, true, false},   /* the guard */
-        {VMEM_BASE + 200u, 3u, 0u, 2u, true, false, false},  /* store short */
+        {VMEM_BASE + 200u, 3u, 0u, 2u, true, false, true},   /* store short */
+        {VMEM_BASE + 500u, 3u, 0u, 2u, false, false, true},  /* short, to the end */
+        {VMEM_BASE + 501u, 3u, 0u, 2u, false, false, false}, /* a byte past */
+        {VMEM_BASE + 497u, 15u, 0u, 0u, true, false, true},  /* e8 store, to the end */
+        {VMEM_BASE + 497u, 16u, 0u, 0u, true, false, false}, /* the group: a byte past */
+        {VMEM_BASE + 200u, 3u, 0u, 2u, true, true, false},   /* short, the guard */
+        {VMEM_BASE - 4u, 2u, 0u, 2u, false, false, false},   /* short, below */
     };
     unsigned bad = 0u;
 

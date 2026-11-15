@@ -5038,6 +5038,18 @@ session, and every one of them recurred:
   scratch file. It holds them and the extend-and-add forms now, and is
   the ctest `t2-check-encodings` wherever the assembler is installed.
 
+- **A profile of a run too short for its loops measures the start.**
+  Vector CoreMark was 4.3% slower than scalar under the JIT on the F746,
+  and a host profile at 2 iterations put the vector helper at 4,654
+  host instructions -- idle -- so the gap was put down to the inline
+  vsetvli and tail masks, and "a cheaper vsetvli and tail" went on the
+  list. At 60 iterations the helper was 3.0M of 175.2M, the whole gap,
+  and a histogram of its instructions named the short last trip of each
+  row's loop and a whole-register load at block starts. Both inline, the
+  gap closed to 0.3% the other way, with the vsetvli untouched. **Profile
+  at the size the figure was taken at, and count what the slow path is
+  called for before naming it.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

@@ -2109,19 +2109,25 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
  * hold the group: vl's bytes against the group's, the address's offset
  * in the window against its size less the group's -- one unsigned
  * compare for both ends -- and for a store the reservation guard; then
- * 16 bytes at a time between [rax] and the registers. Anything else
- * falls through to the helper, called as EMU_IR_HELPER_TRAP's are:
- * rdi the cpu, then c, the address and vl.
+ * 16 bytes at a time between [rax] and the registers. A vl short of the
+ * group but not 0 -- the last trip of a strip-mined loop -- is the
+ * strided access's element loop with the element's size for its stride,
+ * when its bytes lie in the window. Anything else falls through to the
+ * helper, called as EMU_IR_HELPER_TRAP's are: rdi the cpu, then c, the
+ * address and vl.
  */
+static void emit_vmem_loop(uint32_t eew, bool store, uint32_t voff);
+
 static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const uint32_t bytes = EMU_IR_VMEM_BYTES(in->imm);
     const uint32_t eew = EMU_IR_VMEM_EEW(in->imm);
     const bool store = EMU_IR_VMEM_STORE(in->imm);
     const uint32_t vd = EMU_IR_VMEM_VD(in->imm);
-    uint8_t *slow[3];
+    uint8_t *slow[7];
     uint32_t ns = 0u;
     uint8_t *done = NULL;
+    uint8_t *done_part = NULL;
 
     if (g_has_fast && g_fast.size >= bytes) {
         ld_operand(T2, in->b);
@@ -2129,7 +2135,8 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             x86_shift_imm(T2, X86_SHL, eew);
         }
         x86_alu_imm32(7u, T2, bytes); /* cmp: the whole group? */
-        slow[ns++] = x86_jcc32(X86_CC_NE);
+        uint8_t *const part = x86_jcc32(X86_CC_NE);
+
         ld_operand(T1, in->a);
         x86_mov_rr(T2, T1);
         x86_alu_imm32(5u, T2, g_fast.base); /* sub: the offset */
@@ -2153,6 +2160,35 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
         }
         done = x86_jmp32();
+
+        /*
+         * Part of the group: vl elements from the first, if vl is not 0
+         * and its bytes -- offset + vl bytes - an element, as the last
+         * element's offset -- lie in the window. edx is vl's bytes here.
+         */
+        const uint32_t esz = 1u << eew;
+        const uint32_t lim = g_fast.size - esz;
+
+        x86_patch_rel32(part, emu_jit_here());
+        x86_alu_rr(X86_TEST, T2, T2);
+        slow[ns++] = x86_jcc32(X86_CC_E); /* vl 0: the helper's */
+        ld_operand(T1, in->a);
+        x86_alu_imm32(X86_X_SUB, T1, g_fast.base);
+        x86_alu_imm32(X86_X_CMP, T1, lim);
+        slow[ns++] = x86_jcc32(X86_CC_A);
+        x86_mov_rr(T0, T1);
+        x86_alu_rr(X86_ADD, T0, T2);
+        x86_alu_imm32(X86_X_SUB, T0, esz);
+        x86_alu_imm32(X86_X_CMP, T0, lim);
+        slow[ns++] = x86_jcc32(X86_CC_A);
+        if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+            x86_cmp8_cpu_imm(g_fast.store_guard_offset, 0u);
+            slow[ns++] = x86_jcc32(X86_CC_NE);
+        }
+        x86_mov_imm32(X86_ESI, esz);
+        ld_operand(T2, in->b);
+        emit_vmem_loop(eew, store, t->vreg_offset(vd));
+        done_part = x86_jmp32();
         for (uint32_t i = 0; i < ns; i++) {
             x86_patch_rel32(slow[i], emu_jit_here());
         }
@@ -2169,6 +2205,7 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     note_exit(x86_jcc32(X86_CC_NE));
     if (done != NULL) {
         x86_patch_rel32(done, emu_jit_here());
+        x86_patch_rel32(done_part, emu_jit_here());
     }
 }
 
@@ -2298,6 +2335,39 @@ static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 }
 
 /*
+ * The element loop both inline vector accesses share: ecx the first
+ * element's offset in the RAM window, esi the stride, edx vl -- not 0,
+ * and every element in the window, both checked by the caller. r9 the
+ * window's host address, edi the element's offset in the cpu, edx where
+ * that stops, r8 the element.
+ */
+static void emit_vmem_loop(uint32_t eew, bool store, uint32_t voff)
+{
+    const uint32_t esz = 1u << eew;
+
+    x86_mov_imm64(X86_R9, (uint64_t)(uintptr_t)g_fast.host);
+    x86_mov_imm32(X86_EDI, voff);
+    if (eew != 0u) {
+        x86_shift_imm(T2, X86_SHL, eew);
+    }
+    x86_alu_imm32(X86_X_ADD, T2, voff); /* the end, in the cpu */
+
+    uint8_t *const loop = emu_jit_here();
+
+    if (store) {
+        (void)x86_ld_idx(X86_R8, X86_CPU, X86_EDI, esz, false);
+        (void)x86_st_idx(X86_R8, X86_R9, X86_ECX, esz);
+    } else {
+        (void)x86_ld_idx(X86_R8, X86_R9, X86_ECX, esz, false);
+        (void)x86_st_idx(X86_R8, X86_CPU, X86_EDI, esz);
+    }
+    x86_alu_rr(X86_ADD, X86_ECX, X86_ESI);
+    x86_alu_imm32(X86_X_ADD, X86_EDI, esz);
+    x86_alu_rr(X86_CMP, X86_EDI, T2);
+    (void)x86_patch_rel8(x86_jcc8(X86_CC_NE), loop);
+}
+
+/*
  * EMU_IR_VMEMS. Inline when vl is not 0, the stride is under
  * EMU_IR_VMEMS_STRIDE_MAX, and the first and last elements both lie in
  * the RAM window -- and so every one between, the addresses being in a
@@ -2345,26 +2415,7 @@ static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             x86_cmp8_cpu_imm(g_fast.store_guard_offset, 0u);
             slow[ns++] = x86_jcc32(X86_CC_NE);
         }
-        x86_mov_imm64(X86_R9, (uint64_t)(uintptr_t)g_fast.host);
-        x86_mov_imm32(X86_EDI, voff);
-        if (eew != 0u) {
-            x86_shift_imm(T2, X86_SHL, eew);
-        }
-        x86_alu_imm32(X86_X_ADD, T2, voff); /* the end, in the cpu */
-
-        uint8_t *const loop = emu_jit_here();
-
-        if (store) {
-            (void)x86_ld_idx(X86_R8, X86_CPU, X86_EDI, esz, false);
-            (void)x86_st_idx(X86_R8, X86_R9, X86_ECX, esz);
-        } else {
-            (void)x86_ld_idx(X86_R8, X86_R9, X86_ECX, esz, false);
-            (void)x86_st_idx(X86_R8, X86_CPU, X86_EDI, esz);
-        }
-        x86_alu_rr(X86_ADD, X86_ECX, X86_ESI);
-        x86_alu_imm32(X86_X_ADD, X86_EDI, esz);
-        x86_alu_rr(X86_CMP, X86_EDI, T2);
-        (void)x86_patch_rel8(x86_jcc8(X86_CC_NE), loop);
+        emit_vmem_loop(eew, store, voff);
         done[nd++] = x86_jmp32();
         for (uint32_t i = 0; i < ns; i++) {
             x86_patch_rel32(slow[i], emu_jit_here());

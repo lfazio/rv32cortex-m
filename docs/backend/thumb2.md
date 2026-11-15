@@ -191,7 +191,13 @@ bytes and `SXTAH`/`UXTAH` from halfwords, a word twice (unrotated, and
 by 8 or 16). A strided access (`EMU_IR_VMEMS`) is a loop of
 register-offset moves, r12 the window's host address and r3 the
 element's offset in it, r2 its offset in the cpu, lr the end; the bounds
-are x86-64's.
+are x86-64's. A unit-stride access whose vl is short of its group takes
+the same loop (`emit_vmem_loop`), its stride the element's size: vector
+CoreMark on the F746 from 4.3% more cycles than scalar to 0.3% fewer.
+It is inline at every access, about 90 bytes each: vecbench, whose
+loops have one short trip each, translated 62,728 bytes against 56,104
+and ran 0.5% slower at both layouts (25.44 to 25.57). The replay, 11,214
+inputs, clean.
 
 **The first replay with them differed in 263 of 3,456 inputs**: the
 loop's exit for vl 0 was a `B<c>.W`, and it was patched with `B.W`'s

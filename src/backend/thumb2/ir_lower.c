@@ -2251,6 +2251,45 @@ static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 }
 
 /*
+ * The element loop both inline vector accesses share: r2 the first
+ * element's offset in the RAM window, r3 vl's bytes -- not 0, and every
+ * element in the window, both checked by the caller -- and the stride in
+ * `rs`, which the loop does not write. Then r12 the window's host
+ * address, r3 the element's offset in it, r2 its offset in the cpu, lr
+ * where that stops, r0 the element. The M7 does an unaligned halfword or
+ * word for normal memory.
+ */
+static void emit_vmem_loop(uint32_t eew, bool store, uint32_t voff, uint32_t rs)
+{
+    const uint32_t esz = 1u << eew;
+    uint16_t enc;
+
+    t2_imm32(T2_R12, voff);
+    t2_add(T2_LR, T2_R3, T2_R12); /* the end, in the cpu */
+    t2_mov(T2_R3, T2_R2);
+    t2_mov(T2_R2, T2_R12);
+    emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+
+    uint8_t *const loop = emu_jit_here();
+
+    if (store) {
+        (void)t2_ld_reg(T2_R0, T2_CPU, T2_R2, esz, false);
+        (void)t2_st_reg(T2_R0, T2_R12, T2_R3, esz);
+    } else {
+        (void)t2_ld_reg(T2_R0, T2_R12, T2_R3, esz, false);
+        (void)t2_st_reg(T2_R0, T2_CPU, T2_R2, esz);
+    }
+    t2_add(T2_R3, T2_R3, rs);
+    (void)t2_expand_imm(esz, &enc);
+    t2_add_imm(T2_R2, T2_R2, enc);
+    t2_cmp(T2_R2, T2_LR);
+
+    uint8_t *const back = t2_bcond_forward(0x1u); /* NE: the next */
+
+    patch_branch(back, loop, true);
+}
+
+/*
  * EMU_IR_VMEMS: inline when vl is not 0, the stride under
  * EMU_IR_VMEMS_STRIDE_MAX, and the first and last elements both in the
  * window -- as x86-64's, the last as first + (vl - 1) * stride in an
@@ -2310,30 +2349,8 @@ static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             (void)t2_cmp_imm8(T2_R0, 0u);
             slow[ns++] = t2_bcond_forward(0x1u); /* NE: a reservation */
         }
-        t2_shift_imm(T2_LSL, T2_LR, T2_R3, eew);
-        t2_imm32(T2_R12, voff);
-        t2_add(T2_LR, T2_LR, T2_R12); /* the end, in the cpu */
-        t2_mov(T2_R3, T2_R2);
-        t2_mov(T2_R2, T2_R12);
-        emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
-
-        uint8_t *const loop = emu_jit_here();
-
-        if (store) {
-            (void)t2_ld_reg(T2_R0, T2_CPU, T2_R2, esz, false);
-            (void)t2_st_reg(T2_R0, T2_R12, T2_R3, esz);
-        } else {
-            (void)t2_ld_reg(T2_R0, T2_R12, T2_R3, esz, false);
-            (void)t2_st_reg(T2_R0, T2_CPU, T2_R2, esz);
-        }
-        t2_add(T2_R3, T2_R3, rs);
-        (void)t2_expand_imm(esz, &enc);
-        t2_add_imm(T2_R2, T2_R2, enc);
-        t2_cmp(T2_R2, T2_LR);
-
-        uint8_t *const back = t2_bcond_forward(0x1u); /* NE: the next */
-
-        patch_branch(back, loop, true);
+        t2_shift_imm(T2_LSL, T2_R3, T2_R3, eew); /* vl's bytes */
+        emit_vmem_loop(eew, store, voff, rs);
         done = t2_b_forward();
         for (uint32_t i = 0; i < ns; i++) {
             patch_branch(slow[i], emu_jit_here(), true);
@@ -2373,15 +2390,18 @@ static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
  * for normal memory; anything else the helper, called as
  * EMU_IR_HELPER_TRAP's are with r0 the cpu, then c, the address and vl.
  */
+static void emit_vmem_loop(uint32_t eew, bool store, uint32_t voff, uint32_t rs);
+
 static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const uint32_t bytes = EMU_IR_VMEM_BYTES(in->imm);
     const uint32_t eew = EMU_IR_VMEM_EEW(in->imm);
     const bool store = EMU_IR_VMEM_STORE(in->imm);
     const uint32_t vd = EMU_IR_VMEM_VD(in->imm);
-    uint8_t *slow[3];
+    uint8_t *slow[7];
     uint32_t ns = 0u;
     uint8_t *done = NULL;
+    uint8_t *done_part = NULL;
     uint16_t enc;
 
     if (g_has_fast && g_fast.size >= bytes) {
@@ -2390,7 +2410,7 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_shift_imm(T2_LSL, T2_R3, T2_R3, eew); /* vl in bytes */
         }
         (void)t2_cmp_imm8(T2_R3, bytes);
-        slow[ns++] = t2_bcond_forward(0x1u); /* NE: not the whole group */
+        uint8_t *const part = t2_bcond_forward(0x1u); /* NE: not the whole group */
 
         const uint32_t ra = use_reg(in->a, T2_R1);
 
@@ -2427,6 +2447,42 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
         }
         done = t2_b_forward();
+
+        /*
+         * Part of the group: the element loop with the element's size
+         * for its stride, if vl is not 0 and its bytes lie in the
+         * window. r3 is vl's bytes here.
+         */
+        const uint32_t esz = 1u << eew;
+
+        patch_branch(part, emu_jit_here(), true);
+        (void)t2_cmp_imm8(T2_R3, 0u);
+        slow[ns++] = t2_bcond_forward(0x0u); /* EQ: vl 0, the helper's */
+
+        const uint32_t ra2 = use_reg(in->a, T2_R2);
+
+        if (t2_expand_imm(g_fast.base, &enc)) {
+            t2_sub_imm(T2_R2, ra2, enc);
+        } else {
+            emit_pooled(T2_R12, g_fast.base);
+            t2_sub(T2_R2, ra2, T2_R12);
+        }
+        emit_pooled(T2_R12, g_fast.size - esz);
+        t2_cmp(T2_R2, T2_R12);
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: the first outside */
+        t2_add(T2_R0, T2_R2, T2_R3);
+        (void)t2_expand_imm(esz, &enc);
+        t2_sub_imm(T2_R0, T2_R0, enc);
+        t2_cmp(T2_R0, T2_R12);
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: the last outside */
+        if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+            t2_ldrb_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
+            (void)t2_cmp_imm8(T2_R0, 0u);
+            slow[ns++] = t2_bcond_forward(0x1u); /* NE: a reservation */
+        }
+        t2_imm32(T2_R1, esz);
+        emit_vmem_loop(eew, store, t->vreg_offset(vd), T2_R1);
+        done_part = t2_b_forward();
         for (uint32_t i = 0; i < ns; i++) {
             patch_branch(slow[i], emu_jit_here(), true);
         }
@@ -2458,6 +2514,7 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
     if (done != NULL) {
         patch_branch(done, emu_jit_here(), false);
+        patch_branch(done_part, emu_jit_here(), false);
     }
 }
 

@@ -1362,7 +1362,7 @@ static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
      */
     const uint32_t nf = insn >> 29;
 
-    if (!h_vs_off(cpu) && b->has_fast && g_vstart0 &&
+    if (!h_vs_off(cpu) && b->has_fast &&
         ((insn >> 25) & 0xFu) == 1u &&
         ((insn >> 20) & 31u) == 0x08u /* lumop: whole registers */ &&
         (nf == 0u || nf == 1u || nf == 3u || nf == 7u) &&
@@ -1372,12 +1372,28 @@ static bool rv_ir_vmem(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         const uint32_t ew = (width == 0u) ? 0u : width - 4u; /* log2 bytes */
         const uint32_t glg = (nf == 0u) ? 0u : (nf == 1u) ? 1u : (nf == 3u) ? 2u : 3u;
 
+        uint16_t vl = emu_ir_const(b, ((nf + 1u) * RV_VLENB) >> ew);
+
+        /*
+         * Where this block does not know vstart is 0 -- at its start, which
+         * can be an access resumed after a fault -- vl is the group's
+         * count only if vstart is 0 at run time, and 0 if not: the inline
+         * copy takes only the whole group, and the helper resumes.
+         */
+        if (!g_vstart0) {
+            const uint16_t z =
+                emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_EQ,
+                            emu_ir_get(b, RV_IR_VSTART), emu_ir_const(b, 0u), 0u, 0u);
+
+            vl = emu_ir_alu(b, EMU_IR_AND, vl,
+                            emu_ir_emit(b, EMU_IR_NEG, 0u, z, EMU_IR_NO_TEMP, 0u, 0u));
+        }
         vs_mark(b);
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           pc, 0u);
-        emu_ir_vmem(b, (uint8_t)RV_IR_HELPER_VEC, emu_ir_get(b, rv_rs1(insn)),
-                    emu_ir_const(b, ((nf + 1u) * RV_VLENB) >> ew),
+        emu_ir_vmem(b, (uint8_t)RV_IR_HELPER_VEC, emu_ir_get(b, rv_rs1(insn)), vl,
                     emu_ir_const(b, insn), EMU_IR_VMEM_IMM(vd, glg, ew, store));
+        g_vstart0 = true; /* inline only at 0; the helper leaves it 0 */
         return true;
     }
     if (h_vs_off(cpu) || g_vt == RV_IR_VT_UNKNOWN || !b->has_fast) {
