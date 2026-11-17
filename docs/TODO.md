@@ -226,10 +226,7 @@ From the last measurements in [linux.md](linux.md).
       lane: AVX2's on x86-64, an extraction a lane on Thumb-2);
       Thumb-2's widening from bytes, narrowing to bytes and unsigned clip
       (registers; USAT reads signed); the N6's MVE
-      (Helium), a 128-bit unit; the short-trip element loop out of
-      line, which every unit-stride access carries inline -- about 90
-      bytes on Thumb-2, vecbench 0.5% slower for it while vector
-      CoreMark gained 4.6%. Not yet: a loop over an m4 or m8 group's
+      (Helium), a 128-bit unit. Not yet: a loop over an m4 or m8 group's
       words on Thumb-2 -- vecbench runs the same at a 32 KB buffer as at
       64 ([backend/thumb2.md](backend/thumb2.md#the-guests-vector-registers-the-dsp-extension))
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).

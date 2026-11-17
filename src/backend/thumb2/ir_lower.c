@@ -37,6 +37,7 @@
  * when handed a high register.
  */
 
+#include <string.h>
 #include "emu/emu_ir.h"
 #include "emu/emu_ir_bytes.h"
 #include "emu/emu_thumb2.h"
@@ -2605,12 +2606,12 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         done = t2_b_forward();
 
         /*
-         * Part of the group: the element loop with the element's size
-         * for its stride, if vl is not 0 and its bytes lie in the
-         * window. r3 is vl's bytes here.
+         * Part of the group, if vl is not 0 and its bytes lie in the
+         * window: memcpy, out of line -- r3 is vl's bytes here. It was
+         * the element loop, inline at every access: about 90 bytes each,
+         * and a byte a turn for an e8 group's last trip, which the
+         * helper's own copy had done faster (vecbench 0.5% slower).
          */
-        const uint32_t esz = 1u << eew;
-
         patch_branch(part, emu_jit_here(), true);
         (void)t2_cmp_imm8(T2_R3, 0u);
         slow[ns++] = t2_bcond_forward(0x0u); /* EQ: vl 0, the helper's */
@@ -2623,21 +2624,29 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             emit_pooled(T2_R12, g_fast.base);
             t2_sub(T2_R2, ra2, T2_R12);
         }
-        emit_pooled(T2_R12, g_fast.size - esz);
+        emit_pooled(T2_R12, g_fast.size);
         t2_cmp(T2_R2, T2_R12);
-        slow[ns++] = t2_bcond_forward(0x8u); /* HI: the first outside */
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: starting outside */
         t2_add(T2_R0, T2_R2, T2_R3);
-        (void)t2_expand_imm(esz, &enc);
-        t2_sub_imm(T2_R0, T2_R0, enc);
         t2_cmp(T2_R0, T2_R12);
-        slow[ns++] = t2_bcond_forward(0x8u); /* HI: the last outside */
+        slow[ns++] = t2_bcond_forward(0x8u); /* HI: ending outside */
         if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
             t2_ldrb_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
             (void)t2_cmp_imm8(T2_R0, 0u);
             slow[ns++] = t2_bcond_forward(0x1u); /* NE: a reservation */
         }
-        t2_imm32(T2_R1, esz);
-        emit_vmem_loop(eew, store, t->vreg_offset(vd), T2_R1);
+        {
+            /* memcpy(dst, src, n): RAM and the registers, by direction */
+            const uint32_t ram = store ? T2_R0 : T2_R1;
+            const uint32_t reg = store ? T2_R1 : T2_R0;
+
+            emit_pooled(ram, (uint32_t)(uintptr_t)g_fast.host);
+            t2_add(ram, ram, T2_R2);
+            t2_imm32(reg, t->vreg_offset(vd));
+            t2_add(reg, reg, T2_CPU);
+            t2_mov(T2_R2, T2_R3);
+            t2_call((const void *)memcpy);
+        }
         done_part = t2_b_forward();
         for (uint32_t i = 0; i < ns; i++) {
             patch_branch(slow[i], emu_jit_here(), true);

@@ -30,6 +30,7 @@
  * claims, so the two cannot both fire on one value.
  */
 
+#include <string.h>
 #include "emu/emu_crypto.h" /* emu_sm4_affine */
 #include "emu/emu_ir.h"
 #include "emu/emu_ir_bytes.h"
@@ -2246,32 +2247,37 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         done = x86_jmp32();
 
         /*
-         * Part of the group: vl elements from the first, if vl is not 0
-         * and its bytes -- offset + vl bytes - an element, as the last
-         * element's offset -- lie in the window. edx is vl's bytes here.
+         * Part of the group, if vl is not 0 and its bytes lie in the
+         * window: memcpy, out of line. edx is vl's bytes here, and
+         * memcpy's third argument already.
          */
-        const uint32_t esz = 1u << eew;
-        const uint32_t lim = g_fast.size - esz;
-
         x86_patch_rel32(part, emu_jit_here());
         x86_alu_rr(X86_TEST, T2, T2);
         slow[ns++] = x86_jcc32(X86_CC_E); /* vl 0: the helper's */
         ld_operand(T1, in->a);
         x86_alu_imm32(X86_X_SUB, T1, g_fast.base);
-        x86_alu_imm32(X86_X_CMP, T1, lim);
-        slow[ns++] = x86_jcc32(X86_CC_A);
+        x86_alu_imm32(X86_X_CMP, T1, g_fast.size);
+        slow[ns++] = x86_jcc32(X86_CC_A); /* starting outside */
         x86_mov_rr(T0, T1);
         x86_alu_rr(X86_ADD, T0, T2);
-        x86_alu_imm32(X86_X_SUB, T0, esz);
-        x86_alu_imm32(X86_X_CMP, T0, lim);
-        slow[ns++] = x86_jcc32(X86_CC_A);
+        x86_alu_imm32(X86_X_CMP, T0, g_fast.size);
+        slow[ns++] = x86_jcc32(X86_CC_A); /* ending outside */
         if (store && g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
             x86_cmp8_cpu_imm(g_fast.store_guard_offset, 0u);
             slow[ns++] = x86_jcc32(X86_CC_NE);
         }
-        x86_mov_imm32(X86_ESI, esz);
-        ld_operand(T2, in->b);
-        emit_vmem_loop(eew, store, t->vreg_offset(vd));
+        {
+            /* memcpy(rdi, rsi, rdx): RAM and the registers, by direction */
+            const int ram = store ? X86_EDI : X86_ESI;
+            const int reg = store ? X86_ESI : X86_EDI;
+
+            x86_mov_imm64(ram, (uint64_t)(uintptr_t)g_fast.host);
+            x86_add64_rr(ram, T1);
+            x86_mov_imm64(reg, t->vreg_offset(vd));
+            x86_add64_rr(reg, X86_CPU);
+            x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)memcpy);
+            x86_call_rax();
+        }
         done_part = x86_jmp32();
         for (uint32_t i = 0; i < ns; i++) {
             x86_patch_rel32(slow[i], emu_jit_here());

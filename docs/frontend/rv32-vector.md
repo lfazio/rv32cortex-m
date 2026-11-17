@@ -203,6 +203,7 @@ the host's in every row:
 | masked operations (vecbench has none); 27.67 to 28.02 at three layouts | | 27.85 |
 | reductions and strided accesses (`EMU_IR_VRED`, `EMU_IR_VMEMS`); the same at two layouts | | 25.44 |
 | a short last trip inline: 62,728 bytes translated against 56,104, every access carrying it | | 25.57 |
+| the short trip a `memcpy` call instead of an element loop: 61,264 bytes, the same at two layouts | | 24.98 |
 
 **Unit-stride loads and stores are inline too** (`rv_ir_vmem`): an
 unmasked access of one field, in a block that knows vtype and has the
@@ -210,8 +211,8 @@ RAM window, becomes `EMU_IR_VMEM`. Where vl's bytes fill the group --
 VLMAX elements of EEW, 16 to 128 bytes -- and the whole group lies in
 the window, the backend copies it between RAM and the registers; where
 vl is short of the group but not 0 -- the last trip of a strip-mined
-loop -- and its bytes lie in the window, it moves vl elements with the
-strided access's element loop; anything else -- vl 0, an address
+loop -- and its bytes lie in the window, it calls `memcpy` for vl's
+bytes; anything else -- vl 0, an address
 outside, a store while an LR reservation is outstanding -- calls the
 vector helper, which faults as the interpreter does. A fractional EMUL
 and a build that traps misaligned elements keep the helper. vecbench
