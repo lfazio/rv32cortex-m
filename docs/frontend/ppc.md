@@ -1110,6 +1110,28 @@ compaction -- and every temp is a stack slot besides. The branch
 `wip/ppc-efsmul-in-block` keeps it. A lowering of the call itself
 would have to be cheaper in temps than the helper is in cycles.
 
+**And in bytes, which it cannot be** (2026-11-17, at 29dedd0, Whetstone
+under the JIT on the F746 at 29.29 and 29.28 host cycles an instruction
+at two layouts). Asked as before, by a no-op helper called before every
+efsadd, efssub, efsmul and efsdiv -- `MOVW`/`MOVT`/`BLX` to ITCM and
+back: 32.65 at both layouts, **about 22 cycles a call** now that the
+helpers are in ITCM, against 55 before, and the most that removing the
+call could give, 11%. What an inline fast path would add was asked
+without writing one: 80 bytes jumped over at each of those call sites
+-- less than the integer product's sequence, `ppc_ir_efsmul` being 218
+bytes compiled -- made it **35.35 and 35.33, 20.7% slower**: the
+translated code no longer fitted the DTCM part of the buffer, and the
+run ended with a compaction that evicted 178 blocks. So the arithmetic
+cannot come into the block on this part, whether as IR or as a
+backend's own sequence; it would cost about twice what the call does.
+What fewer calls could give instead: of 1.25 million fast-path FP
+instructions at least 346,000 are followed straight by another
+(`-DEMU_PAIR_STATS=ON`, interpreted, the listed pairs only), so a
+helper taking a run of them in one call would save at most about 3-4%.
+The PC profile of the same run: the FP helpers about a quarter of the
+run's samples, their own entry and exit lines about 4%, the arithmetic
+the rest.
+
 ## The JIT
 
 `--jit` selects `ppc_backend_jit`, built from `ppc_ir.c` through the

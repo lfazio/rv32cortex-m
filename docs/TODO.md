@@ -161,7 +161,13 @@ measured at.
       [jit/README.md](jit/README.md#chaining-compaction-and-committed-code)).
       Discarded: the
       arithmetic in the block, 19% slower on Thumb-2 for the temps it
-      spent (`wip/ppc-efsmul-in-block`).
+      spent (`wip/ppc-efsmul-in-block`), and -- measured again without
+      the temps, 2026-11-17 -- for its bytes: the call is about 22
+      cycles (11% of Whetstone at most), and 80 bytes more at each FP
+      site cost 20.7%, the buffer no longer fitting the DTCM
+      ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
+      Left: one call for a run of consecutive FP instructions, at most
+      3-4% (346,000 of 1.25M are followed by another).
 
 ## Linux
 
