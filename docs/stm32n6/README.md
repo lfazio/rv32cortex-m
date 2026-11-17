@@ -67,10 +67,15 @@ kept because every part of it was carried out: the shared runner
   so forgetting it is silent.
 - `src/emu/` claims to build for ARMv6-M through ARMv8.1-M. This is
   the first thing that would *check* that claim.
-- Helium (MVE) is **not** the port: it is a second, wider emitter.
-  Run `-DEMU_PAIR_STATS=ON` first and let the histogram say whether
-  any guest can use it, the way the pair stats answered the fusion
-  question and the FP histogram answered the lowering one.
+- Helium (MVE) is **not** the port: it is a second, wider emitter, and
+  it is where a guest has vector instructions to lower -- RV32's vector
+  unit: the unmasked single-width integer operations and the
+  whole-group copies, vecbench 18% fewer cycles under the JIT
+  ([backend/thumb2.md](../backend/thumb2.md#helium-mve-on-the-n6)). With
+  the vector unit the image needs 255 KiB of code, so its ROM/RAM line
+  is 272 KiB, not 220 (`EMU_N6_ROM_KIB`, passed to the linker script as
+  `__emu_rom_k`): a G4MH build cannot give RAM away like that, so the
+  line is the build's.
 
 ## The memory map, from STM32CubeN6
 

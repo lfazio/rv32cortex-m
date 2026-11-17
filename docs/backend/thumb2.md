@@ -317,6 +317,45 @@ different, every one a VMEM block. With the vector unit off the RV32
 CoreMark firmware is unchanged (10.75 both sides, two layouts), and the
 code is not built (`EMU_IR_VECTOR`).
 
+### Helium (MVE) on the N6
+
+The N6's Cortex-M55 has MVE: Q0-Q7, 128 bits, which are S0-S31 -- so a
+block uses Q0-Q3, Q4-Q7 being the callee-saved S16-S31. Built where the
+compiler targets it (`__ARM_FEATURE_MVE`) and used where MVFR1 says the
+core implements it, read once; the M7's reads 0 there. Where it is, two
+lowerings take MVE's road and the rest keeps the DSP extension's:
+
+- **Unmasked single-width `EMU_IR_VOP`**, a register of the group at a
+  time: vs2 in Q0, vs1 in Q1 or the scalar duplicated into it once
+  (`VDUP`), vd's old value in Q2, the operation into Q0, then the tail's
+  byte mask from the same window the DSP path reads (`VLDRB` into Q3)
+  and Q0 = old ^ ((new ^ old) & mask) before `VSTRW`. Every width for
+  the multiply and the shifts -- which the DSP path lacks at 8 bits, and
+  for shifts below 32 -- a shift's count masked to the element and
+  negated for a right one, `VSHL` shifting by a signed count; the
+  averages under rnu and rdn (`VRHADD`, `VHADD`; rne and rod keep the
+  DSP path); the multiply-adds as `VMUL` and `VADD`/`VSUB`.
+- **`EMU_IR_VMEM`'s whole-group copy**, 16 bytes a pair: `VLDRB`/`VSTRB`
+  on the RAM side, which takes any alignment, `VLDRW`/`VSTRW` on the
+  register file's, from a register at vd.
+
+The encoders (`t2_vldrw`, `t2_mve3` and the rest) are held to the
+assembler for the M55 by `t2-check-encodings.sh`, Q7 and negative
+offsets among them: 35 instructions, all right first time. vecbench on
+the N6 under the JIT, 400 rounds, 25.02 and 24.99 host cycles an
+instruction to **20.45 and 20.41** at two layouts, 18% fewer, the code it
+translated 62,084 bytes to 47,700 and the checksum the host's. The baseline was
+measured again from a worktree given the same ROM/RAM line: the first,
+at 256 KiB of ROM, read 25.05 and 25.01. `tests/guest/vecops.c` --
+every operation this covers, .vv and .vx, at e8, e16 and e32, m1, m2
+and m8, vl at its edges, each vxrm -- prints the host's 36 lines and
+checksum on the N6 and on the F746 (the DSP path), and four mutants each
+change all 36 on the N6: a reversed subtract not reversed, the tail
+window not applied, a right shift's count not negated, the store copy
+reading the group's first register each time. Not yet in MVE: the
+masked forms (the mask's bits spread to bytes for `VPSEL`), widening and
+narrowing, the reductions and the vector FP ([TODO](../TODO.md)).
+
 ## Calling convention
 
 Cortex-M selects instruction set with the low bit of a branch target, so

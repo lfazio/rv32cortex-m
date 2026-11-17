@@ -166,6 +166,49 @@ vmsr      fpscr, r1
 lsrs      r1, r1, #1
 EOF
 
+# MVE (Helium), the N6's Cortex-M55 only: assembled for that core, Q7
+# and negative offsets among them, since a Q register's three bits sit in
+# a different place for each operand.
+cat >"$work/ref-mve.s" <<'EOF'
+.syntax unified
+.thumb
+vldrw.u32 q0, [r12, #496]
+vldrw.u32 q7, [r0, #16]
+vstrw.32  q3, [r12, #-16]
+vldrw.u32 q2, [r2, #-508]
+vldrb.u8  q1, [r12, #1]
+vldrb.u8  q3, [r3, #112]
+vstrb.8   q2, [r3, #16]
+vldrb.u8  q1, [r3, #-16]
+vadd.i8   q0, q0, q1
+vadd.i16  q0, q0, q1
+vadd.i32  q2, q3, q7
+vsub.i8   q0, q0, q1
+vsub.i32  q0, q1, q0
+vand      q0, q0, q1
+vorr      q0, q7, q1
+veor      q5, q0, q1
+vmin.s8   q0, q0, q1
+vmin.u16  q0, q0, q1
+vmax.s32  q0, q0, q1
+vmax.u8   q0, q0, q1
+vmul.i8   q0, q0, q1
+vmul.i32  q3, q2, q1
+vshl.u8   q0, q0, q1
+vshl.s32  q0, q0, q3
+vneg.s8   q1, q1
+vneg.s32  q3, q0
+vrhadd.u8 q0, q0, q1
+vrhadd.s16 q0, q0, q1
+vhadd.u32 q0, q0, q1
+vhadd.s8  q0, q0, q1
+vdup.8    q1, r2
+vdup.16   q1, r2
+vdup.32   q3, r12
+usat      r2, #8, r2
+usat      r0, #8, lr
+EOF
+
 cat >"$work/emit.c" <<'EOF'
 #include "emu/emu_thumb2.h"
 
@@ -385,6 +428,48 @@ int main(void)
         printf("%02x", *p);
     }
     printf("\n");
+
+    /* the second line: MVE, against ref-mve.s */
+    emu_jit_cursor = buf;
+    t2_vldrw(0u, 12u, 496);
+    t2_vldrw(7u, 0u, 16);
+    t2_vstrw(3u, 12u, -16);
+    t2_vldrw(2u, 2u, -508);
+    t2_vldrb(1u, 12u, 1);
+    t2_vldrb(3u, 3u, 112);
+    t2_vstrb(2u, 3u, 16);
+    t2_vldrb(1u, 3u, -16);
+    t2_mve3(T2_MVE_VADD_HI | T2_MVE_SZ(0), T2_MVE_VADD_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VADD_HI | T2_MVE_SZ(1), T2_MVE_VADD_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VADD_HI | T2_MVE_SZ(2), T2_MVE_VADD_LO, 2u, 3u, 7u);
+    t2_mve3(T2_MVE_VSUB_HI | T2_MVE_SZ(0), T2_MVE_VSUB_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VSUB_HI | T2_MVE_SZ(2), T2_MVE_VSUB_LO, 0u, 1u, 0u);
+    t2_mve3(T2_MVE_VAND_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VORR_HI, T2_MVE_VLOGIC_LO, 0u, 7u, 1u);
+    t2_mve3(T2_MVE_VEOR_HI, T2_MVE_VLOGIC_LO, 5u, 0u, 1u);
+    t2_mve3(T2_MVE_VMIN_HI | T2_MVE_SZ(0), T2_MVE_VMIN_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VMIN_HI | T2_MVE_U | T2_MVE_SZ(1), T2_MVE_VMIN_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VMAX_HI | T2_MVE_SZ(2), T2_MVE_VMAX_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VMAX_HI | T2_MVE_U | T2_MVE_SZ(0), T2_MVE_VMAX_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VMUL_HI | T2_MVE_SZ(0), T2_MVE_VMUL_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VMUL_HI | T2_MVE_SZ(2), T2_MVE_VMUL_LO, 3u, 2u, 1u);
+    t2_vshl(0u, true, 0u, 0u, 1u);
+    t2_vshl(2u, false, 0u, 0u, 3u);
+    t2_vneg(0u, 1u, 1u);
+    t2_vneg(2u, 3u, 0u);
+    t2_mve3(T2_MVE_VRHADD_HI | T2_MVE_U | T2_MVE_SZ(0), T2_MVE_VRHADD_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VRHADD_HI | T2_MVE_SZ(1), T2_MVE_VRHADD_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VHADD_HI | T2_MVE_U | T2_MVE_SZ(2), T2_MVE_VHADD_LO, 0u, 0u, 1u);
+    t2_mve3(T2_MVE_VHADD_HI | T2_MVE_SZ(0), T2_MVE_VHADD_LO, 0u, 0u, 1u);
+    t2_vdup(0u, 1u, 2u);
+    t2_vdup(1u, 1u, 2u);
+    t2_vdup(2u, 3u, 12u);
+    t2_usat(2u, 8u, 2u);
+    t2_usat(0u, 8u, 14u);
+    for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
+        printf("%02x", *p);
+    }
+    printf("\n");
     return emu_jit_overflow ? 1 : 0;
 }
 EOF
@@ -397,7 +482,20 @@ cc -o "$work/emit" "$work/emit.c" "$here/src/backend/thumb2/encode.c" \
     exit 1
 }
 
-ours=$("$work/emit") || { echo "error: the emitter overflowed" >&2; exit 1; }
+both=$("$work/emit") || { echo "error: the emitter overflowed" >&2; exit 1; }
+ours=$(echo "$both" | sed -n 1p)
+ours_mve=$(echo "$both" | sed -n 2p)
+
+arm-none-eabi-as -mthumb -mcpu=cortex-m55 "$work/ref-mve.s" -o "$work/ref-mve.o" \
+    2>"$work/as-mve.log" || { cat "$work/as-mve.log" >&2; exit 1; }
+arm-none-eabi-objcopy -O binary "$work/ref-mve.o" "$work/ref-mve.bin"
+theirs_mve=$(od -An -tx1 -v "$work/ref-mve.bin" | tr -d ' \n')
+if [[ "$ours_mve" != "$theirs_mve" ]]; then
+    echo "t2-check-encodings: MVE MISMATCH" >&2
+    echo "  emitted:   $ours_mve" >&2
+    echo "  assembler: $theirs_mve" >&2
+    exit 1
+fi
 
 arm-none-eabi-as -mthumb -mcpu=cortex-m7 "$work/ref.s" -o "$work/ref.o" \
     2>"$work/as.log" || { cat "$work/as.log" >&2; exit 1; }
@@ -405,7 +503,7 @@ arm-none-eabi-objcopy -O binary "$work/ref.o" "$work/ref.bin"
 theirs=$(od -An -tx1 -v "$work/ref.bin" | tr -d ' \n')
 
 if [[ "$ours" == "$theirs" ]]; then
-    echo "t2-check-encodings: $(( ${#ours} / 8 )) instructions match the assembler"
+    echo "t2-check-encodings: $(( ${#ours} / 8 )) instructions match the assembler, and $(( ${#ours_mve} / 8 )) of MVE"
     exit 0
 fi
 

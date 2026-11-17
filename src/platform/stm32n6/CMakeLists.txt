@@ -286,8 +286,22 @@ endif()
 # on these parts is a performance change of its own. RelWithDebInfo is
 # the only type here whose level is not -Os (Release is refused above).
 #
+#
+# Where ROM ends and RAM begins in AXISRAM2's 511 KiB (the linker
+# script's note): 220 by default, 272 with the vector unit, which needs
+# the code -- 255 KiB of it with the MVE lowering, against 209 KiB of RAM
+# used. A setting, so that a build short of one can move it.
+#
+if(RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
+    set(_n6_rom_kib 272)
+else()
+    set(_n6_rom_kib 220)
+endif()
+set(EMU_N6_ROM_KIB "${_n6_rom_kib}" CACHE STRING
+    "N6: KiB of AXISRAM2 for the firmware's ROM, the rest of 511 its RAM")
 target_link_options(emu-stm32n6 PRIVATE
     -Os $<$<CONFIG:RelWithDebInfo>:-O2>
+    -Wl,--defsym=__emu_rom_k=${EMU_N6_ROM_KIB}
     -T${CMAKE_CURRENT_SOURCE_DIR}/stm32n657xx_lrun.ld
     -Wl,-Map=${CMAKE_BINARY_DIR}/emu-stm32n6.map
     -Wl,--print-memory-usage

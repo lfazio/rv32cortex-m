@@ -127,6 +127,7 @@ f446-g4|stm32f446|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|**the defau
 f446-net|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the other value here**: the M4 with PPP, which it had no option for until the wiring moved to cmake/emu_net.cmake
 n6-rv32|stm32n6|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the Armv8.1-M port: cortex-m55, -mcmse, no internal flash, 1471 KiB of guest RAM
 n6-g4|stm32n6|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check on the newest platform: a frontend swap must need nothing from src/platform/
+n6-zve32x|stm32n6|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DRV32_EXT_ZVE32X=ON|**the vector unit on the M55**: the Helium (MVE) lowerings, and the ROM/RAM line moved to 272 KiB to hold them (EMU_N6_ROM_KIB)
 host-coremark|host|-DEMU_NATIVE_COREMARK=ON|**the native baseline**, which called a console symbol renamed away years ago and so had not linked since; nothing built it, so nothing said so
 f746-coremark|stm32f746|-DEMU_NATIVE_COREMARK=ON -DEMU_NET=OFF|the same option on the board it was written for
 f746-zve32f|stm32f746|-DRV32_EXT_ZVE32X=ON -DRV32_EXT_ZVE32F=ON -DEMU_NET=OFF|**the vector unit on the board**, with single precision: the Thumb-2 vector lowerings (EMU_IR_VECTOR), which no other firmware row compiles

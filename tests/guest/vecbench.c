@@ -274,14 +274,18 @@ int main(void)
     uint32_t sum = 0u;
 
     for (int r = 0; r < VECBENCH_ROUNDS; r++) {
-        k_add(g_c, g_a, g_b, N - (size_t)r);
+        /* the lengths' shortfall, modulo 64: any round count stays in
+         * bounds, and the first 64 rounds are what they always were */
+        const int q = r % 64;
+
+        k_add(g_c, g_a, g_b, N - (size_t)q);
         sum = mix(sum, sum_words(g_c, sizeof(g_c)));
-        k_axpy(g_c, g_a, 3 - r, N);
-        sum = mix(sum, (uint32_t)k_dot(g_h, g_k, N - 3u * (size_t)r));
-        k_copy(g_d, g_s, 4u * N - (size_t)r);
+        k_axpy(g_c, g_a, 3 - q, N);
+        sum = mix(sum, (uint32_t)k_dot(g_h, g_k, N - 3u * (size_t)q));
+        k_copy(g_d, g_s, 4u * N - (size_t)q);
         k_avg(g_d, g_d, g_s + 1, 4u * N - 1u);
         k_clip(g_h, g_c, N);
-        sum = mix(sum, (uint32_t)k_max(g_c, g_a, N - (size_t)r));
+        sum = mix(sum, (uint32_t)k_max(g_c, g_a, N - (size_t)q));
         k_gather(g_c, g_a, g_b, N / 4u);
     }
     sum = mix(sum, sum_words(g_c, sizeof(g_c)));

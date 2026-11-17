@@ -171,10 +171,19 @@ _Min_Stack_Size = 0x2000;
  * They are ordered .jitcode last so that overflowing it is a link
  * error naming ITCM rather than silently pushing hot code out.
  */
+/*
+ * The line between ROM and RAM is the build's, in KiB (`EMU_N6_ROM_KIB`,
+ * passed as __emu_rom_k): 220K by default, and 272K for a build with the
+ * vector unit, whose code overflowed 220K by 32,256 bytes while RAM had
+ * some 87 KB to spare. G4MH's RAM could not give as much, which is why
+ * it is a setting and not one line for every build.
+ */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 220K
-  RAM    (xrw)    : ORIGIN = 0x341B7400,   LENGTH = 291K
+  ROM    (xrw)    : ORIGIN = 0x34180400,
+                    LENGTH = DEFINED(__emu_rom_k) ? __emu_rom_k * 1K : 220K
+  RAM    (xrw)    : ORIGIN = 0x34180400 + (DEFINED(__emu_rom_k) ? __emu_rom_k * 1K : 220K),
+                    LENGTH = 511K - (DEFINED(__emu_rom_k) ? __emu_rom_k * 1K : 220K)
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
   ITCM   (rwx)    : ORIGIN = 0x10000000,   LENGTH = 64K
 }

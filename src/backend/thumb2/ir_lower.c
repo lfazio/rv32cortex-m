@@ -1327,6 +1327,80 @@ static bool vop_lowerable(uint8_t aux)
     }
 }
 
+/*
+ * MVE (Helium), where the core has it -- the N6's Cortex-M55: 16 bytes an
+ * instruction where the DSP extension has 4, every element width for the
+ * multiply and the shifts, and the same tail window. Built where the
+ * compiler targets it, used where MVFR1 says the core implements it (read
+ * once; the M7's MVFR1 has 0 there). The unmasked single-width operations
+ * and the whole-group copies; the rest keeps the DSP lowering.
+ */
+#if defined(__ARM_FEATURE_MVE)
+#define T2_HAVE_MVE 1
+#else
+#define T2_HAVE_MVE 0
+#endif
+
+#if T2_HAVE_MVE
+static bool have_mve(void)
+{
+    static int8_t s_mve = -1;
+
+    if (s_mve < 0) {
+        s_mve = (int8_t)((((*(volatile const uint32_t *)0xE000EF44u) >> 8) & 0xFu) != 0u);
+    }
+    return s_mve > 0;
+}
+#else
+static bool have_mve(void)
+{
+    return false;
+}
+#endif
+
+/* The unmasked operations MVE lowers; the averages under rnu and rdn. */
+static bool vop_mve(uint32_t op, uint32_t sew, uint32_t rm)
+{
+    if (sew > 2u) {
+        return false;
+    }
+    switch (op) {
+    case EMU_IR_V_ADD:
+    case EMU_IR_V_SUB:
+    case EMU_IR_V_RSUB:
+    case EMU_IR_V_AND:
+    case EMU_IR_V_OR:
+    case EMU_IR_V_XOR:
+    case EMU_IR_V_MINU:
+    case EMU_IR_V_MIN:
+    case EMU_IR_V_MAXU:
+    case EMU_IR_V_MAX:
+    case EMU_IR_V_MUL:
+    case EMU_IR_V_SLL:
+    case EMU_IR_V_SRL:
+    case EMU_IR_V_SRA:
+    case EMU_IR_V_MV:
+    case EMU_IR_V_MACC:
+    case EMU_IR_V_NMSAC:
+    case EMU_IR_V_MADD:
+    case EMU_IR_V_NMSUB:
+        return true;
+    case EMU_IR_V_AADDU:
+    case EMU_IR_V_AADD:
+        return rm == EMU_IR_RM_RNU || rm == EMU_IR_RM_RDN;
+    default:
+        return false;
+    }
+}
+
+/* The register file one block of 16-byte rows from v0, as MVE's loops
+ * address it, at a word-aligned offset. */
+static bool vfile_mve(const emu_ir_target_t *t)
+{
+    return t->vreg_offset != NULL && (t->vreg_offset(0u) % 4u) == 0u &&
+           t->vreg_offset(31u) == t->vreg_offset(0u) + 31u * EMU_IR_VREG_BYTES;
+}
+
 #endif /* EMU_IR_VECTOR */
 
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
@@ -1455,8 +1529,11 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
      * is not told.
      */
 #if EMU_IR_VECTOR
-    case EMU_IR_VOP:
-        return vop_lowerable(aux);
+    case EMU_IR_VOP: /* the DSP's, or MVE's -- whose averages are only rnu
+                      * and rdn, which the DSP lowering does too */
+        return vop_lowerable(aux) ||
+               (have_mve() && vop_mve(EMU_IR_VOP_OP(aux), EMU_IR_VOP_SEW(aux),
+                                      EMU_IR_RM_RNU));
     case EMU_IR_VMEM: /* word moves; without a window, the helper alone */
         return true;
     case EMU_IR_VOPM: /* every form as unmasked, and the merge */
@@ -2306,6 +2383,128 @@ static void lower_vop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/*
+ * EMU_IR_VOP in MVE, a register of the group at a time: vs2 in Q0, vs1
+ * in Q1 -- or the scalar, duplicated into it once -- and vd's old value
+ * in Q2; the operation into Q0; the tail's byte mask from the window
+ * into Q3, then Q0 = old ^ ((new ^ old) & mask) and the store. r12 the
+ * register file, r3 the window less vl's bytes, r0 a shift's count mask.
+ * A shift's count is masked to the element's bits and, for a right
+ * shift, negated: VSHL shifts by a signed count. Q0-Q3 only: Q4-Q7 are
+ * S16-S31, which the block's caller expects kept.
+ */
+static void lower_vop_mve(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VOP_OP(in->aux);
+    const uint32_t sew = EMU_IR_VOP_SEW(in->aux);
+    const bool vx = EMU_IR_VOP_VX(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+    const uint32_t rm = EMU_IR_VOP_RM(in->imm);
+    const bool shift = op == EMU_IR_V_SLL || op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
+    const bool right = op == EMU_IR_V_SRL || op == EMU_IR_V_SRA;
+    const uint16_t sz = T2_MVE_SZ(sew);
+    const uint32_t base = t->vreg_offset(0u);
+
+    if (vx) {
+        ld_operand(T2_R0, in->a);
+        if (shift) {
+            t2_and_imm(T2_R0, T2_R0, (uint16_t)((8u << sew) - 1u));
+            if (right) {
+                t2_neg(T2_R0, T2_R0);
+            }
+        }
+        t2_vdup(sew, 1u, T2_R0);
+    } else if (shift) {
+        (void)t2_movs_imm8(T2_R0, (8u << sew) - 1u);
+    }
+    ld_operand(T2_R3, in->b);
+    if (sew != 0u) {
+        t2_shift_imm(T2_LSL, T2_R3, T2_R3, sew); /* vl in bytes */
+    }
+    t2_imm32(T2_R2, (uint32_t)(uintptr_t)(k_vop_window + 128u));
+    t2_sub(T2_R3, T2_R2, T2_R3);
+    if (base < 4096u) {
+        t2_addw(T2_R12, T2_CPU, (uint16_t)base);
+    } else {
+        t2_imm32(T2_R12, base);
+        t2_add(T2_R12, T2_R12, T2_CPU);
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        const int32_t od = (int32_t)(EMU_IR_VREG_BYTES * (vd + r));
+
+        if (op != EMU_IR_V_MV) {
+            t2_vldrw(0u, T2_R12, (int32_t)(EMU_IR_VREG_BYTES * (vs2 + r)));
+        }
+        if (!vx) {
+            t2_vldrw(1u, T2_R12, (int32_t)(EMU_IR_VREG_BYTES * (vs1 + r)));
+            if (shift) {
+                t2_vdup(sew, 3u, T2_R0);
+                t2_mve3(T2_MVE_VAND_HI, T2_MVE_VLOGIC_LO, 1u, 1u, 3u);
+                if (right) {
+                    t2_vneg(sew, 1u, 1u);
+                }
+            }
+        }
+        t2_vldrw(2u, T2_R12, od);
+        switch (op) {
+        case EMU_IR_V_ADD: t2_mve3(T2_MVE_VADD_HI | sz, T2_MVE_VADD_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_SUB: t2_mve3(T2_MVE_VSUB_HI | sz, T2_MVE_VSUB_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_RSUB: t2_mve3(T2_MVE_VSUB_HI | sz, T2_MVE_VSUB_LO, 0u, 1u, 0u); break;
+        case EMU_IR_V_AND: t2_mve3(T2_MVE_VAND_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_OR: t2_mve3(T2_MVE_VORR_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_XOR: t2_mve3(T2_MVE_VEOR_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_MINU:
+            t2_mve3(T2_MVE_VMIN_HI | T2_MVE_U | sz, T2_MVE_VMIN_LO, 0u, 0u, 1u);
+            break;
+        case EMU_IR_V_MIN: t2_mve3(T2_MVE_VMIN_HI | sz, T2_MVE_VMIN_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_MAXU:
+            t2_mve3(T2_MVE_VMAX_HI | T2_MVE_U | sz, T2_MVE_VMAX_LO, 0u, 0u, 1u);
+            break;
+        case EMU_IR_V_MAX: t2_mve3(T2_MVE_VMAX_HI | sz, T2_MVE_VMAX_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_MUL: t2_mve3(T2_MVE_VMUL_HI | sz, T2_MVE_VMUL_LO, 0u, 0u, 1u); break;
+        case EMU_IR_V_SLL:
+        case EMU_IR_V_SRL: t2_vshl(sew, true, 0u, 0u, 1u); break;
+        case EMU_IR_V_SRA: t2_vshl(sew, false, 0u, 0u, 1u); break;
+        case EMU_IR_V_MV: t2_mve3(T2_MVE_VORR_HI, T2_MVE_VLOGIC_LO, 0u, 1u, 1u); break;
+        case EMU_IR_V_AADDU:
+        case EMU_IR_V_AADD: {
+            const uint16_t u = (op == EMU_IR_V_AADDU) ? T2_MVE_U : 0u;
+
+            if (rm == EMU_IR_RM_RNU) {
+                t2_mve3(T2_MVE_VRHADD_HI | u | sz, T2_MVE_VRHADD_LO, 0u, 0u, 1u);
+            } else { /* rdn */
+                t2_mve3(T2_MVE_VHADD_HI | u | sz, T2_MVE_VHADD_LO, 0u, 0u, 1u);
+            }
+            break;
+        }
+        case EMU_IR_V_MACC: /* d + s1 * s2 */
+            t2_mve3(T2_MVE_VMUL_HI | sz, T2_MVE_VMUL_LO, 0u, 0u, 1u);
+            t2_mve3(T2_MVE_VADD_HI | sz, T2_MVE_VADD_LO, 0u, 0u, 2u);
+            break;
+        case EMU_IR_V_NMSAC: /* d - s1 * s2 */
+            t2_mve3(T2_MVE_VMUL_HI | sz, T2_MVE_VMUL_LO, 0u, 0u, 1u);
+            t2_mve3(T2_MVE_VSUB_HI | sz, T2_MVE_VSUB_LO, 0u, 2u, 0u);
+            break;
+        case EMU_IR_V_MADD: /* s1 * d + s2 */
+            t2_mve3(T2_MVE_VMUL_HI | sz, T2_MVE_VMUL_LO, 3u, 1u, 2u);
+            t2_mve3(T2_MVE_VADD_HI | sz, T2_MVE_VADD_LO, 0u, 0u, 3u);
+            break;
+        default: /* NMSUB: s2 - s1 * d */
+            t2_mve3(T2_MVE_VMUL_HI | sz, T2_MVE_VMUL_LO, 3u, 1u, 2u);
+            t2_mve3(T2_MVE_VSUB_HI | sz, T2_MVE_VSUB_LO, 0u, 0u, 3u);
+            break;
+        }
+        t2_vldrb(3u, T2_R3, (int32_t)(16u * r)); /* the tail's byte mask */
+        t2_mve3(T2_MVE_VEOR_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 2u);
+        t2_mve3(T2_MVE_VAND_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 3u);
+        t2_mve3(T2_MVE_VEOR_HI, T2_MVE_VLOGIC_LO, 0u, 0u, 2u);
+        t2_vstrw(0u, T2_R12, od);
+    }
+}
+
 /* What each single-width reduction combines with, as an EMU_IR_V_* op. */
 static const uint8_t k_t2_vred_vop[8] = {
     EMU_IR_V_ADD,  EMU_IR_V_AND, EMU_IR_V_OR,   EMU_IR_V_XOR,
@@ -2601,7 +2800,34 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
         t2_add(T2_R12, T2_R12, T2_R2);
-        for (uint32_t k = 0; k < bytes / 4u; k++) {
+        /*
+         * MVE: 16 bytes a pair, VLDRB/VSTRB on the RAM side -- any
+         * alignment -- and VLDRW/VSTRW on the registers', from r2 at vd.
+         */
+        const bool mve_copy = have_mve() && vfile_mve(t);
+
+        if (mve_copy) {
+            const uint32_t vo = t->vreg_offset(vd);
+
+            if (vo < 4096u) {
+                t2_addw(T2_R2, T2_CPU, (uint16_t)vo);
+            } else {
+                t2_imm32(T2_R2, vo);
+                t2_add(T2_R2, T2_R2, T2_CPU);
+            }
+            for (uint32_t r = 0; r < bytes / EMU_IR_VREG_BYTES; r++) {
+                const int32_t o = (int32_t)(EMU_IR_VREG_BYTES * r);
+
+                if (store) {
+                    t2_vldrw(0u, T2_R2, o);
+                    t2_vstrb(0u, T2_R12, o);
+                } else {
+                    t2_vldrb(0u, T2_R12, o);
+                    t2_vstrw(0u, T2_R2, o);
+                }
+            }
+        }
+        for (uint32_t k = 0; !mve_copy && k < bytes / 4u; k++) {
             const uint32_t off =
                 t->vreg_offset(vd + k / 4u) + 4u * (k % 4u);
 
@@ -3350,6 +3576,16 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux) ||
             t->vreg_offset == NULL) {
             return false;
+        }
+        if (in->op == (uint8_t)EMU_IR_VOP && have_mve() &&
+            vop_mve(EMU_IR_VOP_OP(in->aux), EMU_IR_VOP_SEW(in->aux),
+                    EMU_IR_VOP_RM(in->imm)) &&
+            vfile_mve(t)) {
+            lower_vop_mve(in, t);
+            break;
+        }
+        if (!vop_lowerable(in->aux) && in->op == (uint8_t)EMU_IR_VOP) {
+            return false; /* MVE's alone, and MVE cannot here */
         }
         lower_vop(in, t);
         break;

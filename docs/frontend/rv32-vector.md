@@ -323,6 +323,19 @@ operation began without it. Both printed RISC-V's flags on the board,
 which read as a lowering without the deviation until the helper's calls
 were counted ([TODO](../TODO.md)).
 
+**On the N6, Helium** (MVE, the M55's 128-bit unit) lowers the unmasked
+single-width operations and the whole-group copies 16 bytes an
+instruction, where the F746's DSP extension does 4: vecbench under the
+JIT 25.02 to 20.45 host cycles an instruction
+([backend/thumb2.md](../backend/thumb2.md#helium-mve-on-the-n6)).
+`tests/guest/vecops.c` (`guest-vecops-both`) runs every operation it
+covers at every width, at m1, m2 and m8 and vl's edges, under each
+vxrm; the host's checksum, `862031b0`, is the N6's and the F746's under
+the JIT. vecbench takes any round count now: its lengths shrink with
+the round modulo 64, where they ran negative past a third of N, so a
+run of 400 rounds trapped on the host -- the checksum of up to 64
+rounds is what it was.
+
 **Built only where something emits them**: the IR's vector operations,
 their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake
 sets on every host build and on a board only with the vector unit.

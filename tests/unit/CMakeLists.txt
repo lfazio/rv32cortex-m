@@ -260,6 +260,14 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-vecbench-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # Every unmasked integer operation, width, group and vl edge (vecops.c).
+    if(TARGET guest-vecops AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-vecops-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/vecops.bin" VECOPS-END)
+        set_tests_properties(guest-vecops-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     # Every rounding mode on ties (vecround.c): one checksum, both backends.
     if(TARGET guest-vecround AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
         add_test(NAME guest-vecround-both

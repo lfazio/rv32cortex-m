@@ -242,6 +242,37 @@ void t2_call(const void *fn);
 void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core);
 void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm);
 void t2_vsqrt(uint32_t sd, uint32_t sm);
+/* MVE (Helium): Q0-Q3 only in a block -- Q4-Q7 are S16-S31, callee-saved. */
+#define T2_MVE_U 0x1000u /* the unsigned form */
+#define T2_MVE_SZ(sew) ((uint16_t)((sew) << 4))
+/* Each op's two halfwords: the first ORed with T2_MVE_SZ and T2_MVE_U. */
+#define T2_MVE_VADD_HI 0xEF00u
+#define T2_MVE_VADD_LO 0x0840u
+#define T2_MVE_VSUB_HI 0xFF00u
+#define T2_MVE_VSUB_LO 0x0840u
+#define T2_MVE_VAND_HI 0xEF00u /* no size */
+#define T2_MVE_VORR_HI 0xEF20u
+#define T2_MVE_VEOR_HI 0xFF00u
+#define T2_MVE_VLOGIC_LO 0x0150u
+#define T2_MVE_VMIN_HI 0xEF00u
+#define T2_MVE_VMIN_LO 0x0650u
+#define T2_MVE_VMAX_HI 0xEF00u
+#define T2_MVE_VMAX_LO 0x0640u
+#define T2_MVE_VMUL_HI 0xEF00u
+#define T2_MVE_VMUL_LO 0x0950u
+#define T2_MVE_VRHADD_HI 0xEF00u
+#define T2_MVE_VRHADD_LO 0x0140u
+#define T2_MVE_VHADD_HI 0xEF00u
+#define T2_MVE_VHADD_LO 0x0040u
+void t2_vldrw(uint32_t qd, uint32_t rn, int32_t off);
+void t2_vstrw(uint32_t qd, uint32_t rn, int32_t off);
+void t2_vldrb(uint32_t qd, uint32_t rn, int32_t off);
+void t2_vstrb(uint32_t qd, uint32_t rn, int32_t off);
+void t2_mve3(uint16_t hi, uint16_t lo, uint32_t qd, uint32_t qn, uint32_t qm);
+void t2_vshl(uint32_t sew, bool u, uint32_t qd, uint32_t qval, uint32_t qshift);
+void t2_vneg(uint32_t sew, uint32_t qd, uint32_t qm);
+void t2_vdup(uint32_t sew, uint32_t qd, uint32_t rt);
+void t2_usat(uint32_t rd, uint32_t sat, uint32_t rn);
 /* VLDR/VSTR Sd, [Rn, #off], off a multiple of 4 below 1024. */
 void t2_vldr(uint32_t sd, uint32_t rn, uint32_t off);
 void t2_vstr(uint32_t sd, uint32_t rn, uint32_t off);

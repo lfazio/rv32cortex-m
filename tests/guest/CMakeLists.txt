@@ -439,6 +439,12 @@ add_guest_image(vecbench SOURCES start.S vecbench.c
                 FLAGS -march=${RV_GUEST_MARCH}_zve32x
                       -DVECBENCH_ROUNDS=${VECBENCH_ROUNDS})
 
+# Every unmasked single-width integer operation at every width, three
+# group sizes and vl's edges (vecops.c): one checksum on each backend and
+# board -- for the N6's MVE lowering, which no host suite reaches.
+add_guest_image(vecops SOURCES start.S vecops.c
+                FLAGS -march=${RV_GUEST_MARCH}_zve32x)
+
 # The fixed-point rounding modes on data made of ties (vecround.c): what
 # random words hardly reach, so the JIT's lowerings of rne, rdn and rod
 # get a checksum to agree with -- on the host's two backends, and on the

@@ -827,6 +827,79 @@ void t2_vsqrt(uint32_t sd, uint32_t sm)
                          VFP_VD(sm)));
 }
 
+/*
+ * MVE (Helium), Armv8.1-M's 128-bit vectors: Q0-Q7, which are S0-S31 --
+ * so Q4-Q7 are the callee-saved S16-S31, and a block uses Q0-Q3 only.
+ * A Q register's number is three bits, at 15:13 of the second halfword
+ * for the destination, 3:1 of the first for Qn and of the second for
+ * Qm; checked against the assembler at Q7 (t2-check-encodings.sh).
+ */
+
+/* VLDRW.U32 / VSTRW.32 Qd, [Rn, #off]: off a multiple of 4 in -508..508. */
+static void mve_mem(uint16_t lo, bool load, uint32_t qd, uint32_t rn, int32_t off,
+                    uint32_t scale)
+{
+    const uint32_t mag = (uint32_t)((off < 0) ? -off : off) >> scale;
+
+    t2_emit32((uint16_t)(0xED00u | 0x100u | ((off >= 0) ? 0x80u : 0u) |
+                         (load ? 0x10u : 0u) | rn),
+              (uint16_t)((qd << 13) | lo | (mag & 0x7Fu)));
+}
+
+void t2_vldrw(uint32_t qd, uint32_t rn, int32_t off)
+{
+    mve_mem(0x1F00u, true, qd, rn, off, 2u);
+}
+
+void t2_vstrw(uint32_t qd, uint32_t rn, int32_t off)
+{
+    mve_mem(0x1F00u, false, qd, rn, off, 2u);
+}
+
+/* VLDRB.U8 / VSTRB.8 Qd, [Rn, #off]: off in -127..127, any alignment. */
+void t2_vldrb(uint32_t qd, uint32_t rn, int32_t off)
+{
+    mve_mem(0x1E00u, true, qd, rn, off, 0u);
+}
+
+void t2_vstrb(uint32_t qd, uint32_t rn, int32_t off)
+{
+    mve_mem(0x1E00u, false, qd, rn, off, 0u);
+}
+
+/* The three-register integer family: `hi` the first halfword's op, U
+ * and size, `lo` the second's op. */
+void t2_mve3(uint16_t hi, uint16_t lo, uint32_t qd, uint32_t qn, uint32_t qm)
+{
+    t2_emit32((uint16_t)(hi | (qn << 1)), (uint16_t)((qd << 13) | lo | (qm << 1)));
+}
+
+/* VSHL.S/U<size> Qd, Qm, Qn: each lane of Qm by the signed byte at the
+ * bottom of Qn's -- left when positive, right when negative. */
+void t2_vshl(uint32_t sew, bool u, uint32_t qd, uint32_t qval, uint32_t qshift)
+{
+    t2_mve3((uint16_t)(0xEF00u | (u ? T2_MVE_U : 0u) | (sew << 4)), 0x0440u, qd,
+            qshift, qval);
+}
+
+void t2_vneg(uint32_t sew, uint32_t qd, uint32_t qm)
+{
+    t2_emit32((uint16_t)(0xFFB1u | (sew << 2)), (uint16_t)((qd << 13) | 0x03C0u | (qm << 1)));
+}
+
+/* VDUP.<8|16|32> Qd, Rt: B for 8, E for 16. */
+void t2_vdup(uint32_t sew, uint32_t qd, uint32_t rt)
+{
+    t2_emit32((uint16_t)(0xEEA0u | ((sew == 0u) ? 0x40u : 0u) | (qd << 1)),
+              (uint16_t)((rt << 12) | 0x0B10u | ((sew == 1u) ? 0x20u : 0u)));
+}
+
+/* USAT Rd, #sat, Rn: Rn clamped to 0..2^sat - 1. */
+void t2_usat(uint32_t rd, uint32_t sat, uint32_t rn)
+{
+    t2_emit32((uint16_t)(0xF380u | rn), (uint16_t)((rd << 8) | (sat & 31u)));
+}
+
 /* VMRS Rt, FPSCR and VMSR FPSCR, Rt. */
 void t2_vmrs(uint32_t rt)
 {

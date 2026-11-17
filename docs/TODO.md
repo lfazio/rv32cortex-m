@@ -263,8 +263,15 @@ From the last measurements in [linux.md](linux.md).
       unsigned widening multiply-adds. Next: .wv narrowing (a count a
       lane: AVX2's on x86-64, an extraction a lane on Thumb-2);
       Thumb-2's widening from bytes, narrowing to bytes and unsigned clip
-      (registers; USAT reads signed); the N6's MVE
-      (Helium), a 128-bit unit. Not yet: a loop over an m4 or m8 group's
+      (registers; USAT reads signed). The N6's MVE (Helium) lowers the
+      unmasked single-width operations and the whole-group copies
+      (vecbench 18% fewer cycles,
+      [backend/thumb2.md](backend/thumb2.md#helium-mve-on-the-n6)); next
+      there: the masked forms -- a mask's bits spread to the bytes
+      `VPSEL` reads, by a table for 16 and 32 bits -- the widening and
+      narrowing operations (`VMULL`, `VSHRN`/`VQRSHRN`), the reductions
+      (`VADDV`, `VMAXV`) and the vector FP (MVE's single precision,
+      `VFMA`), and unit-stride accesses' short last trip. Not yet: a loop over an m4 or m8 group's
       words on Thumb-2 -- vecbench runs the same at a 32 KB buffer as at
       64 ([backend/thumb2.md](backend/thumb2.md#the-guests-vector-registers-the-dsp-extension))
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#the-two-backends)).
