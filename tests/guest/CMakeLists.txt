@@ -446,6 +446,10 @@ add_guest_image(vecbench SOURCES start.S vecbench.c
 add_guest_image(vecround SOURCES start.S vecround.c
                 FLAGS -march=${RV_GUEST_MARCH}_zve32x)
 
+# Results at the edge of underflow (fpedge.c): what an FPU detecting
+# tininess before rounding answers differently from RISC-V.
+add_guest_image(fpedge SOURCES start.S fpedge.c)
+
 # The vector unit's single precision on special values (vecfp.c), for
 # the board, where SoftFloat and the host-float comparisons run on an M7.
 add_guest_image(vecfp SOURCES start.S vecfp.c

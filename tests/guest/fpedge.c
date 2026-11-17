@@ -1,0 +1,84 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * fpedge.c - floating-point results at the edge of underflow, and the
+ * flags each raises: what an FPU that detects tininess before rounding
+ * (ARM's VFP) answers differently from RISC-V, which detects it after.
+ *
+ * A product whose exact value lies just below the smallest normal,
+ * 2^-126, and rounds to it at 24 bits with an unbounded exponent -- the
+ * fifth case, 2^-126 (1 - 2^-46) -- is tiny before rounding and not
+ * after: RISC-V raises NX alone, a before-rounding FPU NX and UF. The
+ * first is a single already, tiny either way. Each case prints its
+ * result and fflags. The host prints RISC-V's answers on both backends
+ * (guest-fpedge, which pins them); the F746 prints them interpreted, and
+ * under the JIT -- whose Thumb-2 lowering takes VFP's UFC as it comes --
+ * flags 3 for the fifth and sixth cases. docs/TODO.md has why that has
+ * no cheap fix.
+ */
+
+#include <stdint.h>
+
+#define UART_THR (*(volatile uint8_t *)0x10000000u)
+
+static void puts_(const char *s)
+{
+    while (*s != '\0') {
+        UART_THR = (uint8_t)*s++;
+    }
+}
+
+static void puthex(uint32_t v)
+{
+    for (int i = 28; i >= 0; i -= 4) {
+        UART_THR = (uint8_t)"0123456789abcdef"[(v >> i) & 15u];
+    }
+}
+
+/* r = a op b under rounding mode rm, and the flags it raised. */
+#define CASE(op, a, b, rm)                                                     \
+    do {                                                                       \
+        uint32_t r_, f_;                                                       \
+        __asm__ volatile("fsrm %4\n"                                           \
+                         "csrw fflags, zero\n"                                 \
+                         "fmv.w.x ft0, %2\n"                                   \
+                         "fmv.w.x ft1, %3\n" op " ft2, ft0, ft1\n"             \
+                         "fmv.x.w %0, ft2\n"                                   \
+                         "frflags %1\n"                                        \
+                         : "=r"(r_), "=r"(f_)                                  \
+                         : "r"(a), "r"(b), "r"(rm)                             \
+                         : "ft0", "ft1", "ft2");                               \
+        puts_(op " ");                                                         \
+        puthex(a);                                                             \
+        puts_(" ");                                                            \
+        puthex(b);                                                             \
+        puts_(" rm ");                                                         \
+        puthex(rm);                                                            \
+        puts_(" -> ");                                                         \
+        puthex(r_);                                                            \
+        puts_(" flags ");                                                      \
+        puthex(f_);                                                            \
+        puts_("\n");                                                           \
+    } while (0)
+
+int main(void)
+{
+    __asm__ volatile("csrs mstatus, %0" : : "r"(0x2000u));
+    puts_("FPEDGE-START\n");
+    /* (1 - 2^-24) * 2^-126 is a single: tiny before and after rounding */
+    CASE("fmul.s", 0x3F7FFFFFu, 0x00800000u, 0u);
+    CASE("fmul.s", 0xBF7FFFFFu, 0x00800000u, 0u);
+    CASE("fmul.s", 0x3F7FFFFFu, 0x00800000u, 3u); /* rup */
+    CASE("fmul.s", 0x3F7FFFFFu, 0x00800000u, 1u); /* rtz: stays below */
+    /* 2^-126 (1 - 2^-46): rounds to 2^-126 with an unbounded exponent,
+     * so tiny before rounding and not after -- NX alone on RISC-V */
+    CASE("fmul.s", 0x3F7FFFFEu, 0x00800001u, 0u);
+    CASE("fmul.s", 0xBF7FFFFEu, 0x00800001u, 0u);
+    CASE("fmul.s", 0x3F7FFFFEu, 0x00800001u, 3u);
+    /* 2^-126 - 2^-150 exactly, rounding up to the smallest normal */
+    CASE("fdiv.s", 0x00FFFFFFu, 0x40000000u, 0u);
+    /* a sum: 2^-126 less half a subnormal step */
+    CASE("fadd.s", 0x00800000u, 0x80000001u, 0u);
+    CASE("fsub.s", 0x00800001u, 0x00000001u, 0u);
+    puts_("FPEDGE-END\n");
+    return 0;
+}

@@ -5098,6 +5098,18 @@ session, and every one of them recurred:
   built from XOR and rotation is a linear map; give it a non-linear
   step, and test it with the error it is for.**
 
+- **A reference that runs on the host under test shares its FPU.**
+  Thumb-2's native FP passed every board check there was: the corpus
+  replay compares compiled code with the IR interpreter, which computes
+  a float on the same M7, with the same VFP. VFP detects tininess before
+  rounding and RISC-V after, so a product that rounds to 2^-126 from
+  below raised UF under the JIT and NX alone everywhere else -- found
+  only by writing a guest of exactly that value and reading its flags on
+  the board beside the host (`tests/guest/fpedge.c`), while planning the
+  vector FP lowering, which would have inherited it. **A differential
+  check whose two sides compute with one unit tests the unit's
+  agreement with itself.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

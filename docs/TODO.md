@@ -204,6 +204,21 @@ From the last measurements in [linux.md](linux.md).
 
 ## RV32
 
+- [ ] **Thumb-2's native FP raises UF where RISC-V does not.** VFP
+      detects tininess before rounding, RISC-V (and x86's SSE) after, and
+      the lowering hands FPSCR.UFC to the guest as it is: a result that
+      rounds to +-2^-126 from below raises UF on the F746 under the JIT
+      and not interpreted or on the host -- `tests/guest/fpedge.c`, its
+      fifth and sixth cases (flags 3 against 1). Only a result of exactly
+      +-2^-126 can differ, but at that result either answer can be the
+      right one (2^-126 - 2^-150, a tie on the subnormal grid, is tiny
+      after rounding too), so it cannot be fixed after the fact from the
+      result alone: an exact fix needs the operation's own UF, a VMRS
+      before each FP operation or the operation redone in SoftFloat when
+      its result is +-2^-126, and either costs every FP operation a
+      check. The board replay could not see it, its reference computing
+      with the same FPU. Measure the check's cost on Whetstone first.
+
 - [ ] **The vector extension past Zve32f**: Zve32x and Zve32f are whole
       behind `-DRV32_EXT_ZVE32X=ON` and `-DRV32_EXT_ZVE32F=ON` and held
       to Spike by six probes; next Zve64x/f/d, then V and its `misa` bit

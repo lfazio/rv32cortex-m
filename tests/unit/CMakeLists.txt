@@ -268,6 +268,19 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-vecround-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # The underflow edge (fpedge.c): RISC-V's flags, interpreted and under
+    # the JIT -- the fifth case NX alone, tiny before rounding and not after.
+    if(TARGET guest-fpedge AND RV32_EXT_F AND EMU_GUEST_ARCH_RV32)
+        set(_want "fmul.s 3f7ffffe 00800001 rm 00000000 -> 00800000 flags 00000001.*FPEDGE-END")
+        add_test(NAME guest-fpedge
+                 COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/fpedge.bin")
+        set_tests_properties(guest-fpedge PROPERTIES LABELS fast
+            PASS_REGULAR_EXPRESSION "${_want}")
+        add_test(NAME guest-fpedge-jit
+                 COMMAND emu-host --jit "${CMAKE_BINARY_DIR}/guest/fpedge.bin")
+        set_tests_properties(guest-fpedge-jit PROPERTIES LABELS fast
+            PASS_REGULAR_EXPRESSION "${_want}")
+    endif()
     if(TARGET guest-vecfp AND RV32_EXT_ZVE32F AND EMU_GUEST_ARCH_RV32)
         add_test(NAME guest-vecfp-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
