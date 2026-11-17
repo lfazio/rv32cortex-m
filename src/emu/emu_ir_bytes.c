@@ -104,6 +104,7 @@ static const char *const k_names[EMU_IR_OP_COUNT] = {
     [EMU_IR_VMEM] = "VMEM",
     [EMU_IR_VRED] = "VRED",
     [EMU_IR_VMEMS] = "VMEMS",
+    [EMU_IR_VFOP] = "VFOP",
 };
 
 typedef struct {

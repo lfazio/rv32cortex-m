@@ -250,7 +250,11 @@ Each has cost more than one session, and every one recurred.
   test needing root is a test nobody runs (`unshare -rn`).
 - **A contract met only by the interpreter is untested under the JIT**:
   `step` ran a whole block, and `gdb-check` never passed `--jit`. When a
-  test compares two backends, print which two it used.
+  test compares two backends, print which two it used. And a guest
+  written for a lowering must be shown to reach it: `fpedge-v`'s vector
+  cases ran in the helper twice -- cold after a compaction, then behind
+  a declined CSR write whose batch took the `vsetivli` -- and printed
+  RISC-V's flags on the board; count the replaced path's calls first.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all;
@@ -674,7 +678,8 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **An encoder whose wrong answers are other valid instructions needs its
   boundary values tested.** A register that does not fit the 16-bit form
   (`CMP r8` became `CMP r0`), a hand-built ModRM (`r12` became `esp`),
-  `imm5 == 0` (LSR/ASR #0 mean #32, ROR #0 is RRX). Register parameters go
+  `imm5 == 0` (LSR/ASR #0 mean #32, ROR #0 is RRX), a VFP register's low
+  bit (`t2_vfp3` put D in `sub`; odd registers in every field now). Register parameters go
   through `encode.c`/`emit_cmp_hi`.
 - **`MOVS` writes N and Z**: set the false value before the compare.
 - **Branch range is a silent cliff**: pick the encoding by reach

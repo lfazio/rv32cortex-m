@@ -5110,6 +5110,44 @@ session, and every one of them recurred:
   check whose two sides compute with one unit tests the unit's
   agreement with itself.**
 
+- **A guest written for a lowering must be shown to reach it.**
+  `fpedge-v` asks the vector unit the underflow edge that fpedge asks
+  the scalar one, so that the F746 would show whether the new VFP
+  lowering shared the deviation. Its first two board runs printed
+  RISC-V's flags under the JIT -- which read as "the vector lowering
+  does not have it" -- and neither had run the lowering. The first
+  ran each case once, after the code buffer had compacted, so every case
+  waited for the hot threshold and was interpreted. The second repeated
+  them, and they still went to the helper: each began with `fsrm` and a
+  write to fflags, CSR writes the translator declines, and the declined
+  pc's batch of interpreted instructions ran on past the `vsetivli`
+  behind them -- so the block holding the operation began without
+  vtype, and a block that has not set vtype sends vector instructions to
+  the helper. A print in the translator named `g_vt` unknown at each;
+  callgrind's count of `rv_hart_vec` calls was the instrument after.
+  With the CSR writes out of the repeated loop the board printed UF
+  (flags 3), as the scalar path does. **Before reading a guest's output
+  as a verdict on a lowering, count the calls of the path it replaces.**
+
+- **A VFP register's low bit is a field apart, and the even registers
+  cannot see where it went.** `t2_vfp3` placed the destination's D bit
+  at bit 6 of the second halfword -- `sub` -- not of the first. Every
+  scalar caller passed s0, so it emitted correct code for as long as
+  this backend had FP; the vector lowering wanted s1-s3, and with an odd
+  destination VADD would have been VSUB into the register below. Found
+  by adding the VFP instructions to `t2-check-encodings.sh` with odd
+  registers in every field before writing the lowering -- the third
+  time this encoder family has had a register's low bit in the wrong
+  place (N was the first). **An encoder's register fields are tested at
+  odd values, in every position, against the assembler.**
+
+- **A reference checked only where the lowering runs is checked only
+  there.** `test_lower_vfop` compared the interpreter's reference with
+  a reading of its own only for the operations x86-64 lowers in SSE,
+  so the fused forms -- the ones that read vd -- went unchecked, and a
+  mutant reading the addend from vs2 passed. Run for all fifteen, it
+  fails at once.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

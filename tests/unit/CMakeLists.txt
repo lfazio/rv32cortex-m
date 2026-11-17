@@ -281,6 +281,17 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-fpedge-jit PROPERTIES LABELS fast
             PASS_REGULAR_EXPRESSION "${_want}")
     endif()
+    # And the vector unit's, where it has single precision: vfmul.vv and
+    # vfmacc.vv on the fifth case, NX alone.
+    if(TARGET guest-fpedge-v AND RV32_EXT_ZVE32F AND EMU_GUEST_ARCH_RV32)
+        set(_want "vfmul.vv 3f7ffffe 00800001 rm 00000000 -> 00800000 flags 00000001.*vfmacc.vv 3f7ffffe 00800001 rm 00000000 -> 00800000 flags 00000001.*FPEDGE-END")
+        foreach(_j "" "--jit")
+            add_test(NAME guest-fpedge-v${_j}
+                     COMMAND emu-host ${_j} "${CMAKE_BINARY_DIR}/guest/fpedge-v.bin")
+            set_tests_properties(guest-fpedge-v${_j} PROPERTIES LABELS fast
+                PASS_REGULAR_EXPRESSION "${_want}")
+        endforeach()
+    endif()
     if(TARGET guest-vfbench AND RV32_EXT_ZVE32F AND EMU_GUEST_ARCH_RV32)
         add_test(NAME guest-vfbench-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

@@ -286,6 +286,38 @@ static uint32_t rv_vreg_offset(uint32_t n)
 }
 #endif
 
+#if RV_EXT_ZVE32F
+/*
+ * EMU_IR_VFOP's element, rv_vf32's arithmetic -- the vector unit's own,
+ * held to Spike -- in the IR's operations: the reversed forms swap
+ * their operands, the fused ones negate theirs, as rv_vec.c's opf does.
+ * The IR's flags and rounding modes are RISC-V's bit for bit.
+ */
+static uint32_t rv_ir_vfop(uint32_t op, uint32_t a, uint32_t b, uint32_t c,
+                           uint32_t rm, uint32_t *flags)
+{
+    const uint32_t ng = 0x80000000u;
+
+    switch (op) {
+    case EMU_IR_VF_ADD: return rv_vf32(RV_VF_ADD, a, b, 0u, rm, flags);
+    case EMU_IR_VF_SUB: return rv_vf32(RV_VF_SUB, a, b, 0u, rm, flags);
+    case EMU_IR_VF_RSUB: return rv_vf32(RV_VF_SUB, b, a, 0u, rm, flags);
+    case EMU_IR_VF_MUL: return rv_vf32(RV_VF_MUL, a, b, 0u, rm, flags);
+    case EMU_IR_VF_DIV: return rv_vf32(RV_VF_DIV, a, b, 0u, rm, flags);
+    case EMU_IR_VF_RDIV: return rv_vf32(RV_VF_DIV, b, a, 0u, rm, flags);
+    case EMU_IR_VF_SQRT: return rv_vf32(RV_VF_SQRT, a, 0u, 0u, rm, flags);
+    case EMU_IR_VF_MACC: return rv_vf32(RV_VF_FMA, b, a, c, rm, flags);
+    case EMU_IR_VF_NMACC: return rv_vf32(RV_VF_FMA, b ^ ng, a, c ^ ng, rm, flags);
+    case EMU_IR_VF_MSAC: return rv_vf32(RV_VF_FMA, b, a, c ^ ng, rm, flags);
+    case EMU_IR_VF_NMSAC: return rv_vf32(RV_VF_FMA, b ^ ng, a, c, rm, flags);
+    case EMU_IR_VF_MADD: return rv_vf32(RV_VF_FMA, b, c, a, rm, flags);
+    case EMU_IR_VF_NMADD: return rv_vf32(RV_VF_FMA, b ^ ng, c, a ^ ng, rm, flags);
+    case EMU_IR_VF_MSUB: return rv_vf32(RV_VF_FMA, b, c, a ^ ng, rm, flags);
+    default: return rv_vf32(RV_VF_FMA, b ^ ng, c, a, rm, flags); /* NMSUB */
+    }
+}
+#endif
+
 #if RV_EXT_F
 static uint32_t rv_freg_offset(uint32_t n)
 {
@@ -832,6 +864,9 @@ const emu_ir_target_t rv_ir_target = {
 #if RV_EXT_ZVE32X
     .vreg_offset = rv_vreg_offset,
     .vsat_offset = (uint32_t)offsetof(rv_hart_t, vxsat),
+#if RV_EXT_ZVE32F
+    .vfop = rv_ir_vfop,
+#endif
 #endif
     /*
      * No condition flags at all. flags_offset is unused while every
@@ -1483,6 +1518,80 @@ static bool rv_ir_vred(emu_ir_block_t *b, uint32_t f3, uint32_t f6, bool vm,
     return true;
 }
 
+#if RV_EXT_ZVE32F
+/*
+ * The vector unit's single-precision arithmetic (OPFVV, OPFVF) to
+ * EMU_IR_VFOP: add, subtract, multiply, divide (each way round), square
+ * root and the eight fused multiply-adds, masked or not, where the block
+ * knows vtype and SEW is 32. FS and frm are in the block's context, so
+ * FS on and a valid frm here hold whenever the block runs; frm is the
+ * operation's rounding mode, which the backend may decline. The rest --
+ * min and max, the compares, the conversions, the reductions -- stays
+ * the helper's, as does anything the specification refuses.
+ */
+static bool rv_ir_vfop_tr(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
+{
+    const rv_hart_t *const h = (const rv_hart_t *)cpu;
+    const uint32_t f3 = (insn >> 12) & 7u;
+    const uint32_t f6 = insn >> 26;
+    const bool vm = ((insn >> 25) & 1u) != 0u;
+    const uint32_t vs2 = (insn >> 20) & 31u;
+    const uint32_t r1 = (insn >> 15) & 31u;
+    const uint32_t vd = (insn >> 7) & 31u;
+    const bool vf = f3 == 5u;
+    const uint32_t frm = RV_IR_FRM(cpu);
+    uint32_t op;
+
+    if (g_vt == RV_IR_VT_UNKNOWN || ((g_vt >> 3) & 7u) != 2u ||
+        (h->mstatus & MSTATUS_FS_MASK) == 0u || frm > EMU_IR_FRM_RMM) {
+        return false;
+    }
+    switch (f6) {
+    case 0x00u: op = EMU_IR_VF_ADD; break;
+    case 0x02u: op = EMU_IR_VF_SUB; break;
+    case 0x27u: op = EMU_IR_VF_RSUB; break; /* .vf only */
+    case 0x24u: op = EMU_IR_VF_MUL; break;
+    case 0x20u: op = EMU_IR_VF_DIV; break;
+    case 0x21u: op = EMU_IR_VF_RDIV; break; /* .vf only */
+    case 0x13u: op = EMU_IR_VF_SQRT; break; /* .vv, vs1 0 */
+    case 0x2Cu: op = EMU_IR_VF_MACC; break;
+    case 0x2Du: op = EMU_IR_VF_NMACC; break;
+    case 0x2Eu: op = EMU_IR_VF_MSAC; break;
+    case 0x2Fu: op = EMU_IR_VF_NMSAC; break;
+    case 0x28u: op = EMU_IR_VF_MADD; break;
+    case 0x29u: op = EMU_IR_VF_NMADD; break;
+    case 0x2Au: op = EMU_IR_VF_MSUB; break;
+    case 0x2Bu: op = EMU_IR_VF_NMSUB; break;
+    default: return false;
+    }
+    if ((!vf && (op == EMU_IR_VF_RSUB || op == EMU_IR_VF_RDIV)) ||
+        (op == EMU_IR_VF_SQRT && (vf || r1 != 0u))) {
+        return false; /* no such form: the helper's illegal instruction */
+    }
+    const int32_t lg = ((g_vt & 7u) >= 4u) ? (int32_t)(g_vt & 7u) - 8
+                                           : (int32_t)(g_vt & 7u);
+    const uint32_t nlg = (lg > 0) ? (uint32_t)lg : 0u;
+    const uint32_t grp = 1u << nlg;
+    const uint8_t aux = EMU_IR_VFOP_AUX(op, frm);
+
+    if (vd % grp != 0u || vs2 % grp != 0u ||
+        (!vf && op != EMU_IR_VF_SQRT && r1 % grp != 0u) || (!vm && vd == 0u) ||
+        !emu_ir_can_lower(EMU_IR_VFOP, aux)) {
+        return false;
+    }
+    const uint16_t scalar = vf ? emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX, EMU_IR_NO_TEMP,
+                                             EMU_IR_NO_TEMP, r1, 0u)
+                               : EMU_IR_NO_TEMP;
+
+    vs_mark(b);
+    (void)emu_ir_emit(b, EMU_IR_VFOP, aux, scalar, emu_ir_get(b, RV_IR_VL),
+                      EMU_IR_VFOP_IMM(vd, vs2, (vf || op == EMU_IR_VF_SQRT) ? 0u : r1,
+                                      nlg, 0u, !vm, vf),
+                      0u);
+    return true;
+}
+#endif
+
 static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
 {
     const uint32_t f3 = (insn >> 12) & 7u;
@@ -1498,6 +1607,11 @@ static bool rv_ir_vec(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn)
     if (f3 == 7u) {
         return rv_ir_vset(b, insn);
     }
+#if RV_EXT_ZVE32F
+    if (f3 == 1u || f3 == 5u) {
+        return rv_ir_vfop_tr(cpu, b, insn);
+    }
+#endif
     if (g_vt != RV_IR_VT_UNKNOWN &&
         ((f3 == 2u && f6 <= 0x07u) || (f3 == 0u && (f6 == 0x30u || f6 == 0x31u)))) {
         return rv_ir_vred(b, f3, f6, vm, vd, vs2, r1);

@@ -14,6 +14,10 @@
  * under the JIT -- whose Thumb-2 lowering takes VFP's UFC as it comes --
  * flags 3 for the fifth and sixth cases. docs/TODO.md has why that has
  * no cheap fix.
+ *
+ * Built with Zve32f (fpedge-v), it asks the vector unit the same, one
+ * element at a time: vfmul.vv, vfmacc.vv onto zero and vfdiv.vv, whose
+ * Thumb-2 lowering is the same VFP and so the same deviation.
  */
 
 #include <stdint.h>
@@ -34,10 +38,18 @@ static void puthex(uint32_t v)
     }
 }
 
-/* r = a op b under rounding mode rm, and the flags it raised. */
+/*
+ * r = a op b under rounding mode rm, and the flags it raised -- asked
+ * REPS times, so that the JIT translates it: run once, after the code
+ * buffer has compacted, a case waits for the hot threshold and is
+ * interpreted, which answers for SoftFloat and not for the lowering.
+ */
+#define REPS 64
+
 #define CASE(op, a, b, rm)                                                     \
     do {                                                                       \
         uint32_t r_, f_;                                                       \
+        for (int k_ = 0; k_ < REPS; k_++)                                      \
         __asm__ volatile("fsrm %4\n"                                           \
                          "csrw fflags, zero\n"                                 \
                          "fmv.w.x ft0, %2\n"                                   \
@@ -60,9 +72,71 @@ static void puthex(uint32_t v)
         puts_("\n");                                                           \
     } while (0)
 
+#if defined(__riscv_zve32f)
+/*
+ * vd = a op b for one element, vd 0 before, under rm, and its flags --
+ * the operation in a loop of its own that starts at the vsetivli, with
+ * no CSR access inside: the JIT translates a vector instruction only in
+ * a block that set vtype, and a CSR access is interpreted, in a batch
+ * that would carry the vsetivli with it.
+ */
+#define VASM(insn)                                                             \
+    __asm__ volatile("vsetivli zero, 1, e32, m1, ta, ma\n"                     \
+                     "vle32.v v1, (%0)\n"                                      \
+                     "vle32.v v2, (%1)\n"                                      \
+                     "vmv.v.i v3, 0\n" insn " v3, v1, v2\n"                    \
+                     "vse32.v v3, (%2)\n"                                      \
+                     :                                                         \
+                     : "r"(&s_a), "r"(&s_b), "r"(&s_r)                         \
+                     : "memory")
+
+static void vcase(const char *op, uint32_t a, uint32_t b, uint32_t rm)
+{
+    static uint32_t s_a, s_b, s_r;
+    uint32_t f;
+
+    s_a = a;
+    s_b = b;
+    s_r = 0u;
+    __asm__ volatile("fsrm %0\n"
+                     "csrw fflags, zero\n"
+                     :
+                     : "r"(rm));
+    if (op[2] == 'm' && op[3] == 'a') {
+        for (int k = 0; k < REPS; k++) {
+            VASM("vfmacc.vv");
+        }
+    } else if (op[2] == 'd') {
+        for (int k = 0; k < REPS; k++) {
+            VASM("vfdiv.vv");
+        }
+    } else {
+        for (int k = 0; k < REPS; k++) {
+            VASM("vfmul.vv");
+        }
+    }
+    __asm__ volatile("frflags %0" : "=r"(f));
+    puts_(op);
+    puts_(" ");
+    puthex(a);
+    puts_(" ");
+    puthex(b);
+    puts_(" rm ");
+    puthex(rm);
+    puts_(" -> ");
+    puthex(s_r);
+    puts_(" flags ");
+    puthex(f);
+    puts_("\n");
+}
+#endif
+
 int main(void)
 {
     __asm__ volatile("csrs mstatus, %0" : : "r"(0x2000u));
+#if defined(__riscv_zve32f)
+    __asm__ volatile("csrs mstatus, %0" : : "r"(0x200u)); /* VS */
+#endif
     puts_("FPEDGE-START\n");
     /* (1 - 2^-24) * 2^-126 is a single: tiny before and after rounding */
     CASE("fmul.s", 0x3F7FFFFFu, 0x00800000u, 0u);
@@ -79,6 +153,13 @@ int main(void)
     /* a sum: 2^-126 less half a subnormal step */
     CASE("fadd.s", 0x00800000u, 0x80000001u, 0u);
     CASE("fsub.s", 0x00800001u, 0x00000001u, 0u);
+#if defined(__riscv_zve32f)
+    vcase("vfmul.vv", 0x3F7FFFFFu, 0x00800000u, 0u);
+    vcase("vfmul.vv", 0x3F7FFFFEu, 0x00800001u, 0u);
+    vcase("vfmul.vv", 0xBF7FFFFEu, 0x00800001u, 0u);
+    vcase("vfmacc.vv", 0x3F7FFFFEu, 0x00800001u, 0u);
+    vcase("vfdiv.vv", 0x00FFFFFFu, 0x40000000u, 0u);
+#endif
     puts_("FPEDGE-END\n");
     return 0;
 }

@@ -31,7 +31,8 @@
  * window, or through a four-entry data TLB, as the input chooses.
  *
  * What it cannot see: the FP exception flags (the reference computes
- * none), FSQRT and FMA (the reference declines them), and the Thumb-2
+ * none), FSQRT and FMA (the reference declines them), how EMU_IR_VFOP
+ * rounds (its reference is C's floats on the same FPU, f_vfop), and the Thumb-2
  * lowering, which needs a board -- where this same file runs the corpus
  * built here, compiled with EMU_IR_BOARD into a firmware of its own
  * (tests/ir-board, scripts/ir-board.sh): the Thumb-2 lowering against
@@ -342,6 +343,47 @@ static void f_fp_flags(emu_cpu_t *cpu, uint32_t flags)
     ((fcpu_t *)(void *)cpu)->fe |= flags;
 }
 
+/*
+ * EMU_IR_VFOP's element, for the reference: C's float arithmetic under
+ * round to nearest, a NaN made the canonical one. It is the host's FPU,
+ * which the lowering uses too -- so this sees how an operation is
+ * lowered (its operands, the mask, vl, the fused forms' signs, the NaN)
+ * and not how the unit rounds, which test_lower_vfop asks of x86-64 and
+ * the guests of the board. No flags, as for the scalar operations; the
+ * generator asks only for RNE.
+ */
+static uint32_t f_vfop(uint32_t op, uint32_t a, uint32_t b, uint32_t c,
+                       uint32_t rm, uint32_t *flags)
+{
+    float x, y, z, r;
+    uint32_t u;
+
+    (void)rm;
+    (void)flags;
+    memcpy(&x, &a, 4u);
+    memcpy(&y, &b, 4u);
+    memcpy(&z, &c, 4u);
+    switch (op) {
+    case EMU_IR_VF_ADD: r = x + y; break;
+    case EMU_IR_VF_SUB: r = x - y; break;
+    case EMU_IR_VF_RSUB: r = y - x; break;
+    case EMU_IR_VF_MUL: r = x * y; break;
+    case EMU_IR_VF_DIV: r = x / y; break;
+    case EMU_IR_VF_RDIV: r = y / x; break;
+    case EMU_IR_VF_SQRT: r = __builtin_sqrtf(x); break;
+    case EMU_IR_VF_MACC: r = __builtin_fmaf(y, x, z); break;
+    case EMU_IR_VF_NMACC: r = __builtin_fmaf(-y, x, -z); break;
+    case EMU_IR_VF_MSAC: r = __builtin_fmaf(y, x, -z); break;
+    case EMU_IR_VF_NMSAC: r = __builtin_fmaf(-y, x, z); break;
+    case EMU_IR_VF_MADD: r = __builtin_fmaf(y, z, x); break;
+    case EMU_IR_VF_NMADD: r = __builtin_fmaf(-y, z, -x); break;
+    case EMU_IR_VF_MSUB: r = __builtin_fmaf(y, z, -x); break;
+    default: r = __builtin_fmaf(-y, z, x); break; /* NMSUB */
+    }
+    memcpy(&u, &r, 4u);
+    return ((u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u) ? 0x7FC00000u : u;
+}
+
 static uint32_t off_reg(uint32_t n)
 {
     return (uint32_t)(offsetof(fcpu_t, r) + 4u * n);
@@ -377,6 +419,7 @@ static uint32_t off_vreg(uint32_t n)
         .helper_count = 6u, .load = f_load, .store = f_store,                  \
         .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
         .vreg_offset = off_vreg, .vsat_offset = offsetof(fcpu_t, vsat),       \
+        .vfop = f_vfop,                                                        \
     }
 #define TGT_FLAGS(ro, rz)                                                      \
     TGT(ro, rz, 1u, 2u, 4u, 8u),                                               \
@@ -654,7 +697,7 @@ static uint16_t divisor(uint16_t d)
  */
 static bool one(in_t *in, uint32_t pc, uint32_t next)
 {
-    const uint32_t kind = pick(in, 22u);
+    const uint32_t kind = pick(in, 23u);
     uint16_t d = EMU_IR_NO_TEMP;
 
     if (byte(in) < 200u) {
@@ -979,6 +1022,47 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
                      emu_ir_get(&g_built, sr), EMU_IR_VMEMS_IMM(vd, eew, store, sr));
         break;
     }
+    case 22: { /* single precision on the vector registers, under RNE */
+        static const uint32_t k_special[16] = {
+            0x00000000u, 0x80000000u, 0x3F800000u, 0xBF800000u,
+            0x00000001u, 0x807FFFFFu, 0x00800000u, 0x7F7FFFFFu,
+            0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7F800001u,
+            0xFFC12345u, 0x3F7FFFFEu, 0x00800001u, 0x40400000u,
+        };
+        const uint32_t op = pick(in, EMU_IR_VF_COUNT);
+        const uint32_t lg = pick(in, 4u);
+        const uint32_t vd = pick(in, 32u >> lg) << lg;
+        const uint32_t vs2 = (byte(in) < 64u) ? vd : (pick(in, 32u >> lg) << lg);
+        const uint32_t vs1 = pick(in, 32u >> lg) << lg;
+        const uint32_t vm = pick(in, 32u);
+        /* the mask register outside vd's group, as the contract asks */
+        const bool masked = (byte(in) & 1u) != 0u && (vm >> lg) != (vd >> lg);
+        const bool vf = (byte(in) & 1u) != 0u;
+        const uint32_t lanes = (EMU_IR_VREG_BYTES / 4u) << lg;
+        const uint32_t vl = (byte(in) < 128u) ? lanes : pick(in, lanes + 1u);
+        const uint8_t aux = EMU_IR_VFOP_AUX(op, EMU_IR_FRM_RNE);
+        const uint8_t mv = EMU_IR_VOP_AUX(EMU_IR_V_MV, 2u, true);
+        const uint32_t fill = byte(in);
+
+        if (!emu_ir_can_lower(EMU_IR_VFOP, aux)) {
+            break;
+        }
+        /* a special value in a source group first, sometimes */
+        if (fill < 128u && emu_ir_can_lower(EMU_IR_VOP, mv)) {
+            const uint32_t to = (fill & 2u) ? vs1 : (fill & 1u) ? vs2 : vd;
+
+            (void)E(EMU_IR_VOP, mv, emu_ir_const(&g_built, k_special[pick(in, 16u)]),
+                    emu_ir_const(&g_built, pick(in, lanes + 1u)),
+                    EMU_IR_VOP_IMM(to, 0u, 0u, lg), 0u);
+        }
+        (void)E(EMU_IR_VFOP, aux,
+                vf ? ((byte(in) & 1u) ? emu_ir_const(&g_built, k_special[pick(in, 16u)])
+                                      : val(in))
+                   : EMU_IR_NO_TEMP,
+                emu_ir_const(&g_built, vl),
+                EMU_IR_VFOP_IMM(vd, vs2, vs1, lg, vm, masked, vf), 0u);
+        break;
+    }
     case 17: { /* the guest's vector registers, within the op's contract */
         const uint32_t vop = pick(in, EMU_IR_V_COUNT);
         const uint32_t sew = pick(in, 3u);
@@ -1278,7 +1362,7 @@ static const char *op_name(uint8_t op)
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
         N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM),
-        N(VRED),      N(VMEMS)};
+        N(VRED),      N(VMEMS),     N(VFOP)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }

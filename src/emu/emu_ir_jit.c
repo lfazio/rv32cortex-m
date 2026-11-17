@@ -329,6 +329,7 @@ static bool ir_diff_ref(emu_cpu_t *cpu, uint32_t *retired,
         case EMU_IR_VMEM:
         case EMU_IR_VRED:
         case EMU_IR_VMEMS:
+        case EMU_IR_VFOP:
         case EMU_IR_BITOP_SET:
         case EMU_IR_BITOP_CLR:
         case EMU_IR_BITOP_INV:

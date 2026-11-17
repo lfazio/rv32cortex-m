@@ -219,6 +219,39 @@ extern "C" {
 #define EMU_IR_VRED_SEW(aux) (((uint32_t)(aux) >> 5) & 3u) /* log2 bytes */
 
 /*
+ * EMU_IR_VFOP's operations on single-precision elements, element i of vd
+ * from a = vs2[i], b = vs1[i] or the scalar, and c = vd[i] as it was.
+ */
+#define EMU_IR_VF_ADD 0u    /* a + b */
+#define EMU_IR_VF_SUB 1u    /* a - b */
+#define EMU_IR_VF_RSUB 2u   /* b - a */
+#define EMU_IR_VF_MUL 3u    /* a * b */
+#define EMU_IR_VF_DIV 4u    /* a / b */
+#define EMU_IR_VF_RDIV 5u   /* b / a */
+#define EMU_IR_VF_SQRT 6u   /* sqrt(a) */
+#define EMU_IR_VF_MACC 7u   /* b * a + c, one rounding */
+#define EMU_IR_VF_NMACC 8u  /* -(b * a) - c */
+#define EMU_IR_VF_MSAC 9u   /* b * a - c */
+#define EMU_IR_VF_NMSAC 10u /* -(b * a) + c */
+#define EMU_IR_VF_MADD 11u  /* b * c + a */
+#define EMU_IR_VF_NMADD 12u /* -(b * c) - a */
+#define EMU_IR_VF_MSUB 13u  /* b * c - a */
+#define EMU_IR_VF_NMSUB 14u /* -(b * c) + a */
+#define EMU_IR_VF_COUNT 15u
+#define EMU_IR_VF_IS_FMA(op) ((op) >= EMU_IR_VF_MACC)
+
+#define EMU_IR_VFOP_AUX(op, rm) ((uint8_t)((op) | ((uint32_t)(rm) << 5)))
+#define EMU_IR_VFOP_OP(aux) ((uint32_t)(aux) & 31u)
+#define EMU_IR_VFOP_RM(aux) (((uint32_t)(aux) >> 5) & 7u) /* EMU_IR_FRM_* */
+/* imm: EMU_IR_VOPM_IMM's registers, and whether a mask applies (bit 22)
+ * and the second operand is the scalar `a` (bit 23). */
+#define EMU_IR_VFOP_IMM(vd, vs2, vs1, lg, vm, masked, vf)                      \
+    (EMU_IR_VOPM_IMM(vd, vs2, vs1, lg, vm) | ((masked) ? (1u << 22) : 0u) |   \
+     ((vf) ? (1u << 23) : 0u))
+#define EMU_IR_VFOP_MASKED(imm) ((((uint32_t)(imm)) >> 22) & 1u)
+#define EMU_IR_VFOP_VF(imm) ((((uint32_t)(imm)) >> 23) & 1u)
+
+/*
  * EMU_IR_VMEMS's imm: the layout EMU_IR_VMEM's has, less the group (bits
  * 0-9), and in bits 10-31 the frontend's own: the whole imm is the
  * helper's argument, which is how it names the access without a fourth
@@ -275,6 +308,24 @@ bool emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
 void emu_ir_vred_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
                      const uint8_t *mask, uint8_t aux, uint32_t nregs,
                      uint32_t vl);
+
+struct emu_ir_target;
+
+/*
+ * EMU_IR_VFOP's meaning: t->vfop on each active element below vl, imm's
+ * registers in the cpu at `base`, the flags ORed into *flags.
+ */
+void emu_ir_vfop_ref(const struct emu_ir_target *t, uint8_t *base, uint8_t aux,
+                     uint32_t imm, uint32_t scalar, uint32_t vl, uint32_t *flags);
+
+/*
+ * EMU_IR_VFOP run in C on the cpu, the flags handed to t->fp_flags: the
+ * IR interpreter's, and what a backend calls for an operation or a
+ * rounding mode it has no instructions for -- six arguments, which
+ * System V passes in registers.
+ */
+void emu_ir_vfop_call(void *cpu, const struct emu_ir_target *t, uint32_t aux,
+                      uint32_t imm, uint32_t scalar, uint32_t vl);
 
 /*
  * The narrowing operations' reference, which also says whether an
@@ -782,6 +833,29 @@ typedef enum emu_ir_op {
      * treats this as it treats a helper.
      */
     EMU_IR_VMEMS,
+
+    /*
+     * Single-precision arithmetic on a group of guest vector registers,
+     * 32-bit elements (EMU_IR_VF_*): element i of vd, for i below vl --
+     * and under a mask only where its bit is set -- from vs2, vs1 or the
+     * scalar, and vd as it was; the rest of vd left alone.
+     *
+     *   aux  EMU_IR_VFOP_AUX(op, rm): the operation and its rounding mode
+     *   imm  EMU_IR_VFOP_IMM(vd, vs2, vs1, lg, vm, masked, vf), the mask
+     *        register vm outside vd's group when masked, as EMU_IR_VOPM's
+     *   a    the scalar operand for a .vf form, or EMU_IR_NO_TEMP
+     *   b    vl, at most the group's element count
+     *
+     * An element's value and exception flags are the target's `vfop`,
+     * which is the meaning: a NaN result is the canonical one, and the
+     * flags accrue as EMU_IR_FADD's do, into the block's -- so a block
+     * holding one is an FP block. A masked-off or tail element raises
+     * nothing. emu_ir_vfop_ref applies `vfop` to every element, and
+     * emu_ir_vfop_call is that with the flags handed over: what a
+     * backend calls for what it does not lower natively (x86-64: the
+     * fused forms and every mode but RNE).
+     */
+    EMU_IR_VFOP,
 
     EMU_IR_OP_COUNT
 } emu_ir_op_t;
@@ -1439,6 +1513,16 @@ typedef struct emu_ir_target {
      */
     uint32_t (*freg_offset)(uint32_t n);
     void (*fp_flags)(emu_cpu_t *cpu, uint32_t flags);
+
+    /*
+     * EMU_IR_VFOP's element: op (EMU_IR_VF_*) of a, b and c rounded by
+     * rm (EMU_IR_FRM_*), its EMU_IR_FE_* flags ORed into *flags -- the
+     * guest's own arithmetic, which the IR interpreter uses as the
+     * reference, where host floats would answer for the host's FPU.
+     * NULL where the guest has no vector floating point.
+     */
+    uint32_t (*vfop)(uint32_t op, uint32_t a, uint32_t b, uint32_t c,
+                     uint32_t rm, uint32_t *flags);
 } emu_ir_target_t;
 
 /*

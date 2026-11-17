@@ -459,6 +459,20 @@ void x86_sse_66(uint8_t op, int dst, int src)
     sse_rr(0x66u, op, (unsigned)dst, (unsigned)src);
 }
 
+/* A packed-single op, no prefix: addps 58, mulps 59, subps 5C, ... */
+void x86_sse_ps(uint8_t op, int dst, int src)
+{
+    sse_rr(0u, op, (unsigned)dst, (unsigned)src);
+}
+
+/* cmpps dst, src, pred: 0F C2 /r ib. */
+void x86_cmpps(int dst, int src, uint8_t pred)
+{
+    sse_rr(0u, 0xC2u, (unsigned)dst, (unsigned)src);
+    emu_jit_emit8(pred);
+}
+
+
 /* movdqu [base + disp8], xmm: F3 0F 7F /r, mod 01; base not rsp or r12. */
 void x86_movdqu_store(int base, uint8_t disp, int xmm)
 {

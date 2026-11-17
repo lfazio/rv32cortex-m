@@ -203,6 +203,7 @@ void t2_call(const void *fn);
 #define T2_S0 0u
 #define T2_S1 1u
 #define T2_S2 2u
+#define T2_S3 3u
 
 /* First-halfword bases for the three-register group. */
 #define T2_VADD 0xEE30u /* with `sub` false */
@@ -241,6 +242,9 @@ void t2_call(const void *fn);
 void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core);
 void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm);
 void t2_vsqrt(uint32_t sd, uint32_t sm);
+/* VLDR/VSTR Sd, [Rn, #off], off a multiple of 4 below 1024. */
+void t2_vldr(uint32_t sd, uint32_t rn, uint32_t off);
+void t2_vstr(uint32_t sd, uint32_t rn, uint32_t off);
 void t2_vmrs(uint32_t rt);
 void t2_vmsr(uint32_t rt);
 

@@ -421,12 +421,18 @@ static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
                 return false;
             }
             break;
+        case EMU_IR_VFOP:
+            if (t->vreg_offset == NULL || t->vfop == NULL) {
+                return false;
+            }
+            break;
 #else
         case EMU_IR_VMEM:
         case EMU_IR_VMEMS:
         case EMU_IR_VOP:
         case EMU_IR_VOPM:
         case EMU_IR_VRED:
+        case EMU_IR_VFOP:
             return false; /* not built: EMU_IR_VECTOR */
 #endif
         case EMU_IR_OP_COUNT:
@@ -990,6 +996,10 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
                                                              bv) != 0u) {
                 return IR_RUN_DONE;
             }
+            continue;
+
+        case EMU_IR_VFOP: /* the guest's own arithmetic, element by element */
+            emu_ir_vfop_call(cpu, t, in->aux, in->imm, a, bv);
             continue;
 
         case EMU_IR_VRED: {

@@ -75,8 +75,11 @@ backends. On the F746, `tests/guest/vecfp.c` -- the same C on an M7,
 whose comparisons a flush-to-zero FPU would get wrong for subnormals --
 prints the host's checksum interpreted and under the JIT.
 
-The JIT translates none of it: every vector FP instruction is the
-vector helper's call, as the integer ones were before EMU_IR_VOP.
+Under the JIT the arithmetic is translated -- add, subtract, multiply,
+divide, square root and the eight fused multiply-adds (`EMU_IR_VFOP`,
+[below](#single-precision-under-the-jit)); min and max, the compares,
+the conversions, the FP reductions, `vfmv` and the estimates are the
+vector helper's call.
 
 **Where the specification lets an implementation choose, this one
 chooses as Spike does**, which is what the probes compare against:
@@ -262,6 +265,64 @@ retired, 316.8M cycles against scalar's 317.7M, 0.3% fewer -- from 4.3%
 more -- the same at two layouts. The inline vsetvli was left as it is:
 the vector code has 0.3% left to give.
 
+### Single precision under the JIT
+
+**`EMU_IR_VFOP`**: OPFVV and OPFVF's add, subtract (each way round),
+multiply, divide (each way round), square root and the eight fused
+multiply-adds, masked or not, where the block knows vtype, SEW is 32,
+FS is on and frm is valid -- all four in the block's context, so they
+hold whenever it runs. The element is the target's `vfop`, which for
+RV32 is `rv_vf32`, the helper's own arithmetic: the IR interpreter and
+EMU_JIT_DIFF use it as the reference, and so does a backend for what
+it has no instructions for (`emu_ir_vfop_call`).
+
+- **x86-64**: packed singles in SSE under round-to-nearest, a register
+  of the group at a time; lanes past vl or masked off are made 1.0 in
+  each source, so they raise nothing, and a NaN lane the canonical NaN
+  (`CMPUNORDPS`). The fused forms and every other mode go to
+  `emu_ir_vfop_call`, a call per instruction: a fused multiply-add from
+  SSE alone rounds twice, and FMA3 -- one rounding -- is absent on this
+  project's x86 host (an Ivy Bridge), where a lowering of it could not
+  be run.
+- **Thumb-2**: an element loop in VFP under the block's FPSCR -- round
+  to nearest, default NaN, which is RISC-V's canonical one -- all
+  fifteen operations, the fused ones by `VFMA`, `VFMS`, `VFNMA` and
+  `VFNMS` as the scalar FMA picks them; another mode is the helper's.
+  An inactive element is skipped, so it raises nothing. VFP detects
+  tininess before rounding, and the vector operations share the scalar
+  ones' difference ([TODO](../TODO.md)): `fpedge-v`'s `vfmul.vv` and
+  `vfmacc.vv` on a product just below 2^-126 raise UF on the F746 under
+  the JIT, NX alone interpreted and on the host.
+
+`tests/guest/vfbench.c` -- saxpy, a dot product, arithmetic, a
+normalisation by square root and divide, a clamp, Horner's rule by
+`vfmadd`, the conversions -- under the JIT: on the host, callgrind,
+39.06M host instructions with the helper, 24.98M lowered in SSE, 24.66M
+with the fused forms through `emu_ir_vfop_call` (whose own loop is 7%
+of it: SoftFloat's fused multiply-add is the rest). On the F746, 160
+rounds, host cycles a guest instruction, checksum `63a4f3b8` in every
+row, the host's:
+
+| | layout 0 | `EMU_LAYOUT_PAD=1588` |
+|---|---|---|
+| 0796713: the vector FP the helper's | 125.63 | 125.48 |
+| `EMU_IR_VFOP` lowered in VFP | 33.26 | 33.22 |
+
+`vecfp` -- every operation on special values under each mode -- prints
+the host's checksum on the F746 under the JIT too.
+
+**A vector instruction is lowered only in a block that set vtype.**
+A block knows vtype from an inline `vsetvli` or `vsetivli` before the
+instruction; one that begins after them sends every vector instruction
+to the helper. `fpedge-v` met it twice: a case run once, after the
+code buffer had compacted, waited for the hot threshold and was
+interpreted; and a case whose `vsetivli` followed a CSR write -- which
+the translator declines -- was interpreted with it, the declined pc's
+batch carrying on past the `vsetivli`, so the block that held the
+operation began without it. Both printed RISC-V's flags on the board,
+which read as a lowering without the deviation until the helper's calls
+were counted ([TODO](../TODO.md)).
+
 **Built only where something emits them**: the IR's vector operations,
 their reference and both lowerings are under `EMU_IR_VECTOR`, which CMake
 sets on every host build and on a board only with the vector unit.
@@ -330,6 +391,28 @@ a strided access taken as unit-stride, a segment's field from the
 wrong register, the region check 8 bytes loose -- each found. Refusing
 an access that ends exactly at the region's end is equivalent: the
 per-element path gives the same answer, slower.
+
+`test_lower_vfop` runs `EMU_IR_VFOP` lowered on x86-64 against a
+reading element by element in the host's scalar SSE with MXCSR set to
+the mode -- the fused forms rounded once by rounding to odd -- on
+special values and random bits in active and inactive lanes alike, and
+the interpreter's reference beside it for all fifteen operations, which
+tests which operand is which. Five mutants are each found: inactive
+lanes left as they are (a flag from a lane past vl), no NaN
+canonicalisation, a reversed subtract not reversed, the mask ignored,
+the reference writing masked lanes; reading the addend from the wrong
+register was found only once the reference was run for the operations
+x86-64 does not lower in SSE. fuzz-ir builds `EMU_IR_VFOP` blocks
+against a reference in C floats (`f_vfop`), on the same FPU -- so it sees
+how an operation is lowered, not how it rounds -- and on the F746 its
+corpus through the Thumb-2 lowering (`scripts/ir-board.sh`, 14,457
+inputs, none different) finds three mutants: the fused product's sign
+inverted (131 inputs of 3,615), a reversed subtract (64) and the mask's
+sense (167). What compares the rounding and the flags with RISC-V's is
+`rv32-vec`, the interpreter's SoftFloat against the compiled code: three
+minutes, 11,914 programs clean, and SSE's subtract made an add found at
+input #39,144. `guest-vfbench-both` holds the two backends to one
+checksum, `guest-fpedge-v` to RISC-V's flags at the underflow edge.
 
 `guest-vecbench-both` runs `tests/guest/vecbench.c` -- integer vector
 kernels written with the RVV intrinsics: add, multiply-add, a widening

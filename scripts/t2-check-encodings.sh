@@ -36,6 +36,7 @@ command -v arm-none-eabi-as >/dev/null || {
 cat >"$work/ref.s" <<'EOF'
 .syntax unified
 .thumb
+.fpu fpv5-d16
 ldr.w   r5, [r12, r2]
 ldrb.w  r5, [r12, r2]
 ldrh.w  r5, [r12, r2]
@@ -142,6 +143,27 @@ mla     r2, lr, r12, r2
 mul     lr, lr, r1
 asr.w   lr, r0, #16
 lsr.w   r12, r1, #16
+vfma.f32  s0, s1, s2
+vadd.f32  s1, s3, s5
+vsub.f32  s3, s0, s1
+vmul.f32  s0, s3, s1
+vdiv.f32  s1, s1, s3
+vfma.f32  s1, s3, s2
+vfms.f32  s0, s3, s1
+vfnma.f32 s1, s2, s3
+vfnms.f32 s3, s3, s1
+vsqrt.f32 s1, s3
+vsqrt.f32 s0, s1
+vmov      s3, r0
+vmov      r1, s3
+vmov      s0, r12
+vldr      s1, [r0, #496]
+vldr      s0, [r0]
+vstr      s3, [r0, #4]
+vstr      s0, [r12, #1020]
+vmrs      r0, fpscr
+vmsr      fpscr, r1
+lsrs      r1, r1, #1
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -155,7 +177,7 @@ uint8_t *emu_jit_cursor;
 uint8_t *emu_jit_limit;
 bool emu_jit_overflow;
 
-static uint8_t buf[512];
+static uint8_t buf[1024];
 
 /*
  * t2_sync_code reaches the platform for cache maintenance. Nothing here
@@ -330,6 +352,34 @@ int main(void)
     t2_mul(14u, 14u, 1u);
     t2_shift_imm(T2_ASR, 14u, 0u, 16u);
     t2_shift_imm(T2_LSR, 12u, 1u, 16u);
+
+    /*
+     * VFP, with odd registers in every field: the D, N and M bits are
+     * each a register's low bit, two of them in the other halfword, and
+     * an even register cannot tell where they went (t2_vfp3 put D in
+     * `sub` until this asked). Then the vector unit's element loop.
+     */
+    t2_vfp3(T2_VFMA_VFMS, false, 0u, 1u, 2u);
+    t2_vfp3(T2_VADD, false, 1u, 3u, 5u);
+    t2_vfp3(T2_VSUB, true, 3u, 0u, 1u);
+    t2_vfp3(T2_VMUL, false, 0u, 3u, 1u);
+    t2_vfp3(T2_VDIV, false, 1u, 1u, 3u);
+    t2_vfp3(T2_VFMA_VFMS, false, 1u, 3u, 2u);
+    t2_vfp3(T2_VFMA_VFMS, true, 0u, 3u, 1u);
+    t2_vfp3(T2_VFNMS_VFNMA, true, 1u, 2u, 3u);
+    t2_vfp3(T2_VFNMS_VFNMA, false, 3u, 3u, 1u);
+    t2_vsqrt(1u, 3u);
+    t2_vsqrt(0u, 1u);
+    t2_vmov_core(3u, 0u, false);
+    t2_vmov_core(3u, 1u, true);
+    t2_vmov_core(0u, 12u, false);
+    t2_vldr(1u, 0u, 496u);
+    t2_vldr(0u, 0u, 0u);
+    t2_vstr(3u, 0u, 4u);
+    t2_vstr(0u, 12u, 1020u);
+    t2_vmrs(0u);
+    t2_vmsr(1u);
+    t2_emit16(0x0849u); /* LSRS r1, r1, #1: the mask's next bit to C */
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

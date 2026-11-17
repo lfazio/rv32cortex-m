@@ -789,13 +789,35 @@ void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core)
  * encoder whose wrong answers are other valid instructions has to be
  * tested against the assembler at its *boundary* values, and for a
  * register field that means an odd one.
+ *
+ * **And it had a fourth, the same mistake the other way round**: the D
+ * bit -- sd's low bit -- is bit 6 of the *first* halfword, and this put
+ * it at bit 6 of the second, which is `sub`. With an odd sd, VADD
+ * became VSUB writing the even register below. Every caller passed s0
+ * until the vector lowering wanted more; t2-check-encodings asks for
+ * odd registers in all three places now.
  */
 void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm)
 {
-    t2_emit32((uint16_t)(hi | VFP_VD(sn)),
+    t2_emit32((uint16_t)(hi | (VFP_D(sd) << 6) | VFP_VD(sn)),
               (uint16_t)((VFP_VD(sd) << 12) | 0x0A00u | (VFP_D(sn) << 7) |
-                         (VFP_D(sd) << 6) | (sub ? 0x40u : 0u) |
-                         (VFP_D(sm) << 5) | VFP_VD(sm)));
+                         (sub ? 0x40u : 0u) | (VFP_D(sm) << 5) | VFP_VD(sm)));
+}
+
+/*
+ * VLDR and VSTR Sd, [Rn, #off]: off a multiple of 4 below 1024, added
+ * (U set) -- what the vector unit's element loop reads and writes.
+ */
+void t2_vldr(uint32_t sd, uint32_t rn, uint32_t off)
+{
+    t2_emit32((uint16_t)(0xED90u | (VFP_D(sd) << 6) | rn),
+              (uint16_t)((VFP_VD(sd) << 12) | 0x0A00u | ((off >> 2) & 0xFFu)));
+}
+
+void t2_vstr(uint32_t sd, uint32_t rn, uint32_t off)
+{
+    t2_emit32((uint16_t)(0xED80u | (VFP_D(sd) << 6) | rn),
+              (uint16_t)((VFP_VD(sd) << 12) | 0x0A00u | ((off >> 2) & 0xFFu)));
 }
 
 void t2_vsqrt(uint32_t sd, uint32_t sm)

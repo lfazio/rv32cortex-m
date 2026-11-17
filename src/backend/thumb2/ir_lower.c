@@ -1230,6 +1230,7 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_VMEM:
     case EMU_IR_VRED:
     case EMU_IR_VMEMS:
+    case EMU_IR_VFOP:
         return T2_BISECT >= 11;
     default:
         return false;
@@ -1469,12 +1470,21 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
                (!EMU_IR_R_IS_WIDE(EMU_IR_VRED_OP(aux)) || EMU_IR_VRED_SEW(aux) <= 1u);
     case EMU_IR_VMEMS: /* a loop of moves; without a window, the helper */
         return true;
+    /*
+     * VFP, all fifteen, under round-to-nearest as the scalar FP: another
+     * mode is the helper's. Tininess is detected before rounding here,
+     * as for the scalar operations (docs/TODO.md).
+     */
+    case EMU_IR_VFOP:
+        return EMU_IR_VFOP_OP(aux) < EMU_IR_VF_COUNT &&
+               EMU_IR_VFOP_RM(aux) == EMU_IR_FRM_RNE;
 #else
     case EMU_IR_VOP:
     case EMU_IR_VOPM:
     case EMU_IR_VMEM:
     case EMU_IR_VRED:
     case EMU_IR_VMEMS:
+    case EMU_IR_VFOP:
         return false;
 #endif
 
@@ -2683,6 +2693,110 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/*
+ * EMU_IR_VFOP, an element at a time in VFP under the block's FPSCR:
+ * round to nearest, and the default NaN, which is RISC-V's canonical
+ * one; the flags are harvested at the exit as the scalar FP's are. r12
+ * the vector file -- a group's registers adjacent in it, as the vector
+ * moves' loop assumes too -- r3 vl's bytes, at most the group's, r2 the
+ * element's offset, r0 r12 + r2, and for a masked operation r1 the
+ * mask's first word, shifted out a bit an element: 32 elements at most.
+ * An inactive element is not computed, so it raises nothing. An element
+ * is written as soon as it is computed: element i reads only element i
+ * of each source, and two groups overlap whole or not at all.
+ *
+ * The fused forms accumulate into s0 -- vd for vfmacc and its kin, vs2
+ * for vfmadd's -- with the instruction the scalar FMA picks: NEG_ADD
+ * (the addend negated) chooses VFNMS/VFNMA, NEG_MUL is `sub`.
+ */
+static void lower_vfop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VFOP_OP(in->aux);
+    const uint32_t lanes = EMU_IR_VOP_NREGS(in->imm) * (EMU_IR_VREG_BYTES / 4u);
+    const uint32_t od = EMU_IR_VREG_BYTES * EMU_IR_VOP_VD(in->imm);
+    const uint32_t o2 = EMU_IR_VREG_BYTES * EMU_IR_VOP_VS2(in->imm);
+    const uint32_t o1 = EMU_IR_VREG_BYTES * EMU_IR_VOP_VS1(in->imm);
+    const bool masked = EMU_IR_VFOP_MASKED(in->imm) != 0u;
+    const uint32_t sb = EMU_IR_VFOP_VF(in->imm) ? T2_S3 : T2_S2; /* b */
+    const uint32_t base = t->vreg_offset(0u);
+    uint8_t *skip = NULL;
+    uint16_t enc;
+
+    if (EMU_IR_VFOP_VF(in->imm)) {
+        t2_vmov_core(T2_S3, use_reg(in->a, T2_R0), false);
+    }
+    ld_operand(T2_R3, in->b);
+    (void)t2_cmp_imm8(T2_R3, lanes);
+
+    uint8_t *const fits = t2_bcond_forward(0x9u); /* LS: vl within the group */
+
+    (void)t2_movs_imm8(T2_R3, lanes);
+    patch_branch(fits, emu_jit_here(), true);
+    (void)t2_cmp_imm8(T2_R3, 0u);
+
+    uint8_t *const none = t2_bcond_forward(0x0u); /* EQ: vl 0, vd kept */
+
+    t2_shift_imm(T2_LSL, T2_R3, T2_R3, 2u);
+    if (base < 4096u) {
+        t2_addw(T2_R12, T2_CPU, (uint16_t)base);
+    } else {
+        t2_imm32(T2_R12, base);
+        t2_add(T2_R12, T2_R12, T2_CPU);
+    }
+    if (masked) {
+        t2_ldr_imm(T2_R1, T2_R12, EMU_IR_VREG_BYTES * EMU_IR_VOP_MREG(in->imm));
+    }
+    (void)t2_movs_imm8(T2_R2, 0u);
+
+    uint8_t *const loop = emu_jit_here();
+
+    if (masked) {
+        t2_emit16(0x0849u); /* LSRS r1, r1, #1: this element's bit to C */
+        skip = t2_bcond_forward(0x3u); /* CC: inactive */
+    }
+    t2_add(T2_R0, T2_R12, T2_R2);
+    if (EMU_IR_VF_IS_FMA(op)) {
+        const bool acc = op <= EMU_IR_VF_NMSAC; /* vd the addend */
+        const bool neg_add = op == EMU_IR_VF_NMACC || op == EMU_IR_VF_MSAC ||
+                             op == EMU_IR_VF_NMADD || op == EMU_IR_VF_MSUB;
+        const bool neg_mul = op == EMU_IR_VF_NMACC || op == EMU_IR_VF_NMSAC ||
+                             op == EMU_IR_VF_NMADD || op == EMU_IR_VF_NMSUB;
+
+        t2_vldr(T2_S0, T2_R0, acc ? od : o2); /* the addend */
+        t2_vldr(T2_S1, T2_R0, acc ? o2 : od); /* the multiplier */
+        if (sb == T2_S2) {
+            t2_vldr(T2_S2, T2_R0, o1);
+        }
+        t2_vfp3(neg_add ? T2_VFNMS_VFNMA : T2_VFMA_VFMS, neg_mul, T2_S0, sb, T2_S1);
+    } else {
+        t2_vldr(T2_S1, T2_R0, o2);
+        if (sb == T2_S2 && op != EMU_IR_VF_SQRT) {
+            t2_vldr(T2_S2, T2_R0, o1);
+        }
+        switch (op) {
+        case EMU_IR_VF_ADD: t2_vfp3(T2_VADD, false, T2_S0, T2_S1, sb); break;
+        case EMU_IR_VF_SUB: t2_vfp3(T2_VSUB, true, T2_S0, T2_S1, sb); break;
+        case EMU_IR_VF_RSUB: t2_vfp3(T2_VSUB, true, T2_S0, sb, T2_S1); break;
+        case EMU_IR_VF_MUL: t2_vfp3(T2_VMUL, false, T2_S0, T2_S1, sb); break;
+        case EMU_IR_VF_DIV: t2_vfp3(T2_VDIV, false, T2_S0, T2_S1, sb); break;
+        case EMU_IR_VF_RDIV: t2_vfp3(T2_VDIV, false, T2_S0, sb, T2_S1); break;
+        default: t2_vsqrt(T2_S0, T2_S1); break; /* SQRT */
+        }
+    }
+    t2_vstr(T2_S0, T2_R0, od);
+    if (skip != NULL) {
+        patch_branch(skip, emu_jit_here(), true);
+    }
+    (void)t2_expand_imm(4u, &enc);
+    t2_add_imm(T2_R2, T2_R2, enc);
+    t2_cmp(T2_R2, T2_R3);
+
+    uint8_t *const back = t2_bcond_forward(0x1u); /* NE: the next */
+
+    patch_branch(back, loop, true);
+    patch_branch(none, emu_jit_here(), true);
+}
+
 #endif /* EMU_IR_VECTOR */
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -3262,6 +3376,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         lower_vmems(in, t);
         break;
+
+    case EMU_IR_VFOP: /* the loop addresses the file from v0, by offset */
+        if (!emu_ir_can_lower(EMU_IR_VFOP, in->aux) || t->vreg_offset == NULL ||
+            t->vreg_offset(31u) != t->vreg_offset(0u) + 31u * EMU_IR_VREG_BYTES) {
+            return false;
+        }
+        lower_vfop(in, t);
+        break;
 #endif
 
     case EMU_IR_EXIT_IF: {
@@ -3738,8 +3860,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         if (b->insn[i].dead) {
             continue;
         }
-        if (b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
-            b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
+        if ((b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
+             b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) ||
+            b->insn[i].op == (uint8_t)EMU_IR_VFOP) {
             g_has_fp = true;
         }
     }

@@ -2296,6 +2296,286 @@ static void test_lower_vmems(void)
     CHECK_EQ(bad, 0u);
 }
 
+/*
+ * EMU_IR_VFOP, lowered and run, against a reading element by element in
+ * the host's scalar SSE -- addss, not the lowering's addps -- with MXCSR
+ * set to the mode and its flags read back: a NaN made the canonical one,
+ * as RISC-V's is, and the fused forms rounded once by rounding to odd (the
+ * sum in double toward zero, its last bit set if inexact, then to single
+ * in the mode), so libm is not needed. The interpreter's reference runs
+ * beside it with this reading as the target's vfop, which tests its
+ * plumbing: which operand is vs2, vs1, the scalar and vd -- and so does
+ * x86-64's call to emu_ir_vfop_call, for the fused forms and the modes
+ * it has no SSE for. The register file is special values -- signed
+ * zeros, subnormals, the largest finite, infinities, quiet and
+ * signalling NaNs -- and random bits, in the active lanes and the
+ * inactive ones alike: a lane past vl or masked off that raised a flag
+ * (a signalling NaN, a zero divisor) fails on fflags alone. RMM is not
+ * asked: C cannot set it.
+ */
+#include <xmmintrin.h>
+
+typedef struct {
+    uint32_t pc;
+    uint32_t fe; /* EMU_IR_FE_* the block handed over */
+    uint32_t pad[2];
+    uint8_t v[32][EMU_IR_VREG_BYTES];
+} vfop_cpu_t;
+
+static uint32_t vfop_vreg_offset(uint32_t n)
+{
+    return (uint32_t)offsetof(vfop_cpu_t, v) + n * EMU_IR_VREG_BYTES;
+}
+
+static uint32_t vfop_freg_offset(uint32_t n)
+{
+    (void)n;
+    return 0u; /* no FGET or FPUT in these blocks */
+}
+
+static void vfop_fp_flags(emu_cpu_t *cpu, uint32_t flags)
+{
+    ((vfop_cpu_t *)(void *)cpu)->fe |= flags;
+}
+
+/* MXCSR's IE, ZE, OE, UE, PE (bits 0, 2, 3, 4, 5) as EMU_IR_FE_*. */
+static uint32_t vf_fe(uint32_t mx)
+{
+    return ((mx & 0x01u) ? EMU_IR_FE_INVALID : 0u) |
+           ((mx & 0x04u) ? EMU_IR_FE_DIVBYZERO : 0u) |
+           ((mx & 0x08u) ? EMU_IR_FE_OVERFLOW : 0u) |
+           ((mx & 0x10u) ? EMU_IR_FE_UNDERFLOW : 0u) |
+           ((mx & 0x20u) ? EMU_IR_FE_INEXACT : 0u);
+}
+
+/* RNE, RTZ, RDN, RUP as MXCSR's RC field */
+static const uint32_t k_vf_rc[4] = {0u, 3u, 1u, 2u};
+
+static float vf_f(uint32_t u)
+{
+    float f;
+
+    memcpy(&f, &u, 4u);
+    return f;
+}
+
+static uint32_t vf_u(float f)
+{
+    uint32_t u;
+
+    memcpy(&u, &f, 4u);
+    return u;
+}
+
+static uint32_t vf_mine(uint32_t op, uint32_t a, uint32_t b, uint32_t c,
+                        uint32_t rm, uint32_t *flags)
+{
+    const uint32_t saved = _mm_getcsr();
+    const uint32_t mode = 0x1F80u | (k_vf_rc[rm & 3u] << 13);
+    const uint32_t ng = 0x80000000u;
+    volatile float x = vf_f(a), y = vf_f(b);
+    volatile float r;
+    uint32_t m1 = a, m2 = b, ad = c; /* FMA: m1 * m2 + ad */
+
+    _mm_setcsr(mode);
+    switch (op) {
+    case EMU_IR_VF_ADD: r = x + y; break;
+    case EMU_IR_VF_SUB: r = x - y; break;
+    case EMU_IR_VF_RSUB: r = y - x; break;
+    case EMU_IR_VF_MUL: r = x * y; break;
+    case EMU_IR_VF_DIV: r = x / y; break;
+    case EMU_IR_VF_RDIV: r = y / x; break;
+    case EMU_IR_VF_SQRT: r = _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(x))); break;
+    default:
+        /* vfmacc: vs1 * vs2 + vd; vfmadd: vs1 * vd + vs2 */
+        switch (op) {
+        case EMU_IR_VF_MACC: m1 = b; m2 = a; ad = c; break;
+        case EMU_IR_VF_NMACC: m1 = b ^ ng; m2 = a; ad = c ^ ng; break;
+        case EMU_IR_VF_MSAC: m1 = b; m2 = a; ad = c ^ ng; break;
+        case EMU_IR_VF_NMSAC: m1 = b ^ ng; m2 = a; ad = c; break;
+        case EMU_IR_VF_MADD: m1 = b; m2 = c; ad = a; break;
+        case EMU_IR_VF_NMADD: m1 = b ^ ng; m2 = c; ad = a ^ ng; break;
+        case EMU_IR_VF_MSUB: m1 = b; m2 = c; ad = a ^ ng; break;
+        default: m1 = b ^ ng; m2 = c; ad = a; break; /* NMSUB */
+        }
+        {
+            volatile double p, s;
+            uint64_t bits;
+
+            _mm_setcsr(0x1F80u | (3u << 13)); /* toward zero */
+            p = (double)vf_f(m1) * (double)vf_f(m2); /* exact */
+            s = p + (double)vf_f(ad);
+            if ((_mm_getcsr() & 0x20u) != 0u) {
+                const double t = s;
+
+                memcpy(&bits, &t, 8u);
+                bits |= 1u; /* to odd: the sticky bit */
+                memcpy((void *)&s, &bits, 8u);
+            } else if (s == 0.0) {
+                _mm_setcsr((_mm_getcsr() & 0x3Fu) | mode);
+                s = p + (double)vf_f(ad); /* an exact zero's sign is the mode's */
+            }
+            _mm_setcsr((_mm_getcsr() & 0x3Fu) | mode);
+            r = (float)s;
+        }
+        break;
+    }
+    const uint32_t mx = _mm_getcsr();
+
+    _mm_setcsr(saved);
+    *flags |= vf_fe(mx);
+    const uint32_t u = vf_u(r);
+
+    return ((u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0u) ? 0x7FC00000u
+                                                                          : u;
+}
+
+static const emu_ir_target_t g_vfop_target = {
+    .reg_offset = vop_reg_offset,
+    .vreg_offset = vfop_vreg_offset,
+    .freg_offset = vfop_freg_offset,
+    .fp_flags = vfop_fp_flags,
+    .vfop = vf_mine,
+    .pc_offset = (uint32_t)offsetof(vfop_cpu_t, pc),
+};
+
+static void test_lower_vfop(void)
+{
+    static const uint32_t k_special[] = {
+        0x00000000u, 0x80000000u, 0x3F800000u, 0xBF800000u, 0x00000001u,
+        0x807FFFFFu, 0x00800000u, 0x7F7FFFFFu, 0xFF7FFFFFu, 0x7F800000u,
+        0xFF800000u, 0x7FC00000u, 0x7F800001u, 0xFFC12345u, 0x3F7FFFFFu,
+        0x3EAAAAABu, 0x40400000u, 0x0DA24260u, 0x71A2F0E1u, 0x00400000u,
+    };
+    const uint32_t nspec = (uint32_t)(sizeof(k_special) / sizeof(k_special[0]));
+    uint32_t seed = 0x3C6EF372u;
+    unsigned ran = 0u;
+    unsigned lowerable = 0u;
+    unsigned bad = 0u;
+    unsigned flagged = 0u; /* cases whose flags were not zero */
+    unsigned refs = 0u;
+
+    for (uint32_t op = 0; op < EMU_IR_VF_COUNT; op++) {
+        for (uint32_t rm = 0; rm < 4u; rm++) {
+            const uint8_t aux = EMU_IR_VFOP_AUX(op, rm);
+            const bool lower = emu_ir_can_lower(EMU_IR_VFOP, aux);
+
+            lowerable += lower;
+            for (uint32_t lg = 0; lg < 4u; lg++) {
+                for (uint32_t pat = 0; pat < 40u; pat++) {
+                    const uint32_t nregs = 1u << lg;
+                    const uint32_t lanes = nregs * EMU_IR_VREG_BYTES / 4u;
+                    const uint32_t vls[5] = {0u, 1u, lanes / 2u + 1u, lanes - 1u, lanes};
+                    const uint32_t vl = vls[pat % 5u];
+                    const bool masked = (pat / 5u) % 2u != 0u;
+                    const bool vf = (pat / 10u) % 2u != 0u;
+                    const uint32_t vs2 = 8u, vs1 = 24u;
+                    const uint32_t vds[2] = {16u, (pat / 20u != 0u) ? vs1 : vs2};
+                    const uint32_t vd = vds[(pat / 3u) % 2u];
+                    uint32_t scalar;
+                    vfop_cpu_t got, want, ref;
+                    uint32_t res[32];
+
+                    memset(&got, 0, sizeof(got));
+                    for (uint32_t i = 0; i < 32u * EMU_IR_VREG_BYTES / 4u; i++) {
+                        seed = seed * 1103515245u + 12345u;
+                        const uint32_t w = (seed >> 8) % 4u == 0u
+                                               ? seed ^ (seed << 13)
+                                               : k_special[(seed >> 16) % nspec];
+
+                        memcpy((uint8_t *)got.v + 4u * i, &w, 4u);
+                    }
+                    for (uint32_t i = 0; i < EMU_IR_VREG_BYTES; i++) {
+                        const uint32_t q = (pat + lg) % 4u;
+
+                        got.v[0][i] = (q == 0u) ? 0xFFu : (q == 1u) ? 0x00u
+                                      : (q == 2u) ? 0xAAu : got.v[0][i];
+                    }
+                    seed = seed * 1103515245u + 12345u;
+                    scalar = k_special[(seed >> 16) % nspec];
+                    got.pc = 0u;
+
+                    /* mine: every result from the old values, then written */
+                    want = got;
+                    want.pc = 0x1000u;
+                    for (uint32_t i = 0; i < vl; i++) {
+                        uint32_t a, b, c;
+
+                        if (masked && ((got.v[0][i / 8u] >> (i % 8u)) & 1u) == 0u) {
+                            continue;
+                        }
+                        memcpy(&a, (uint8_t *)got.v + vs2 * EMU_IR_VREG_BYTES + 4u * i, 4u);
+                        memcpy(&b, (uint8_t *)got.v + vs1 * EMU_IR_VREG_BYTES + 4u * i, 4u);
+                        memcpy(&c, (uint8_t *)got.v + vd * EMU_IR_VREG_BYTES + 4u * i, 4u);
+                        res[i] = vf_mine(op, a, vf ? scalar : b, c, rm, &want.fe);
+                    }
+                    for (uint32_t i = 0; i < vl; i++) {
+                        if (!masked || ((got.v[0][i / 8u] >> (i % 8u)) & 1u) != 0u) {
+                            memcpy((uint8_t *)want.v + vd * EMU_IR_VREG_BYTES + 4u * i,
+                                   &res[i], 4u);
+                        }
+                    }
+                    flagged += want.fe != 0u;
+
+                    const uint32_t imm = EMU_IR_VFOP_IMM(vd, vs2, vs1, lg, 0u, masked, vf);
+
+                    ref = got;
+                    ref.pc = 0x1000u;
+                    emu_ir_vfop_ref(&g_vfop_target, (uint8_t *)&ref, aux, imm, scalar, vl,
+                                    &ref.fe);
+                    refs++;
+                    if (memcmp(&ref, &want, sizeof(ref)) != 0 && bad++ < 4u) {
+                        printf("  vfop ref op %u rm %u nregs %u vl %u vd %u masked %u vf %u: "
+                               "WRONG\n", op, rm, nregs, vl, vd, masked, vf);
+                    }
+                    if (!lower) {
+                        continue;
+                    }
+                    emu_ir_reset(&g_b);
+                    (void)emu_ir_emit(&g_b, EMU_IR_VFOP, aux, emu_ir_const(&g_b, scalar),
+                                      emu_ir_const(&g_b, vl), imm, 0u);
+                    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                                      EMU_IR_NO_TEMP, 0x1000u, 0u);
+                    {
+                        static uint8_t *exec;
+
+                        if (exec == NULL) {
+                            void *const p = mmap(NULL, IR_TEST_CODE_BYTES,
+                                                 PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                            exec = (p == MAP_FAILED) ? NULL : (uint8_t *)p;
+                        }
+                        emu_ir_optimise(&g_b, &g_vfop_target, EMU_IR_F_ALL, NULL);
+                        if (exec == NULL) {
+                            bad++;
+                            continue;
+                        }
+                        emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
+                        if (!emu_ir_lower(&g_b, &g_vfop_target) || emu_jit_overflowed()) {
+                            bad++;
+                            continue;
+                        }
+                        ((uint32_t (*)(void *))(void *)exec)(&got);
+                    }
+                    ran++;
+                    if (memcmp(&got, &want, sizeof(got)) != 0 && bad++ < 4u) {
+                        printf("  vfop op %u rm %u nregs %u vl %u vd %u masked %u vf %u: "
+                               "lowered %s, fe %x against %x\n",
+                               op, rm, nregs, vl, vd, masked, vf,
+                               memcmp(got.v, want.v, sizeof(got.v)) ? "WRONG" : "ok",
+                               got.fe, want.fe);
+                    }
+                }
+            }
+        }
+    }
+    CHECK_EQ(bad, 0u);
+    CHECK_EQ(lowerable, EMU_IR_VF_COUNT * 4u); /* SSE or the call: all */
+    CHECK_EQ(ran, lowerable * 4u * 40u);
+    CHECK_EQ(refs, EMU_IR_VF_COUNT * 4u * 4u * 40u);
+    CHECK(flagged > refs / 2u); /* the flags were asked, not just zero */
+}
+
 #endif /* EMU_IR_VECTOR */
 
 static void test_lower_more_exits_than_the_table(void)
@@ -4010,6 +4290,7 @@ void test_ir(void)
     test_lower_vred();
     test_lower_vmems();
     test_lower_vmem();
+    test_lower_vfop();
 #endif
     test_lower_zero_register();
     test_lower_more_exits_than_the_table();

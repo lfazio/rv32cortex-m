@@ -192,6 +192,53 @@ bool emu_ir_vopm_ref(uint8_t *vd, const uint8_t *vs2, const uint8_t *vs1,
     return false;
 }
 
+void emu_ir_vfop_ref(const emu_ir_target_t *t, uint8_t *base, uint8_t aux,
+                     uint32_t imm, uint32_t scalar, uint32_t vl, uint32_t *flags)
+{
+    const uint32_t nregs = EMU_IR_VOP_NREGS(imm);
+    const uint32_t n = (vl < nregs * 4u) ? vl : nregs * 4u;
+    uint8_t *const vd = base + t->vreg_offset(EMU_IR_VOP_VD(imm));
+    const uint8_t *const vs2 = base + t->vreg_offset(EMU_IR_VOP_VS2(imm));
+    const uint8_t *const vs1 = base + t->vreg_offset(EMU_IR_VOP_VS1(imm));
+    const uint8_t *const mk = base + t->vreg_offset(EMU_IR_VOP_MREG(imm));
+    uint32_t r[32];
+
+    /* every source read before vd is written: vd may be one of them */
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t a, b, c;
+
+        r[i] = 0u;
+        if (EMU_IR_VFOP_MASKED(imm) && ((mk[i >> 3] >> (i & 7u)) & 1u) == 0u) {
+            continue;
+        }
+        memcpy(&a, vs2 + 4u * i, 4u);
+        memcpy(&c, vd + 4u * i, 4u);
+        if (EMU_IR_VFOP_VF(imm)) {
+            b = scalar;
+        } else {
+            memcpy(&b, vs1 + 4u * i, 4u);
+        }
+        r[i] = t->vfop(EMU_IR_VFOP_OP(aux), a, b, c, EMU_IR_VFOP_RM(aux), flags);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (EMU_IR_VFOP_MASKED(imm) && ((mk[i >> 3] >> (i & 7u)) & 1u) == 0u) {
+            continue;
+        }
+        memcpy(vd + 4u * i, &r[i], 4u);
+    }
+}
+
+void emu_ir_vfop_call(void *cpu, const emu_ir_target_t *t, uint32_t aux,
+                      uint32_t imm, uint32_t scalar, uint32_t vl)
+{
+    uint32_t fl = 0u;
+
+    emu_ir_vfop_ref(t, (uint8_t *)cpu, (uint8_t)aux, imm, scalar, vl, &fl);
+    if (fl != 0u && t->fp_flags != NULL) {
+        t->fp_flags((emu_cpu_t *)cpu, fl);
+    }
+}
+
 /* A little-endian element of w bytes at p. */
 static uint32_t vred_get(const uint8_t *p, uint32_t w)
 {
@@ -502,6 +549,7 @@ static bool op_writes(emu_ir_op_t op)
     case EMU_IR_VMEM:
     case EMU_IR_VRED:
     case EMU_IR_VMEMS:
+    case EMU_IR_VFOP:
         return false;
     default:
         return true;

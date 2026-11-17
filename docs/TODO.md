@@ -218,15 +218,32 @@ From the last measurements in [linux.md](linux.md).
       its result is +-2^-126, and either costs every FP operation a
       check. The board replay could not see it, its reference computing
       with the same FPU. Measure the check's cost on Whetstone first.
+      The vector unit's lowering (`EMU_IR_VFOP`) is the same VFP and
+      shares it: `fpedge-v`'s `vfmul.vv` and `vfmacc.vv` on the fifth
+      case print flags 3 on the F746 under the JIT.
+- [ ] **A vector instruction after a declined one is the helper's.**
+      The translator lowers a vector instruction only in a block that
+      set vtype itself; a declined instruction -- a CSR write, which
+      `fsrm` before vector FP code and `csrw vxrm` before fixed-point
+      code are -- is interpreted in a batch that runs on past the
+      `vsetvli` after it, and the block that then starts mid-sequence
+      sends every vector instruction to the helper (`fpedge-v` met it,
+      [frontend/rv32-vector.md](frontend/rv32-vector.md#single-precision-under-the-jit)).
+      So does a loop whose `vsetvli` a compiler hoisted out of it. A
+      guard at the block's first vector instruction -- vtype read and
+      compared with the translation's, a side exit where they differ --
+      would let any block assume it; count how many vector instructions
+      reach the helper this way in real code first.
 
 - [ ] **The vector extension past Zve32f**: Zve32x and Zve32f are whole
       behind `-DRV32_EXT_ZVE32X=ON` and `-DRV32_EXT_ZVE32F=ON` and held
       to Spike by six probes; next Zve64x/f/d, then V and its `misa` bit
       ([frontend/rv32-vector.md](frontend/rv32-vector.md)). The UDB and
       Sail configurations wait for an arch-test pin with vector suites.
-      Zve32f's instructions are all the helper's under the JIT; lowering
-      the common ones (add, multiply, FMA) needs the host's float with
-      RISC-V's NaNs and flags, as the scalar lowering has.
+      Zve32f's arithmetic is lowered (`EMU_IR_VFOP`: SSE on x86-64, the
+      fused forms and other modes by a call; VFP on Thumb-2 under RNE);
+      min and max, compares, conversions, the FP reductions and `vfmv`
+      are still the helper's under the JIT.
 - [ ] **The vector unit's SIMD lowering, past its first set**: unmasked
       single-width integer operations lower after an inline vsetvli
       (`EMU_IR_VOP`), to SSE2/SSE4.1 on x86-64 and the DSP extension on

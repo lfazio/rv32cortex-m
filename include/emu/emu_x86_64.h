@@ -189,6 +189,8 @@ void x86_st_cpu_imm32(uint32_t disp, uint32_t imm);
 void x86_sse_shift_imm(uint8_t op2, unsigned ext, int xmm, uint8_t imm);
 void x86_imul_imm32(int r, uint32_t imm);
 void x86_imul_rr(int dst, int src);
+void x86_sse_ps(uint8_t op, int dst, int src);
+void x86_cmpps(int dst, int src, uint8_t pred);
 void x86_shr64_imm(int r, uint8_t n);
 void x86_ss_op(uint8_t op2, int dst, int src);
 void x86_ucomiss(int a, int b);

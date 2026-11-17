@@ -449,6 +449,8 @@ add_guest_image(vecround SOURCES start.S vecround.c
 # Results at the edge of underflow (fpedge.c): what an FPU detecting
 # tininess before rounding answers differently from RISC-V.
 add_guest_image(fpedge SOURCES start.S fpedge.c)
+add_guest_image(fpedge-v SOURCES start.S fpedge.c
+                FLAGS -march=${RV_GUEST_MARCH}_zve32f)
 
 # Single-precision vector kernels (vfbench.c): vecbench's counterpart
 # for Zve32f, run only where it is built.

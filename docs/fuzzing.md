@@ -478,6 +478,21 @@ sum is `wide-sum-e32.S`'s now. Each translator mutant tried -- the
 reductions' operations swapped, the helper's rs1 and rs2 swapped --
 diverged in 5 s.
 
+**And `EMU_IR_VFOP`** (kind 22, 2026-11-17): any of the fifteen
+operations under RNE, groups of 1 to 8, vs2 at vd half the time, the
+mask register anywhere outside vd's group, the scalar a special value or
+a value of the block's, and before it, half the time, a `vmv.v.x` of a
+special value -- a zero, a subnormal, the largest finite, an infinity, a
+quiet or signalling NaN -- into one of its groups. The reference is C's
+floats (`f_vfop`), on the host's FPU as the lowering is: it sees which
+operand is which, the mask, vl, the fused forms' signs and the NaN, not
+the rounding or the flags. Two minutes on the host, 249,932 blocks
+compared clean; SSE's reversed subtract not reversed found at input
+#8053, the mask not ANDed in at #220. The corpus on the F746, 14,457
+inputs in four slices, clean; on its first slice the fused product's
+sign inverted gave 131 differences, a reversed subtract 64, the mask's
+sense inverted 167.
+
 **And the masked widening and narrowing forms**: kind 17 masks them as
 it does the rest. `masked.S`'s first masked widening ran under a mask
 from `vmsne.vi v0, v9, 0`, and v9's reset pattern has no zero element:

@@ -1301,6 +1301,25 @@ static unsigned host_simd(void)
 }
 
 /*
+ * EMU_IR_VFOP in SSE's packed singles: under round-to-nearest-even, the
+ * mode this backend's blocks run every FP operation in, and not the
+ * fused forms -- a multiply and an add round twice, a double's exact
+ * product plus the addend then rounded to single rounds twice too, and
+ * FMA3, which would do it once, is absent on this project's x86 host (an
+ * Ivy Bridge): a lowering of it could not be run here, let alone
+ * checked. Everything else is emu_ir_vfop_call, the guest's arithmetic
+ * in C -- a call per instruction, not the helper's decode and dispatch,
+ * and the frontend's operation mapping run under the JIT on this host.
+ */
+static bool vfop_native(uint8_t aux)
+{
+    const uint32_t op = EMU_IR_VFOP_OP(aux);
+
+    return (host_simd() & HOST_SIMD_SSE2) != 0u && op < EMU_IR_VF_COUNT &&
+           !EMU_IR_VF_IS_FMA(op) && EMU_IR_VFOP_RM(aux) == EMU_IR_FRM_RNE;
+}
+
+/*
  * Which EMU_IR_VOP forms this host lowers. SSE2 has the adds, the
  * logic, an 8-bit unsigned and a 16-bit signed minimum and maximum, a
  * 16-bit multiply and the 16- and 32-bit shifts by one count; SSE4.1
@@ -1418,12 +1437,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         return vred_lowerable(aux);
     case EMU_IR_VMEMS: /* a loop of moves; without a window, the helper */
         return true;
+    case EMU_IR_VFOP: /* natively or by emu_ir_vfop_call */
+        return EMU_IR_VFOP_OP(aux) < EMU_IR_VF_COUNT &&
+               EMU_IR_VFOP_RM(aux) <= EMU_IR_FRM_RMM;
 #else
     case EMU_IR_VOP:
     case EMU_IR_VOPM:
     case EMU_IR_VMEM:
     case EMU_IR_VRED:
     case EMU_IR_VMEMS:
+    case EMU_IR_VFOP:
         return false;
 #endif
     /*
@@ -2526,6 +2549,112 @@ static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 }
 
+/* Four lanes of 1.0f, and of the canonical NaN. */
+static const uint8_t k_vf_one[16] = {0, 0, 0x80, 0x3F, 0, 0, 0x80, 0x3F,
+                                     0, 0, 0x80, 0x3F, 0, 0, 0x80, 0x3F};
+static const uint8_t k_vf_nan[16] = {0, 0, 0xC0, 0x7F, 0, 0, 0xC0, 0x7F,
+                                     0, 0, 0xC0, 0x7F, 0, 0, 0xC0, 0x7F};
+
+/*
+ * EMU_IR_VFOP, a register of the group at a time: vs2 into xmm0, vs1 or
+ * the scalar (broadcast once into xmm6) into xmm1; the lanes past vl or
+ * masked off made 1.0 in each, so that they raise no flag -- 1 + 1,
+ * 1 * 1, 1 / 1 and sqrt 1 are all exact; the operation; a NaN lane made the
+ * canonical NaN, CMPUNORDPS finding it without a flag of its own; then
+ * vd's old lanes kept outside the active ones, from memory again. The
+ * block's MXCSR is round-to-nearest with every flag sticky, harvested at
+ * its end as the scalar FP's are.
+ */
+static void lower_vfop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t op = EMU_IR_VFOP_OP(in->aux);
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vd = EMU_IR_VOP_VD(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const uint32_t vs1 = EMU_IR_VOP_VS1(in->imm);
+    const bool masked = EMU_IR_VFOP_MASKED(in->imm) != 0u;
+    const bool vf = EMU_IR_VFOP_VF(in->imm) != 0u;
+
+    if (!vfop_native(in->aux)) {
+        /* emu_ir_vfop_call(cpu, t, aux, imm, scalar, vl) */
+        if (in->a != EMU_IR_NO_TEMP) {
+            ld_operand(T0, in->a);
+            x86_mov_rr(X86_R8, T0);
+        }
+        ld_operand(T0, in->b);
+        x86_mov_rr(X86_R9, T0);
+        x86_mov_imm32(X86_ECX, in->imm);
+        x86_mov_imm32(X86_EDX, in->aux);
+        x86_mov_imm64(X86_ESI, (uint64_t)(uintptr_t)t);
+        emu_jit_emit8(0x48);
+        emu_jit_emit8(0x89);
+        emu_jit_emit8(0xDF); /* mov rdi, rbx */
+        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)emu_ir_vfop_call);
+        x86_call_rax();
+        return;
+    }
+    ld_operand(T2, in->b);
+    x86_shift_imm(T2, X86_SHL, 2u); /* vl in bytes */
+    if (vf) {
+        ld_operand(T0, in->a);
+        x86_movd_to_xmm(X86_XMM6, T0);
+        x86_pshufd(X86_XMM6, X86_XMM6, 0x00u);
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        const uint32_t od = t->vreg_offset(vd + r);
+
+        x86_movdqu_ld_cpu(X86_XMM0, t->vreg_offset(vs2 + r));
+        if (vf) {
+            x86_sse_66(0x6Fu, X86_XMM1, X86_XMM6);
+        } else if (op != EMU_IR_VF_SQRT) {
+            x86_movdqu_ld_cpu(X86_XMM1, t->vreg_offset(vs1 + r));
+        }
+        /* the active lanes, xmm3: past vl and masked-off ones clear */
+        x86_mov_imm64(T0, (uint64_t)(uintptr_t)(k_vop_window + 128u + 16u * r));
+        x86_sub64_rr(T0, T2);
+        x86_movdqu_ld_reg(X86_XMM3, T0);
+        if (masked) {
+            vop_elem_mask(t, EMU_IR_VOP_MREG(in->imm), 2u, r);
+            x86_sse_66(0xDBu, X86_XMM3, X86_XMM5);
+        }
+        /* inactive lanes 1.0: xmm4 = 1.0 & ~active */
+        vop_const(X86_XMM7, k_vf_one);
+        x86_sse_66(0x6Fu, X86_XMM4, X86_XMM3);
+        x86_sse_66(0xDFu, X86_XMM4, X86_XMM7);
+        x86_sse_66(0xDBu, X86_XMM0, X86_XMM3);
+        x86_sse_66(0xEBu, X86_XMM0, X86_XMM4);
+        if (op != EMU_IR_VF_SQRT) {
+            x86_sse_66(0xDBu, X86_XMM1, X86_XMM3);
+            x86_sse_66(0xEBu, X86_XMM1, X86_XMM4);
+        }
+        switch (op) {
+        case EMU_IR_VF_ADD: x86_sse_ps(0x58u, X86_XMM0, X86_XMM1); break;
+        case EMU_IR_VF_SUB: x86_sse_ps(0x5Cu, X86_XMM0, X86_XMM1); break;
+        case EMU_IR_VF_MUL: x86_sse_ps(0x59u, X86_XMM0, X86_XMM1); break;
+        case EMU_IR_VF_DIV: x86_sse_ps(0x5Eu, X86_XMM0, X86_XMM1); break;
+        case EMU_IR_VF_RSUB:
+        case EMU_IR_VF_RDIV:
+            x86_sse_ps((op == EMU_IR_VF_RSUB) ? 0x5Cu : 0x5Eu, X86_XMM1, X86_XMM0);
+            x86_sse_66(0x6Fu, X86_XMM0, X86_XMM1);
+            break;
+        default: x86_sse_ps(0x51u, X86_XMM0, X86_XMM0); break; /* SQRT */
+        }
+        /* NaN lanes to the canonical NaN */
+        x86_sse_66(0x6Fu, X86_XMM4, X86_XMM0);
+        x86_cmpps(X86_XMM4, X86_XMM4, 3u); /* unordered: all ones */
+        vop_const(X86_XMM7, k_vf_nan);
+        x86_sse_66(0xDBu, X86_XMM7, X86_XMM4);
+        x86_sse_66(0xDFu, X86_XMM4, X86_XMM0);
+        x86_sse_66(0xEBu, X86_XMM4, X86_XMM7);
+        /* the active lanes kept, vd's old ones elsewhere */
+        x86_movdqu_ld_cpu(X86_XMM2, od);
+        x86_sse_66(0xDBu, X86_XMM4, X86_XMM3);
+        x86_sse_66(0xDFu, X86_XMM3, X86_XMM2);
+        x86_sse_66(0xEBu, X86_XMM4, X86_XMM3);
+        x86_movdqu_st_cpu(od, X86_XMM4);
+    }
+}
+
 #endif /* EMU_IR_VECTOR */
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -3578,6 +3707,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         lower_vmems(in, t);
         break;
+
+    case EMU_IR_VFOP:
+        if (!emu_ir_can_lower(EMU_IR_VFOP, in->aux) || t->vreg_offset == NULL ||
+            t->vfop == NULL) {
+            return false;
+        }
+        lower_vfop(in, t);
+        break;
 #endif
 
     /*
@@ -3719,8 +3856,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         if (b->insn[i].dead) {
             continue;
         }
-        if (b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
-            b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
+        if ((b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
+             b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) ||
+            b->insn[i].op == (uint8_t)EMU_IR_VFOP) {
             g_has_fp = true;
         }
     }

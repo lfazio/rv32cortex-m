@@ -129,6 +129,7 @@ n6-rv32|stm32n6|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the Armv8.1-M
 n6-g4|stm32n6|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check on the newest platform: a frontend swap must need nothing from src/platform/
 host-coremark|host|-DEMU_NATIVE_COREMARK=ON|**the native baseline**, which called a console symbol renamed away years ago and so had not linked since; nothing built it, so nothing said so
 f746-coremark|stm32f746|-DEMU_NATIVE_COREMARK=ON -DEMU_NET=OFF|the same option on the board it was written for
+f746-zve32f|stm32f746|-DRV32_EXT_ZVE32X=ON -DRV32_EXT_ZVE32F=ON -DEMU_NET=OFF|**the vector unit on the board**, with single precision: the Thumb-2 vector lowerings (EMU_IR_VECTOR), which no other firmware row compiles
 '
 
 if [ "$filter" = "--list" ]; then

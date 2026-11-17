@@ -119,6 +119,13 @@ was looking at:
   larger block stopped chaining rather than widening the encoding,
   costing 2.4× on the loops that crossed the line. Every branch this
   backend emits is the wide form now.
+- **A VFP register's low bit sits apart from the rest, in a field of
+  its own.** `t2_vfp3` put the destination's (D) at bit 6 of the second
+  halfword, which is `sub` -- VADD with an odd destination was VSUB into
+  the even register below. Every caller passed s0 until the vector
+  lowering wanted more; `t2-check-encodings.sh` now asks the assembler
+  with odd registers in all three fields, and the old placement fails
+  it.
 
 ## The guest's vector registers: the DSP extension
 
@@ -276,6 +283,24 @@ instructions, unrolled, so an m8 operation is over a kilobyte. Before
 this round's vector work (03044e9: vector instructions declined, a byte
 loop an element) it was 441.55, slower than the interpreter's 424.22;
 the interpreter is 226.46 now.
+
+### Single precision: VFP
+
+`EMU_IR_VFOP` is an element loop: r12 the vector file, r3 vl's bytes
+(clamped to the group), r2 the element's offset, and for a masked
+operation r1 the mask register's first word -- 32 elements at most --
+shifted out a bit an element (`LSRS`, `BCC` past an inactive one); each
+element `VLDR`s its sources, computes in s0 and `VSTR`s it. Under the
+block's FPSCR -- round to nearest, default NaN -- the NaN is RISC-V's
+canonical one and the flags are harvested at the exit with the scalar
+FP's. All fifteen operations under RNE; the fused ones as the scalar
+FMA: NEG_ADD picks `VFNMS`/`VFNMA`, NEG_MUL is `sub`, the addend in s0
+(vd for `vfmacc`'s kin, vs2 for `vfmadd`'s). vfbench on the F746 125.63
+to 33.26 host cycles a guest instruction, the same at a second layout
+([frontend/rv32-vector.md](../frontend/rv32-vector.md#single-precision-under-the-jit)).
+The corpus replay finds the product's sign inverted, a reversed
+subtract and the mask's sense; the M7's tininess before rounding is the
+scalar FP's difference, shared ([TODO](../TODO.md)).
 
 ### Vector loads and stores
 
