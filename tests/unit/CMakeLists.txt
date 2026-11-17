@@ -281,6 +281,13 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-fpedge-jit PROPERTIES LABELS fast
             PASS_REGULAR_EXPRESSION "${_want}")
     endif()
+    if(TARGET guest-vfbench AND RV32_EXT_ZVE32F AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-vfbench-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/vfbench.bin" VFBENCH-END)
+        set_tests_properties(guest-vfbench-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(TARGET guest-vecfp AND RV32_EXT_ZVE32F AND EMU_GUEST_ARCH_RV32)
         add_test(NAME guest-vecfp-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>

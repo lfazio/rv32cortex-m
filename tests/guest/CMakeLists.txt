@@ -450,6 +450,13 @@ add_guest_image(vecround SOURCES start.S vecround.c
 # tininess before rounding answers differently from RISC-V.
 add_guest_image(fpedge SOURCES start.S fpedge.c)
 
+# Single-precision vector kernels (vfbench.c): vecbench's counterpart
+# for Zve32f, run only where it is built.
+set(VFBENCH_ROUNDS "20" CACHE STRING "vfbench rounds of its kernels")
+add_guest_image(vfbench SOURCES start.S vfbench.c
+                FLAGS -march=${RV_GUEST_MARCH}_zve32f
+                      -DVFBENCH_ROUNDS=${VFBENCH_ROUNDS})
+
 # The vector unit's single precision on special values (vecfp.c), for
 # the board, where SoftFloat and the host-float comparisons run on an M7.
 add_guest_image(vecfp SOURCES start.S vecfp.c
