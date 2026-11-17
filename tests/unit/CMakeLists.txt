@@ -268,6 +268,13 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-vecround-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    if(TARGET guest-vecfp AND RV32_EXT_ZVE32F AND EMU_GUEST_ARCH_RV32)
+        add_test(NAME guest-vecfp-both
+                 COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/vecfp.bin" VECFP-END)
+        set_tests_properties(guest-vecfp-both PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+    endif()
     if(TARGET guest-vecmask AND RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
         add_test(NAME guest-vecmask-both
                  COMMAND ${Python3_EXECUTABLE} "${_both}" $<TARGET_FILE:emu-host>
@@ -545,6 +552,9 @@ if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_PMP AND TARGET emu-host)
         endif()
         if(NOT RV32_EXT_D)
             list(FILTER _probes EXCLUDE REGEX "/fmanv\\.S$")
+        endif()
+        if(NOT RV32_EXT_ZVE32F)
+            list(FILTER _probes EXCLUDE REGEX "/vec-fp[a-z0-9-]*\\.S$")
         endif()
         foreach(_p IN LISTS _probes)
             get_filename_component(_n "${_p}" NAME_WE)

@@ -361,6 +361,80 @@ static uint32_t f_classify(uint32_t a)
 }
 
 /* ------------------------------------------------------------------ */
+/* Single precision, shared by the scalar and vector instructions       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * a * b + c, rounded once. A signalling NaN anywhere, then zero times
+ * infinity -- invalid even plus a quiet NaN (probes/fmanv.S) -- then any
+ * NaN, each give the canonical NaN; the N and subtracting forms negate
+ * their operands before this, not the result.
+ */
+static uint32_t f_fma32(uint32_t a, uint32_t b, uint32_t c, uint32_t rm,
+                        uint32_t *flags)
+{
+    if (f_is_snan(a) || f_is_snan(b) || f_is_snan(c)) {
+        *flags |= FFLAG_NV;
+        return F_CANON_NAN;
+    }
+    if ((f_is_zero(a) && f_is_inf(b)) || (f_is_inf(a) && f_is_zero(b))) {
+        *flags |= FFLAG_NV;
+        return F_CANON_NAN;
+    }
+    if (f_is_nan(a) || f_is_nan(b) || f_is_nan(c)) {
+        return F_CANON_NAN;
+    }
+    f_begin(rm);
+    return f_end(f32_mulAdd(f_v(a), f_v(b), f_v(c)), flags);
+}
+
+/*
+ * min (max false) or max: the non-NaN operand when exactly one is NaN,
+ * the canonical NaN when both are, NV for a signalling one; -0 below +0.
+ */
+static uint32_t f_minmax32(uint32_t a, uint32_t b, bool max, uint32_t *flags)
+{
+    if (f_is_snan(a) || f_is_snan(b)) {
+        *flags |= FFLAG_NV;
+    }
+    if (f_is_nan(a) && f_is_nan(b)) {
+        return F_CANON_NAN;
+    }
+    if (f_is_nan(a)) {
+        return b;
+    }
+    if (f_is_nan(b)) {
+        return a;
+    }
+    if (f_is_zero(a) && f_is_zero(b)) {
+        return ((F_SIGN(a) != 0u) == !max) ? a : b;
+    }
+    const float x = f_bits_to_float(a);
+    const float y = f_bits_to_float(b);
+
+    return ((!max) ? (x < y) : (x > y)) ? a : b;
+}
+
+/*
+ * A comparison, 1 or 0: kind 0 a <= b, 1 a < b, 2 a == b. The equality
+ * is quiet, signalling NV only for a signalling NaN; the orderings
+ * signal for any NaN. A NaN compares false.
+ */
+static uint32_t f_cmp32(uint32_t a, uint32_t b, uint32_t kind, uint32_t *flags)
+{
+    if (f_is_nan(a) || f_is_nan(b)) {
+        if (kind != 2u || f_is_snan(a) || f_is_snan(b)) {
+            *flags |= FFLAG_NV;
+        }
+        return 0u;
+    }
+    const float x = f_bits_to_float(a);
+    const float y = f_bits_to_float(b);
+
+    return (kind == 0u) ? (x <= y) : (kind == 1u) ? (x < y) : (x == y);
+}
+
+/* ------------------------------------------------------------------ */
 /* Instruction execution                                               */
 /* ------------------------------------------------------------------ */
 
@@ -903,46 +977,17 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         }
 #endif
         const uint32_t a = fr32(h, rs1), b = fr32(h, rs2), c = fr32(h, rs3);
-        uint32_t res;
+        /*
+         * One rounding (f_fma32): the product negated for the N forms, the
+         * addend for the subtracting ones -- the operands, not the result,
+         * whose zero's sign the rounding decides.
+         */
+        const uint32_t sa = (opcode == OP_NMSUB || opcode == OP_NMADD)
+                                ? (a ^ 0x80000000u) : a;
+        const uint32_t sc = (opcode == OP_MSUB || opcode == OP_NMADD)
+                                ? (c ^ 0x80000000u) : c;
+        const uint32_t res = f_fma32(sa, b, sc, f_rm(h, rm), &flags);
 
-        if (f_is_snan(a) || f_is_snan(b) || f_is_snan(c)) {
-            flags |= FFLAG_NV;
-            res = F_CANON_NAN;
-        } else if ((f_is_zero(a) && f_is_inf(b)) ||
-                   (f_is_inf(a) && f_is_zero(b))) {
-            /*
-             * 0 * inf is invalid even when the addend is a quiet NaN --
-             * which IEEE leaves open and RISC-V's F chapter does not. This
-             * came after the NaN test until probes/fmanv.S: NV clear, where
-             * Sail and Spike both set it, single and double.
-             */
-            flags |= FFLAG_NV;
-            res = F_CANON_NAN;
-        } else if (f_is_nan(a) || f_is_nan(b) || f_is_nan(c)) {
-            res = F_CANON_NAN;
-        } else {
-            /*
-             * f32_mulAdd is a genuine fused multiply-add: one rounding, and
-             * the NaN and infinity cases handled to the letter. The sign
-             * convention is the same as the error-free version below --
-             * negate the product for the N forms, the addend for the
-             * subtracting ones.
-             */
-            uint32_t sa = a, sc = c;
-            if (opcode == OP_NMSUB || opcode == OP_NMADD) {
-                sa ^= 0x80000000u;
-            }
-            if (opcode == OP_MSUB || opcode == OP_NMADD) {
-                sc ^= 0x80000000u;
-            }
-
-            f_begin(f_rm(h, rm));
-            res = f_end(f32_mulAdd(f_v(sa), f_v(b), f_v(sc)), &flags);
-            fw32(h, rd, res);
-            h->fcsr |= flags;
-            f_dirty(h);
-            return RV_EXC_NONE;
-        }
         fw32(h, rd, res);
         h->fcsr |= flags;
         f_dirty(h);
@@ -1089,62 +1134,17 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
         }
-        if (f_is_snan(a) || f_is_snan(b)) {
-            flags |= FFLAG_NV;
-        }
-        /*
-         * min/max return the non-NaN operand when exactly one is NaN, and
-         * the canonical NaN only when both are. -0 compares less than +0,
-         * which the plain comparison below would treat as equal.
-         */
-        if (f_is_nan(a) && f_is_nan(b)) {
-            res = F_CANON_NAN;
-        } else if (f_is_nan(a)) {
-            res = b;
-        } else if (f_is_nan(b)) {
-            res = a;
-        } else if (f_is_zero(a) && f_is_zero(b)) {
-            const bool want_neg = (rm == 0u);
-            const bool a_neg = F_SIGN(a) != 0u;
-            res = (a_neg == want_neg) ? a : b;
-        } else {
-            const float x = f_bits_to_float(a);
-            const float y = f_bits_to_float(b);
-            res = ((rm == 0u) ? (x < y) : (x > y)) ? a : b;
-        }
+        res = f_minmax32(a, b, rm == 1u, &flags);
         break;
     }
 
     case 0x14u: { /* FLE.S / FLT.S / FEQ.S -- results go to an X register */
-        uint32_t r;
-        if (f_is_nan(a) || f_is_nan(b)) {
-            /* Quiet comparisons (FEQ) only signal on a signalling NaN. */
-            if (rm == 2u) {
-                if (f_is_snan(a) || f_is_snan(b)) {
-                    flags |= FFLAG_NV;
-                }
-            } else {
-                flags |= FFLAG_NV;
-            }
-            r = 0u;
-        } else {
-            const float x = f_bits_to_float(a);
-            const float y = f_bits_to_float(b);
-            switch (rm) {
-            case 0:
-                r = (x <= y);
-                break; /* FLE */
-            case 1:
-                r = (x < y);
-                break; /* FLT */
-            case 2:
-                r = (x == y);
-                break; /* FEQ */
-            default:
-                *tval = insn;
-                return RV_EXC_ILLEGAL_INSN;
-            }
+        if (rm > 2u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
         }
+        const uint32_t r = f_cmp32(a, b, rm, &flags); /* FLE, FLT, FEQ */
+
         f_accrue(h, flags);
         h->x[rd] = r;
         h->x[0] = 0u;
@@ -1219,5 +1219,226 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     f_dirty(h);
     return RV_EXC_NONE;
 }
+
+
+#if RV_EXT_ZVE32F
+/* ------------------------------------------------------------------ */
+/* The vector unit's single precision (Zve32f)                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The 7-bit estimates of vfrec7 and vfrsqrt7, from the V specification:
+ * entry j is 128 * (2 / m - 1) for vfrec7 and 128 * (2 / sqrt(m') - 1)
+ * for vfrsqrt7, rounded to nearest, m the midpoint of the significands
+ * that index it and m' twice that for an even biased exponent (entries
+ * 0-63). test_vfp_estimate_tables regenerates both from that rule, and
+ * probes/vec-fp2.S asks Spike for every entry.
+ */
+const uint8_t rv_vf_rec7_table[128] = {
+    127, 125, 123, 121, 119, 117, 116, 114, 112, 110, 109, 107, 105, 104, 102,
+    100, 99,  97,  96,  94,  93,  91,  90,  88,  87,  85,  84,  83,  81,  80,
+    79,  77,  76,  75,  74,  72,  71,  70,  69,  68,  66,  65,  64,  63,  62,
+    61,  60,  59,  58,  57,  56,  55,  54,  53,  52,  51,  50,  49,  48,  47,
+    46,  45,  44,  43,  42,  41,  40,  40,  39,  38,  37,  36,  35,  35,  34,
+    33,  32,  31,  31,  30,  29,  28,  28,  27,  26,  25,  25,  24,  23,  23,
+    22,  21,  21,  20,  19,  19,  18,  17,  17,  16,  15,  15,  14,  14,  13,
+    12,  12,  11,  11,  10,  9,   9,   8,   8,   7,   7,   6,   5,   5,   4,
+    4,   3,   3,   2,   2,   1,   1,   0,
+};
+const uint8_t rv_vf_rsqrt7_table[128] = {
+    52,  51,  50,  48,  47,  46,  44,  43,  42,  41,  40,  39,  38,  36,  35,
+    34,  33,  32,  31,  30,  30,  29,  28,  27,  26,  25,  24,  23,  23,  22,
+    21,  20,  19,  19,  18,  17,  16,  16,  15,  14,  14,  13,  12,  12,  11,
+    10,  10,  9,   9,   8,   7,   7,   6,   6,   5,   4,   4,   3,   3,   2,
+    2,   1,   1,   0,   127, 125, 123, 121, 119, 118, 116, 114, 113, 111, 109,
+    108, 106, 105, 103, 102, 100, 99,  97,  96,  95,  93,  92,  91,  90,  88,
+    87,  86,  85,  84,  83,  82,  80,  79,  78,  77,  76,  75,  74,  73,  72,
+    71,  70,  70,  69,  68,  67,  66,  65,  64,  63,  63,  62,  61,  60,  59,
+    59,  58,  57,  56,  56,  55,  54,  53,
+};
+
+/* A positive normal or subnormal's biased exponent and 23-bit fraction,
+ * normalised: a subnormal's exponent goes to 0 and below. */
+static void f_normalise(uint32_t a, int32_t *exp, uint32_t *frac)
+{
+    int32_t e = (int32_t)F_EXP(a);
+    uint32_t f = F_MANT(a);
+
+    if (e == 0) {
+        while ((f & 0x400000u) == 0u) {
+            f <<= 1;
+            e--;
+        }
+        f = (f << 1) & 0x7FFFFFu;
+    }
+    *exp = e;
+    *frac = f;
+}
+
+static uint32_t f_rec7(uint32_t a, uint32_t rm, uint32_t *flags)
+{
+    const uint32_t sign = F_SIGN(a);
+
+    if (f_is_nan(a)) {
+        if (f_is_snan(a)) {
+            *flags |= FFLAG_NV;
+        }
+        return F_CANON_NAN;
+    }
+    if (f_is_inf(a)) {
+        return sign; /* +-0 */
+    }
+    if (f_is_zero(a)) {
+        *flags |= FFLAG_DZ;
+        return sign | 0x7F800000u;
+    }
+    int32_t e;
+    uint32_t f;
+
+    f_normalise(a, &e, &f);
+    if (e < -1) {
+        /* So small its reciprocal overflows: infinity or the largest
+         * finite value, by the rounding mode's direction. */
+        const bool to_inf = rm == FRM_RNE || rm == FRM_RMM ||
+                            (rm == FRM_RUP && sign == 0u) ||
+                            (rm == FRM_RDN && sign != 0u);
+
+        *flags |= FFLAG_OF | FFLAG_NX;
+        return sign | (to_inf ? 0x7F800000u : 0x7F7FFFFFu);
+    }
+    int32_t oe = 2 * 127 - 1 - e;
+    uint32_t of = (uint32_t)rv_vf_rec7_table[f >> 16] << 16;
+
+    if (oe <= 0) { /* a subnormal result: the leading 1 shifted in */
+        of = (of | 0x800000u) >> (uint32_t)(1 - oe);
+        oe = 0;
+    }
+    return sign | ((uint32_t)oe << 23) | of;
+}
+
+static uint32_t f_rsqrt7(uint32_t a, uint32_t *flags)
+{
+    const uint32_t sign = F_SIGN(a);
+
+    if (f_is_nan(a)) {
+        if (f_is_snan(a)) {
+            *flags |= FFLAG_NV;
+        }
+        return F_CANON_NAN;
+    }
+    if (f_is_zero(a)) {
+        *flags |= FFLAG_DZ;
+        return sign | 0x7F800000u;
+    }
+    if (sign != 0u) { /* below zero, infinity included */
+        *flags |= FFLAG_NV;
+        return F_CANON_NAN;
+    }
+    if (f_is_inf(a)) {
+        return 0u;
+    }
+    int32_t e;
+    uint32_t f;
+
+    f_normalise(a, &e, &f);
+    const uint32_t idx = (((uint32_t)e & 1u) << 6) | (f >> 17);
+    const int32_t oe = (3 * 127 - 1 - e) / 2;
+
+    return ((uint32_t)oe << 23) | ((uint32_t)rv_vf_rsqrt7_table[idx] << 16);
+}
+
+/*
+ * Float to a 16-bit integer, as Spike's f32_to_i16 and f32_to_ui16: the
+ * 32-bit conversion, then out of range saturates and raises NV alone --
+ * whatever that conversion raised is dropped.
+ */
+static uint32_t f_to_int16(uint32_t a, bool is_signed, uint32_t rm,
+                           uint32_t *flags)
+{
+    uint32_t local = 0u;
+    const uint32_t v = f_to_int(a, is_signed, rm, &local);
+
+    if (is_signed) {
+        if ((int32_t)v > 32767) {
+            *flags |= FFLAG_NV;
+            return 0x7FFFu;
+        }
+        if ((int32_t)v < -32768) {
+            *flags |= FFLAG_NV;
+            return 0x8000u;
+        }
+    } else if (v > 0xFFFFu) {
+        *flags |= FFLAG_NV;
+        return 0xFFFFu;
+    }
+    *flags |= local;
+    return v & 0xFFFFu;
+}
+
+uint32_t rv_vf32(rv_vf_op_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t rm,
+                 uint32_t *flags)
+{
+    uint32_t res;
+
+    switch (op) {
+    case RV_VF_ADD:
+    case RV_VF_SUB:
+    case RV_VF_MUL:
+    case RV_VF_DIV: {
+        if (f_nan_result(a, b, &res, flags)) {
+            return res;
+        }
+        float32_t r;
+
+        f_begin(rm);
+        switch (op) {
+        case RV_VF_ADD: r = f32_add(f_v(a), f_v(b)); break;
+        case RV_VF_SUB: r = f32_sub(f_v(a), f_v(b)); break;
+        case RV_VF_MUL: r = f32_mul(f_v(a), f_v(b)); break;
+        default: r = f32_div(f_v(a), f_v(b)); break;
+        }
+        return f_end(r, flags);
+    }
+    case RV_VF_SQRT:
+        f_begin(rm);
+        return f_end(f32_sqrt(f_v(a)), flags);
+    case RV_VF_MIN: return f_minmax32(a, b, false, flags);
+    case RV_VF_MAX: return f_minmax32(a, b, true, flags);
+    case RV_VF_FMA: return f_fma32(a, b, c, rm, flags);
+    case RV_VF_LE: return f_cmp32(a, b, 0u, flags);
+    case RV_VF_LT: return f_cmp32(a, b, 1u, flags);
+    case RV_VF_EQ: return f_cmp32(a, b, 2u, flags);
+    case RV_VF_CLASS: return f_classify(a);
+    case RV_VF_TO_I32: return f_to_int(a, true, rm, flags);
+    case RV_VF_TO_U32: return f_to_int(a, false, rm, flags);
+    case RV_VF_FROM_I32:
+        f_begin(rm);
+        return f_end(i32_to_f32((int32_t)a), flags);
+    case RV_VF_FROM_U32:
+        f_begin(rm);
+        return f_end(ui32_to_f32(a), flags);
+    case RV_VF_TO_I16: return f_to_int16(a, true, rm, flags);
+    case RV_VF_TO_U16: return f_to_int16(a, false, rm, flags);
+    case RV_VF_REC7: return f_rec7(a, rm, flags);
+    default: return f_rsqrt7(a, flags); /* RV_VF_RSQRT7 */
+    }
+}
+
+uint32_t rv_vf32_reg(const rv_hart_t *h, uint32_t r)
+{
+    return fr32(h, r);
+}
+
+void rv_vf32_set_reg(rv_hart_t *h, uint32_t r, uint32_t v)
+{
+    fw32(h, r, v);
+    f_dirty(h);
+}
+
+void rv_vf32_accrue(rv_hart_t *h, uint32_t flags)
+{
+    f_accrue(h, flags);
+}
+#endif /* RV_EXT_ZVE32F */
 
 #endif /* RV_EXT_F */

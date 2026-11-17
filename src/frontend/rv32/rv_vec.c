@@ -1553,6 +1553,308 @@ static rv_exc_t vmem(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     return RV_EXC_NONE;
 }
 
+#if RV_EXT_ZVE32F
+/* ------------------------------------------------------------------ */
+/* Floating point: OPFVV and OPFVF (Zve32f)                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The conversions (VFUNARY0, vs1 the operation): single-width at SEW 32,
+ * the widening int16-to-float and narrowing float-to-int16 at SEW 16 --
+ * the only ones Zve32f has, every other source or result being half or
+ * double precision, or a 64-bit integer. Spike's checks.
+ */
+static rv_exc_t fcvt(rv_hart_t *h, const vop_t *o, uint32_t frm,
+                     uint32_t *flags, uint32_t insn, uint32_t *tval)
+{
+    const uint32_t k = o->r1;
+    const uint32_t wg = group_of(o->lg + 1);
+
+    if (k <= 0x07u && k != 0x04u && k != 0x05u) { /* single-width */
+        if (o->sew != 32u || o->vd % o->grp != 0u || o->vs2 % o->grp != 0u ||
+            (!o->vm && o->vd == 0u)) {
+            return illegal(insn, tval);
+        }
+        for (uint32_t i = h->vstart; i < o->vl; i++) {
+            if (!active(h, o, i)) {
+                continue;
+            }
+            const uint32_t a = el_get(h, o->vs2, i, 4u);
+            static const uint8_t k_op[8] = {RV_VF_TO_U32, RV_VF_TO_I32, RV_VF_FROM_U32,
+                                            RV_VF_FROM_I32, 0, 0, RV_VF_TO_U32,
+                                            RV_VF_TO_I32};
+            const uint32_t rm = (k >= 0x06u) ? FRM_RTZ : frm;
+
+            el_set(h, o->vd, i, 4u, rv_vf32((rv_vf_op_t)k_op[k], a, 0u, 0u, rm, flags));
+        }
+        return RV_EXC_NONE;
+    }
+    if (k == 0x0Au || k == 0x0Bu) { /* vfwcvt.f.xu.v, vfwcvt.f.x.v */
+        if (o->sew != 16u || o->lg > 2 || o->vd % wg != 0u ||
+            o->vs2 % o->grp != 0u || (!o->vm && o->vd == 0u) ||
+            overlaps_widen(o->vd, wg, o->vs2, o->grp, o->lg < 0)) {
+            return illegal(insn, tval);
+        }
+        for (uint32_t i = h->vstart; i < o->vl; i++) {
+            if (!active(h, o, i)) {
+                continue;
+            }
+            const uint32_t a = el_get(h, o->vs2, i, 2u);
+            /* exact: every 16-bit integer is a single */
+            const uint32_t r = (k == 0x0Bu)
+                                   ? rv_vf32(RV_VF_FROM_I32, (uint32_t)sx(a, 16u), 0u,
+                                             0u, frm, flags)
+                                   : rv_vf32(RV_VF_FROM_U32, a, 0u, 0u, frm, flags);
+
+            el_set(h, o->vd, i, 4u, r);
+        }
+        return RV_EXC_NONE;
+    }
+    if (k == 0x10u || k == 0x11u || k == 0x16u || k == 0x17u) {
+        /* vfncvt.xu.f.w, vfncvt.x.f.w and their rtz forms */
+        if (o->sew != 16u || o->lg > 2 || o->vs2 % wg != 0u ||
+            o->vd % o->grp != 0u || (!o->vm && o->vd == 0u) ||
+            (o->vd != o->vs2 && overlaps(o->vd, o->grp, o->vs2, wg))) {
+            return illegal(insn, tval);
+        }
+        const bool sgn = (k & 1u) != 0u;
+        const uint32_t rm = (k >= 0x16u) ? FRM_RTZ : frm;
+
+        for (uint32_t i = h->vstart; i < o->vl; i++) {
+            if (!active(h, o, i)) {
+                continue;
+            }
+            const uint32_t a = el_get(h, o->vs2, i, 4u);
+
+            el_set(h, o->vd, i, 2u,
+                   rv_vf32(sgn ? RV_VF_TO_I16 : RV_VF_TO_U16, a, 0u, 0u, rm, flags));
+        }
+        return RV_EXC_NONE;
+    }
+    return illegal(insn, tval);
+}
+
+static rv_exc_t opf(rv_hart_t *h, uint32_t insn, uint32_t f3, uint32_t *tval)
+{
+    vop_t o = vop_of(h, insn, f3);
+    const bool vv = f3 == 1u;
+    const uint32_t f6 = o.f6;
+    const uint32_t frm = (h->fcsr >> 5) & 7u;
+    uint32_t flags = 0u;
+
+    o.form = vv ? 1u : 2u;
+    /*
+     * FS off, or an invalid frm, refuses every one -- vfmv.f.s and
+     * vfmv.s.f too, which round nothing: Spike's rule (probes/vec-fp.S).
+     */
+    if ((h->mstatus & MSTATUS_FS_MASK) == 0u || frm > FRM_RMM) {
+        return illegal(insn, tval);
+    }
+    if (f6 == 0x10u) { /* VWFUNARY0, VRFUNARY0 */
+        if (o.sew != 32u) {
+            return illegal(insn, tval);
+        }
+        if (vv && o.r1 == 0u && o.vm) { /* vfmv.f.s: element 0, whatever vl */
+            rv_vf32_set_reg(h, o.vd, el_get(h, o.vs2, 0u, 4u));
+            h->vstart = 0u;
+            return RV_EXC_NONE;
+        }
+        if (!vv && o.vs2 == 0u && o.vm) { /* vfmv.s.f */
+            if (o.vl > 0u && h->vstart < o.vl) {
+                el_set(h, o.vd, 0u, 4u, rv_vf32_reg(h, o.r1));
+            }
+            h->vstart = 0u;
+            return RV_EXC_NONE;
+        }
+        return illegal(insn, tval);
+    }
+    if (f6 == 0x12u && vv) { /* VFUNARY0: the conversions */
+        const rv_exc_t e = fcvt(h, &o, frm, &flags, insn, tval);
+
+        if (e == RV_EXC_NONE) {
+            rv_vf32_accrue(h, flags);
+            h->vstart = 0u;
+        }
+        return e;
+    }
+    if (o.sew != 32u || f6 >= 0x30u) {
+        /* a single only: half needs Zvfh, double and the widening forms
+         * a 64-bit element */
+        return illegal(insn, tval);
+    }
+    const uint32_t scalar = vv ? 0u : rv_vf32_reg(h, o.r1);
+
+    /* --- the reductions (vfredusum, vfredosum, vfredmin, vfredmax) --- */
+    if (f6 <= 0x07u && (f6 & 1u) != 0u) {
+        if (!vv || o.vs2 % o.grp != 0u) {
+            return illegal(insn, tval);
+        }
+        if (o.vl == 0u) {
+            return RV_EXC_NONE;
+        }
+        uint32_t acc = el_get(h, o.r1, 0u, 4u);
+
+        for (uint32_t i = 0u; i < o.vl; i++) {
+            if (!active(h, &o, i)) {
+                continue;
+            }
+            const uint32_t e = el_get(h, o.vs2, i, 4u);
+
+            switch (f6) {
+            case 0x05u: acc = rv_vf32(RV_VF_MIN, acc, e, 0u, frm, &flags); break;
+            case 0x07u: acc = rv_vf32(RV_VF_MAX, acc, e, 0u, frm, &flags); break;
+            default: acc = rv_vf32(RV_VF_ADD, acc, e, 0u, frm, &flags); break;
+            }
+        }
+        el_set(h, o.vd, 0u, 4u, acc);
+        rv_vf32_accrue(h, flags);
+        return RV_EXC_NONE;
+    }
+
+    /* --- vfslide1up.vf, vfslide1down.vf ------------------------------ */
+    if (f6 == 0x0Eu || f6 == 0x0Fu) {
+        if (vv || o.vd % o.grp != 0u || o.vs2 % o.grp != 0u ||
+            (!o.vm && o.vd == 0u) || (f6 == 0x0Eu && overlaps(o.vd, o.grp, o.vs2, o.grp))) {
+            return illegal(insn, tval);
+        }
+        for (uint32_t i = h->vstart; i < o.vl; i++) {
+            if (!active(h, &o, i)) {
+                continue;
+            }
+            uint32_t v;
+
+            if (f6 == 0x0Eu) {
+                v = (i == 0u) ? scalar : el_get(h, o.vs2, i - 1u, 4u);
+            } else {
+                v = (i == o.vl - 1u) ? scalar : el_get(h, o.vs2, i + 1u, 4u);
+            }
+            el_set(h, o.vd, i, 4u, v);
+        }
+        h->vstart = 0u;
+        return RV_EXC_NONE;
+    }
+
+    /* --- vfmerge.vfm, vfmv.v.f --------------------------------------- */
+    if (f6 == 0x17u) {
+        if (vv || o.vd % o.grp != 0u || o.vs2 % o.grp != 0u ||
+            (!o.vm && o.vd == 0u) || (o.vm && o.vs2 != 0u)) {
+            return illegal(insn, tval);
+        }
+        for (uint32_t i = h->vstart; i < o.vl; i++) {
+            el_set(h, o.vd, i, 4u,
+                   (o.vm || m_get(h, 0u, i)) ? scalar : el_get(h, o.vs2, i, 4u));
+        }
+        h->vstart = 0u;
+        return RV_EXC_NONE;
+    }
+
+    /* --- the compares into a mask ------------------------------------ */
+    if (f6 == 0x18u || f6 == 0x19u || f6 == 0x1Bu || f6 == 0x1Cu ||
+        f6 == 0x1Du || f6 == 0x1Fu) {
+        if ((vv && (f6 == 0x1Du || f6 == 0x1Fu)) || o.vs2 % o.grp != 0u ||
+            (vv && o.r1 % o.grp != 0u)) {
+            return illegal(insn, tval);
+        }
+        for (uint32_t i = h->vstart; i < o.vl; i++) {
+            if (!active(h, &o, i)) {
+                continue;
+            }
+            const uint32_t a = el_get(h, o.vs2, i, 4u);
+            const uint32_t b = vv ? el_get(h, o.r1, i, 4u) : scalar;
+            uint32_t r;
+
+            switch (f6) {
+            case 0x18u: r = rv_vf32(RV_VF_EQ, a, b, 0u, frm, &flags); break;
+            case 0x19u: r = rv_vf32(RV_VF_LE, a, b, 0u, frm, &flags); break;
+            case 0x1Bu: r = rv_vf32(RV_VF_LT, a, b, 0u, frm, &flags); break;
+            case 0x1Cu: r = !rv_vf32(RV_VF_EQ, a, b, 0u, frm, &flags); break;
+            case 0x1Du: r = rv_vf32(RV_VF_LT, b, a, 0u, frm, &flags); break; /* vmfgt */
+            default: r = rv_vf32(RV_VF_LE, b, a, 0u, frm, &flags); break;     /* vmfge */
+            }
+            m_set(h, o.vd, i, r != 0u);
+        }
+        rv_vf32_accrue(h, flags);
+        h->vstart = 0u;
+        return RV_EXC_NONE;
+    }
+
+    /* --- single-width arithmetic ------------------------------------- */
+    const bool unary = f6 == 0x13u;
+
+    switch (f6) {
+    case 0x00u: case 0x02u: case 0x04u: case 0x06u: /* add, sub, min, max */
+    case 0x08u: case 0x09u: case 0x0Au:             /* the sign injections */
+    case 0x20u: case 0x24u:                         /* div, mul */
+    case 0x28u: case 0x29u: case 0x2Au: case 0x2Bu: /* the multiply-adds */
+    case 0x2Cu: case 0x2Du: case 0x2Eu: case 0x2Fu:
+        break;
+    case 0x21u: case 0x27u: /* vfrdiv, vfrsub: .vf only */
+        if (vv) {
+            return illegal(insn, tval);
+        }
+        break;
+    case 0x13u: /* VFUNARY1: sqrt, rsqrt7, rec7, class */
+        if (!vv || (o.r1 != 0x00u && o.r1 != 0x04u && o.r1 != 0x05u &&
+                    o.r1 != 0x10u)) {
+            return illegal(insn, tval);
+        }
+        break;
+    default:
+        return illegal(insn, tval);
+    }
+    if (o.vd % o.grp != 0u || o.vs2 % o.grp != 0u ||
+        (vv && !unary && o.r1 % o.grp != 0u) || (!o.vm && o.vd == 0u)) {
+        return illegal(insn, tval);
+    }
+    for (uint32_t i = h->vstart; i < o.vl; i++) {
+        if (!active(h, &o, i)) {
+            continue;
+        }
+        const uint32_t a = el_get(h, o.vs2, i, 4u);
+        const uint32_t b = vv ? el_get(h, o.r1, i, 4u) : scalar;
+        const uint32_t d = el_get(h, o.vd, i, 4u);
+        const uint32_t ng = 0x80000000u;
+        uint32_t r;
+
+        switch (f6) {
+        case 0x00u: r = rv_vf32(RV_VF_ADD, a, b, 0u, frm, &flags); break;
+        case 0x02u: r = rv_vf32(RV_VF_SUB, a, b, 0u, frm, &flags); break;
+        case 0x27u: r = rv_vf32(RV_VF_SUB, b, a, 0u, frm, &flags); break; /* vfrsub */
+        case 0x04u: r = rv_vf32(RV_VF_MIN, a, b, 0u, frm, &flags); break;
+        case 0x06u: r = rv_vf32(RV_VF_MAX, a, b, 0u, frm, &flags); break;
+        case 0x08u: r = (a & ~ng) | (b & ng); break;  /* vfsgnj */
+        case 0x09u: r = (a & ~ng) | (~b & ng); break; /* vfsgnjn */
+        case 0x0Au: r = a ^ (b & ng); break;          /* vfsgnjx */
+        case 0x20u: r = rv_vf32(RV_VF_DIV, a, b, 0u, frm, &flags); break;
+        case 0x21u: r = rv_vf32(RV_VF_DIV, b, a, 0u, frm, &flags); break; /* vfrdiv */
+        case 0x24u: r = rv_vf32(RV_VF_MUL, a, b, 0u, frm, &flags); break;
+        /* vd = +-(vs1 * vd) +- vs2 */
+        case 0x28u: r = rv_vf32(RV_VF_FMA, b, d, a, frm, &flags); break;           /* vfmadd */
+        case 0x29u: r = rv_vf32(RV_VF_FMA, b ^ ng, d, a ^ ng, frm, &flags); break; /* vfnmadd */
+        case 0x2Au: r = rv_vf32(RV_VF_FMA, b, d, a ^ ng, frm, &flags); break;      /* vfmsub */
+        case 0x2Bu: r = rv_vf32(RV_VF_FMA, b ^ ng, d, a, frm, &flags); break;      /* vfnmsub */
+        /* vd = +-(vs1 * vs2) +- vd */
+        case 0x2Cu: r = rv_vf32(RV_VF_FMA, b, a, d, frm, &flags); break;           /* vfmacc */
+        case 0x2Du: r = rv_vf32(RV_VF_FMA, b ^ ng, a, d ^ ng, frm, &flags); break; /* vfnmacc */
+        case 0x2Eu: r = rv_vf32(RV_VF_FMA, b, a, d ^ ng, frm, &flags); break;      /* vfmsac */
+        case 0x2Fu: r = rv_vf32(RV_VF_FMA, b ^ ng, a, d, frm, &flags); break;      /* vfnmsac */
+        default: /* 0x13u, VFUNARY1 */
+            switch (o.r1) {
+            case 0x00u: r = rv_vf32(RV_VF_SQRT, a, 0u, 0u, frm, &flags); break;
+            case 0x04u: r = rv_vf32(RV_VF_RSQRT7, a, 0u, 0u, frm, &flags); break;
+            case 0x05u: r = rv_vf32(RV_VF_REC7, a, 0u, 0u, frm, &flags); break;
+            default: r = rv_vf32(RV_VF_CLASS, a, 0u, 0u, frm, &flags); break;
+            }
+            break;
+        }
+        el_set(h, o.vd, i, 4u, r);
+    }
+    rv_vf32_accrue(h, flags);
+    h->vstart = 0u;
+    return RV_EXC_NONE;
+}
+#endif /* RV_EXT_ZVE32F */
+
 /* ------------------------------------------------------------------ */
 
 rv_exc_t rv_hart_vec(rv_hart_t *h, uint32_t insn, uint32_t *tval)
@@ -1589,7 +1891,13 @@ rv_exc_t rv_hart_vec(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         case 6u: /* OPMVX */
             e = opm(h, insn, f3, tval);
             break;
-        default: /* OPFVV, OPFVF: Zve32f, not this */
+#if RV_EXT_ZVE32F
+        case 1u: /* OPFVV */
+        case 5u: /* OPFVF */
+            e = opf(h, insn, f3, tval);
+            break;
+#endif
+        default: /* OPFVV, OPFVF without Zve32f */
             return illegal(insn, tval);
         }
     }

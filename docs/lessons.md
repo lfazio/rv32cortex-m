@@ -5084,6 +5084,20 @@ session, and every one of them recurred:
   to share it. **When two checks can both match, which runs first is a
   behaviour: test the overlap.**
 
+- **A checksum linear over XOR cancels a uniform error.** The vector
+  probes folded each result word into a register by rotating it five
+  bits and XORing the word in. Over a fold of 32 words a constant error
+  in every word -- a wrong sign, a wrong exponent -- arrives once at
+  every rotation, and the 32 rotations of a constant XOR to zero when it
+  has an even number of bits set; over 128 words, always. It surfaced
+  when `vec-fp2.S`'s s1 and s2 folded to the same value from results
+  that differed in every word by one constant, on both the emulator and
+  Spike. A multiply by an odd constant in the fold, and an exponent
+  error that would have passed is found in five registers. Six probes
+  had used it since the vector unit began; all still pass. **A check
+  built from XOR and rotation is a linear map; give it a non-linear
+  step, and test it with the error it is for.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

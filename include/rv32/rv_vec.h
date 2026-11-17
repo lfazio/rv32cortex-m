@@ -37,4 +37,44 @@ rv_exc_t rv_hart_vec(rv_hart_t *h, uint32_t insn, uint32_t *tval);
  */
 uint32_t rv_vec_vlmax(uint32_t vtype);
 
+#if RV_EXT_ZVE32F
+/*
+ * rv_fpu.c's single precision, an element at a time, for Zve32f: the
+ * scalar instructions' NaN, flag and rounding rules, through the same
+ * functions. rm is a rounding mode 0-4; flags accrue.
+ */
+typedef enum {
+    RV_VF_ADD,
+    RV_VF_SUB,
+    RV_VF_MUL,
+    RV_VF_DIV,
+    RV_VF_SQRT,
+    RV_VF_MIN,
+    RV_VF_MAX,
+    RV_VF_FMA, /* a * b + c, one rounding */
+    RV_VF_EQ,  /* 1 or 0, quiet */
+    RV_VF_LT,  /* signalling */
+    RV_VF_LE,
+    RV_VF_CLASS,
+    RV_VF_TO_I32,
+    RV_VF_TO_U32,
+    RV_VF_FROM_I32,
+    RV_VF_FROM_U32,
+    RV_VF_TO_I16, /* saturating, as Spike's f32_to_i16 */
+    RV_VF_TO_U16,
+    RV_VF_REC7,   /* the 7-bit estimates */
+    RV_VF_RSQRT7,
+} rv_vf_op_t;
+
+uint32_t rv_vf32(rv_vf_op_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t rm,
+                 uint32_t *flags);
+/* f[r] as a single (the canonical NaN if not NaN-boxed), and its write. */
+uint32_t rv_vf32_reg(const rv_hart_t *h, uint32_t r);
+void rv_vf32_set_reg(rv_hart_t *h, uint32_t r, uint32_t v);
+/* An instruction's flags, into fflags, FS Dirty if they change it. */
+void rv_vf32_accrue(rv_hart_t *h, uint32_t flags);
+extern const uint8_t rv_vf_rec7_table[128];
+extern const uint8_t rv_vf_rsqrt7_table[128];
+#endif
+
 #endif /* RV32_RV_VEC_H */

@@ -239,6 +239,16 @@
 #error "RV_EXT_ZVE32X: vl and vtype are CSRs"
 #endif
 /*
+ * Zve32f: the vector unit's single-precision floating point, on Zve32x
+ * and F -- OPFVV and OPFVF in rv_vec.c, the arithmetic rv_fpu.c's.
+ */
+#ifndef RV_EXT_ZVE32F
+#define RV_EXT_ZVE32F 0
+#endif
+#if RV_EXT_ZVE32F && !(RV_EXT_ZVE32X && RV_EXT_F)
+#error "RV_EXT_ZVE32F needs RV_EXT_ZVE32X and RV_EXT_F"
+#endif
+/*
  * Physical memory protection. Costs nothing until a guest locks an entry:
  * an unlocked entry does not restrict M-mode, so the access path skips the
  * check entirely while none is locked. See src/core/rv_pmp.c.

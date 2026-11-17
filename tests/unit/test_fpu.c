@@ -25,7 +25,12 @@
 #include "rv32/rv_csr.h"
 #include "rv32/rv_ir.h"
 
+#include <math.h>
 #include <string.h>
+
+#if RV_EXT_ZVE32F
+#include "rv32/rv_vec.h"
+#endif
 
 #if RV_EXT_F
 
@@ -371,6 +376,57 @@ static void test_jit_context_follows_a_trap(void)
 
 #endif /* EMU_HAVE_JIT -- rv_ir_frontend only exists with one */
 
+#if RV_EXT_ZVE32F
+/*
+ * The 7-bit estimate tables, regenerated from a rule rather than from
+ * memory: entry j is the estimate at the midpoint of the significands j
+ * indexes -- 2 / m for vfrec7, 2 / sqrt(m') for vfrsqrt7, m' twice m for
+ * an even exponent -- less 1, times 128, rounded to nearest. (Truncated,
+ * entry 1 of vfrsqrt7's is 50 where the table has 51.) In long double, far from any of the
+ * table's steps; and the vector unit's own answer for one value of each
+ * entry, so a table that agrees with itself and not with the code fails.
+ */
+static void test_vfp_estimate_tables(void)
+{
+    unsigned bad = 0u;
+
+    for (unsigned j = 0; j < 128u; j++) {
+        const long double m = 1.0L + ((long double)j + 0.5L) / 128.0L;
+        const unsigned rec = (unsigned)floorl(128.0L * (2.0L / m - 1.0L) + 0.5L);
+        const long double mr =
+            (1.0L + ((long double)(j & 63u) + 0.5L) / 64.0L) * ((j < 64u) ? 2.0L : 1.0L);
+        const unsigned rsq = (unsigned)floorl(128.0L * (2.0L / sqrtl(mr) - 1.0L) + 0.5L);
+        uint32_t flags = 0u;
+
+        if (rec != rv_vf_rec7_table[j] || rsq != rv_vf_rsqrt7_table[j]) {
+            if (bad++ < 4u) {
+                printf("  estimate %u: rec %u table %u, rsqrt %u table %u\n", j, rec,
+                       rv_vf_rec7_table[j], rsq, rv_vf_rsqrt7_table[j]);
+            }
+        }
+        /* 1.f with f's top 7 bits j: the reciprocal's fraction is entry j,
+         * its exponent 126 */
+        const uint32_t x = 0x3F800000u | (j << 16) | 0x8000u;
+
+        if (rv_vf32(RV_VF_REC7, x, 0u, 0u, 0u, &flags) !=
+            ((126u << 23) | ((uint32_t)rec << 16))) {
+            bad++;
+        }
+        /* biased exponent 127 (odd) or 128 (even), the top six bits j & 63 */
+        const uint32_t y = ((j < 64u) ? (128u << 23) : (127u << 23)) |
+                           ((j & 63u) << 17) | 0x10000u;
+        const uint32_t oe = 126u; /* (3*127-1-e)/2 for e 127 and 128 alike */
+
+        if (rv_vf32(RV_VF_RSQRT7, y, 0u, 0u, 0u, &flags) !=
+            ((oe << 23) | ((uint32_t)rsq << 16))) {
+            bad++;
+        }
+        CHECK_EQ(flags, 0u);
+    }
+    CHECK_EQ(bad, 0u);
+}
+#endif
+
 void test_fpu(void)
 {
     uint32_t flags;
@@ -528,6 +584,9 @@ void test_fpu(void)
                  RV_EXC_ILLEGAL_INSN);
     }
     test_fma_rounds_once();
+#if RV_EXT_ZVE32F
+    test_vfp_estimate_tables();
+#endif
     test_reset_clears_fetch_guard();
 #if EMU_HAVE_JIT
     test_jit_generation_key();

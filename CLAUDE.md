@@ -191,7 +191,9 @@ Each has cost more than one session, and every one recurred.
   three-way disagreement.
 - **A harness narrower than the value passes against the bug.**
   `CHECK_EQ` casts to `uint32_t`; doubles compared their low halves.
-  `CHECK_EQ64` exists.
+  `CHECK_EQ64` exists. A checksum of rotate-and-XOR is linear: a uniform
+  error over a 32-word fold cancels when it flips an even number of
+  bits -- the vector probes' `MIX` multiplies now.
 - **An A/B that reports zero failures may not have changed anything.**
   Assert the edit's match count; disable *every* site (the second
   halfword check caught what the first missed); a failing build looks

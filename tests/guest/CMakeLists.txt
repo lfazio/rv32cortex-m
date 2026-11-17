@@ -446,6 +446,11 @@ add_guest_image(vecbench SOURCES start.S vecbench.c
 add_guest_image(vecround SOURCES start.S vecround.c
                 FLAGS -march=${RV_GUEST_MARCH}_zve32x)
 
+# The vector unit's single precision on special values (vecfp.c), for
+# the board, where SoftFloat and the host-float comparisons run on an M7.
+add_guest_image(vecfp SOURCES start.S vecfp.c
+                FLAGS -march=${RV_GUEST_MARCH}_zve32f)
+
 # The masked forms under masks of both values (vecmask.c): widening,
 # narrowing, single-width and vmerge -- what the corpus does not reach
 # for Thumb-2's masked widening.

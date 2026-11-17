@@ -581,8 +581,14 @@ option(RV32_EXT_ZKR "Zkr entropy source (the seed CSR)" ${_zkr_default})
 # in the ISA string when on; off by default for the 512 bytes of state a
 # hart and the code it adds to every board's firmware.
 option(RV32_EXT_ZVE32X "Zve32x vector integer subset, Zvl128b" OFF)
+# Zve32f, the vector unit's single-precision floating point: Zve32x and F
+# both, rv_vec.c's OPFVV and OPFVF through rv_fpu.c's arithmetic.
+option(RV32_EXT_ZVE32F "Zve32f vector single-precision FP (needs Zve32x, F)" OFF)
 option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
+if(RV32_EXT_ZVE32F AND NOT (RV32_EXT_ZVE32X AND RV32_EXT_F))
+    message(FATAL_ERROR "RV32_EXT_ZVE32F needs RV32_EXT_ZVE32X and RV32_EXT_F")
+endif()
 # Double precision. FLEN becomes 64 and single values are NaN-boxed, so
 # this changes what *F* reads and writes as well as adding instructions
 # -- see the note on rv_hart_t.f.
@@ -954,6 +960,7 @@ if(EMU_GUEST_ARCH_RV32)
         RV_EXT_ZK=$<BOOL:${RV32_EXT_ZK}>
         RV_EXT_ZKR=$<BOOL:${RV32_EXT_ZKR}>
         RV_EXT_ZVE32X=$<BOOL:${RV32_EXT_ZVE32X}>
+        RV_EXT_ZVE32F=$<BOOL:${RV32_EXT_ZVE32F}>
         RV_EXT_ZBS=$<BOOL:${RV32_EXT_ZBS}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
         RV_MISALIGNED_OK=$<BOOL:${RV32_MISALIGNED}>
@@ -1429,6 +1436,9 @@ if(EMU_GUEST_ARCH_RV32)
     endif()
     # Zkt is a promise about timing with no option; rv_config.h makes it.
     string(APPEND _isa "_zkt")
+    if(RV32_EXT_ZVE32F)
+        string(APPEND _isa "_zve32f")
+    endif()
     if(RV32_EXT_ZVE32X)
         string(APPEND _isa "_zve32x_zvl128b")
     endif()

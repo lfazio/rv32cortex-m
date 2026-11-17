@@ -204,11 +204,14 @@ From the last measurements in [linux.md](linux.md).
 
 ## RV32
 
-- [ ] **The vector extension past Zve32x**: Zve32x is whole behind
-      `-DRV32_EXT_ZVE32X=ON` and held to Spike by three probes; next
-      Zve32f, then Zve64x/f/d, then V and its `misa` bit
+- [ ] **The vector extension past Zve32f**: Zve32x and Zve32f are whole
+      behind `-DRV32_EXT_ZVE32X=ON` and `-DRV32_EXT_ZVE32F=ON` and held
+      to Spike by six probes; next Zve64x/f/d, then V and its `misa` bit
       ([frontend/rv32-vector.md](frontend/rv32-vector.md)). The UDB and
       Sail configurations wait for an arch-test pin with vector suites.
+      Zve32f's instructions are all the helper's under the JIT; lowering
+      the common ones (add, multiply, FMA) needs the host's float with
+      RISC-V's NaNs and flags, as the scalar lowering has.
 - [ ] **The vector unit's SIMD lowering, past its first set**: unmasked
       single-width integer operations lower after an inline vsetvli
       (`EMU_IR_VOP`), to SSE2/SSE4.1 on x86-64 and the DSP extension on
@@ -255,7 +258,7 @@ From the last measurements in [linux.md](linux.md).
       MPC5675K's core, whose peripherals are already here, is open.
 - [ ] Use CTU and FlexPWM to implement the MPC5675K's GTM equivalent, and plug it into the PCIe framework.
 
-## ArmvX-m
+## armvX-m
 
 - [ ] Implement neon extensions if available
 - [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
@@ -263,9 +266,10 @@ From the last measurements in [linux.md](linux.md).
       ARMv7-M has the F746's (`emu_cpu_ops_t::guest_map`,
       [memory.md](memory.md#armv7-m)): its TCMs, its flash, its SRAM.
 
-## 680x0
+## m68k
 
 - [ ] Documents: @docs/motorola
+- [ ] https://fr.wikipedia.org/wiki/Atari_ST
 - [ ] https://fr.wikipedia.org/wiki/Amiga_3000
 - [ ] https://fr.wikipedia.org/wiki/Motorola_68881
 - [ ] **The 680x0 frontend**, which is the only one that has not been
@@ -278,17 +282,13 @@ From the last measurements in [linux.md](linux.md).
       MMU, which is the only part that can be tested with a board. The
       fifth step is to implement the peripherals, which are the only
       parts that can be tested with a board.
-- [ ] Emulate an amiga3000 machine, with its 68030 CPU, MMU and peripherals. The amiga3000 is
-      the only machine that has been tested with a board. The first step
-      is to read the manuals and write a description of what the guest
-      sees, and what the host must do to make it happen. The second step
-      is to implement the interpreter, which is the only part that can
-      be tested without a board. The third step is to implement the JIT,
-      which is the only part that can be tested with a board. The fourth
-      step is to implement the MMU, which is the only part that can be
-      tested with a board. The fifth step is to implement the
-      peripherals, which are the only parts that can be tested with a
-      board.
+- [ ] Emulate an atari 1040STE, with its 68000 CPU, 68881 FPU, and 8520 CIA chips. The emulator should be able to run TOS and GEM applications, and should support the following features:
+  - [ ] Memory mapping: The emulator should map the Atari's memory layout, including RAM, ROM, and I/O registers.
+  - [ ] CPU emulation: The emulator should accurately emulate the 68000 CPU, including its instruction set, addressing modes, and exception handling.
+  - [ ] FPU emulation: The emulator should accurately emulate the 68881 FPU, including its instruction set and exception handling.
+  - [ ] CIA emulation: The emulator should accurately emulate the 8520 CIA chips, including their timers, interrupts, and I/O ports.
+  - [ ] Video emulation: The emulator should accurately emulate the Atari's video hardware, including its display modes, color palette, and raster interrupts.
+  - [ ] Sound emulation: The emulator should accurately emulate the Atari's sound hardware, including its audio channels and sound effects.
 
 ## RH850 / G4MH
 

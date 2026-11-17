@@ -93,18 +93,19 @@ if [ "$T" = g4mh-smp ]; then
     EXTRA=-DG4MH_PE_COUNT=3
     B=${FUZZ_SMP_BUILD:-$ROOT/build/fuzz-smp}
 fi
-# The RV32 fuzzer with the vector unit built in (-DRV32_EXT_ZVE32X=ON):
-# the JIT's inline vsetvli and EMU_IR_VOP against rv_vec.c, from the
-# vector seeds (seeds/rv32-vec-jit) and vecbench.
+# The RV32 fuzzer with the vector unit built in, floating point too
+# (-DRV32_EXT_ZVE32X=ON -DRV32_EXT_ZVE32F=ON): the JIT's inline vsetvli
+# and EMU_IR_VOP against rv_vec.c, from the vector seeds
+# (seeds/rv32-vec-jit) and vecbench.
 if [ "$T" = rv32-vec ]; then
     ISA=rv32
     BIN=fuzz-rv32-jit
-    EXTRA=-DRV32_EXT_ZVE32X=ON
+    EXTRA="-DRV32_EXT_ZVE32X=ON -DRV32_EXT_ZVE32F=ON"
     B=${FUZZ_VEC_BUILD:-$ROOT/build/fuzz-vec}
 fi
 
 mkdir -p "$B"
-# shellcheck disable=SC2086 # EXTRA is empty or one word
+# shellcheck disable=SC2086 # EXTRA is a list of words
 if ! CC=${CC:-clang} cmake -S "$ROOT" -B "$B" -DEMU_FUZZ=ON $EXTRA \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo >"$B.cfg.log" 2>&1; then
     echo "fuzz: configure failed, see $B.cfg.log"
@@ -181,7 +182,7 @@ asm() {
         ;;
     rv32-vec)
         CC_SEED=$(grep -m1 '^RISCV_GCC:' "$B/CMakeCache.txt" | cut -d= -f2)
-        FLAGS="-march=rv32imac_zicsr_zve32x -mabi=ilp32"
+        FLAGS="-march=rv32imafc_zicsr_zve32f -mabi=ilp32"
         ;;
     armv7m)
         CC_SEED=$(command -v arm-none-eabi-gcc || true)

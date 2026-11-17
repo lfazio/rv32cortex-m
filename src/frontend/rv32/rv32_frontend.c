@@ -185,7 +185,9 @@
 #define RV32_S_ZKT ""
 #endif
 /* Zv after Zk: v comes after k among the single letters. */
-#if RV_EXT_ZVE32X
+#if RV_EXT_ZVE32F
+#define RV32_S_ZVE "_zve32f_zve32x_zvl128b"
+#elif RV_EXT_ZVE32X
 #define RV32_S_ZVE "_zve32x_zvl128b"
 #else
 #define RV32_S_ZVE ""

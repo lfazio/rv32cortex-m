@@ -486,6 +486,14 @@ fuzzing. Its mask is `0xA5` in every byte now, and the same mutant
 diverges in 6 s from the seed. Thumb-2's masked widening is reached by
 no corpus input at all; `tests/guest/vecmask.c` tests it on the board.
 
+**And Zve32f**: the `rv32-vec` build has the vector unit's floating point
+too, and `fp-arith.S` reaches it -- FS on, frm changed between blocks,
+special values by integer moves, conversions at SEW 16, a reduction into
+an f register, and last an invalid frm. Every one is the helper's call
+under the JIT, so the fuzzer holds the call and the state around it,
+not the arithmetic, which the probes hold to Spike. Two minutes, 7,409
+compared clean.
+
 **And every rounding mode**: kind 17 draws a mode for the averages and
 the clips, and a narrowing count of 0 to 3 half the time. It is not
 enough for the clips: a random word shifted a few bits saturates, which

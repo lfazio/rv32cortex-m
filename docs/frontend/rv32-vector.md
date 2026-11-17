@@ -13,7 +13,8 @@ way there, each a whole extension a guest can be told about:
 
 1. **Zve32x** -- integer, ELEN 32, VLEN 128 (Zvl128b). *Done.*
 2. **Zve32f** -- single-precision FP on top, through the scalar unit's
-   SoftFloat as F's are (`rv_hart_fp`).
+   SoftFloat as F's are. *Done* (below): `-DRV32_EXT_ZVE32F=ON`, with
+   Zve32x and F, named `zve32f_zve32x_zvl128b`.
 3. **Zve64x, Zve64f, Zve64d** -- 64-bit elements.
 4. **V**, and the `misa` bit.
 
@@ -37,6 +38,45 @@ boards can afford, and what Spike calls `zvl128b`.
 
 Elements run from `vstart` to `vl`; tail and masked-off elements are left
 undisturbed, which the agnostic policies also permit.
+
+### Zve32f: single precision
+
+`-DRV32_EXT_ZVE32F=ON` (it needs `RV32_EXT_ZVE32X` and `RV32_EXT_F`) adds
+OPFVV and OPFVF: `vfadd`, `vfsub`, `vfrsub`, `vfmul`, `vfdiv`, `vfrdiv`,
+`vfsqrt`, `vfmin`, `vfmax`, the three sign injections, the eight fused
+multiply-adds, the six compares into masks, `vfclass`, `vfmerge`,
+`vfmv.v.f`, `vfmv.f.s`, `vfmv.s.f`, `vfslide1up`, `vfslide1down`,
+`vfredusum`, `vfredosum`, `vfredmin`, `vfredmax`, `vfrec7`, `vfrsqrt7`,
+and the conversions Zve32f has: the six single-width `vfcvt`, and at SEW
+16 `vfwcvt.f.x[u].v` (int16 to single) and `vfncvt.x[u].f.w` and its rtz
+forms (single to int16, saturating as Spike's `f32_to_i16` does). The
+rest -- half precision, every widening FP operation, anything with a
+64-bit element -- is refused, as it is outside Zve32f.
+
+Each element goes through `rv_vf32` in `rv_fpu.c`, which calls the
+functions the scalar instructions call (`f_fma32`, `f_minmax32`,
+`f_cmp32`, `f_to_int`): one set of NaN, flag and rounding rules. Writing
+it found a scalar defect -- `fmadd` of 0 * inf + qNaN left NV clear
+(`probes/fmanv.S`) -- and the refactor another: `fle.s` with a reserved
+funct3 was refused only when no operand was a NaN.
+
+Spike's choices, which the probes compare: **FS off or an invalid frm
+refuses every vector FP instruction**, `vfmv.f.s` and `vfmv.s.f` too,
+though they round nothing; fflags accrue as the scalar ones do, FS going
+Dirty when they change; `vfredusum` adds in element order, as
+`vfredosum`. The 7-bit estimates' tables are the specification's, entry
+j the estimate at its bucket's midpoint rounded to nearest
+(`test_vfp_estimate_tables` regenerates both); `probes/vec-fp.S` asks
+Spike about every operation on 32 pairs of special values under each
+rounding mode, and `probes/vec-fp2.S` about every table entry, at
+several exponents, with subnormal inputs and results and the overflow
+of a tiny input's reciprocal under each mode. Both pass on both
+backends. On the F746, `tests/guest/vecfp.c` -- the same C on an M7,
+whose comparisons a flush-to-zero FPU would get wrong for subnormals --
+prints the host's checksum interpreted and under the JIT.
+
+The JIT translates none of it: every vector FP instruction is the
+vector helper's call, as the integer ones were before EMU_IR_VOP.
 
 **Where the specification lets an implementation choose, this one
 chooses as Spike does**, which is what the probes compare against:
