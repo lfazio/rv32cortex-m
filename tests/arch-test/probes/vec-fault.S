@@ -65,12 +65,20 @@ rvtest_entry_point:
     li   t0, 0x98
     csrw pmpcfg0, t0
 
-/* acc = rotl(acc, 5) ^ x */
+/*
+ * acc = (rotl(acc, 5) ^ x) * an odd constant. Without the multiply the
+ * fold is linear over XOR: a constant error in every element of a run
+ * cancels -- over 32 words whenever it flips an even number of bits, over
+ * 128 always -- and vec-fp2.S's s1 and s2 folded equal from different
+ * results.
+ */
 .macro MIX acc, x
     slli t3, \acc, 5
     srli \acc, \acc, 27
     or   \acc, \acc, t3
     xor  \acc, \acc, \x
+    li   t3, 0x9E3779B1          /* not linear: see the note above */
+    mul  \acc, \acc, t3
 .endm
 
 /* Fold the n words at label buf into acc. */
