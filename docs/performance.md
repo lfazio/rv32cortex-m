@@ -457,6 +457,25 @@ compactions, 43.3 s by the host against the firmware's 43.9), 58.86 to
 
 ### Which blocks get the DTCM, and why promoting them was not built
 
+### What the hot translated code is
+
+A PC profile puts most of a run in translated code, which has no
+symbols. `-DEMU_JIT_DUMP=ON` prints every resident block after the run
+-- its guest pc, host address, length and bytes -- and
+`scripts/board-jit-dump.py CAPTURE --guest GUEST.elf` puts the profile's
+samples in the blocks that hold them, ranks the blocks, and prints the
+hottest with the guest's instructions beside the host's, each host
+instruction with the samples taken at it. On the N6, where probe-rs
+cannot read the samples, the firmware prints those too
+(`board-pc-profile.py --capture`). Blocks are where they were at the
+end of the run; the script says when the run compacted.
+
+Its first reading, vecbench's scalar checksum loop on the N6: five
+guest instructions an iteration, about thirty host ones -- six storing
+the guest pc (taken out: [backend/thumb2.md](backend/thumb2.md#the-guest-pc-stored-lazily)),
+every guest register loaded from the cpu at the top and stored back
+after use, and two literal-pool loads in each load's window check.
+
 The buffer is about 62 KB of DTCM and 34 KB of SRAM1 behind the
 I-cache, and which code lands in which is whatever is translated first.
 Promoting the blocks that keep being entered into the DTCM half -- a

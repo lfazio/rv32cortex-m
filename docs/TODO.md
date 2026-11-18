@@ -227,6 +227,14 @@ From the last measurements in [linux.md](linux.md).
       The vector unit's lowering (`EMU_IR_VFOP`) is the same VFP and
       shares it: `fpedge-v`'s `vfmul.vv` and `vfmacc.vv` on the fifth
       case print flags 3 on the F746 under the JIT.
+- [ ] **The scalar loop's register traffic on Thumb-2**: vecbench's
+      checksum loop on the N6 (`board-jit-dump.py`) loads every guest
+      register from the cpu at a self-loop's top and stores each after
+      use -- a cache across the back edge would keep them in r6-r10 --
+      and each load's window check reads two literal-pool words that a
+      block could keep in registers. Not the guest-register cache that
+      lost 15.5% (CLAUDE.md), which was across a whole block; this is a
+      loop's.
 - [ ] **A vector instruction after a declined one is the helper's.**
       The translator lowers a vector instruction only in a block that
       set vtype itself; a declined instruction -- a CSR write, which
@@ -239,7 +247,12 @@ From the last measurements in [linux.md](linux.md).
       guard at the block's first vector instruction -- vtype read and
       compared with the translation's, a side exit where they differ --
       would let any block assume it; count how many vector instructions
-      reach the helper this way in real code first.
+      reach the helper this way in real code first. Counted, 2026-11-18,
+      with the guard written: the vector helper's calls under the JIT
+      on coremark-v, vecbench, vfbench, vecops, vecfp, vecmask,
+      vecround and fpedge-v were the same with and without it but for
+      vecfp's 70 to 64, and host instructions rose by the guard's cost.
+      Not kept.
 
 - [ ] **The vector extension past Zve32f**: Zve32x and Zve32f are whole
       behind `-DRV32_EXT_ZVE32X=ON` and `-DRV32_EXT_ZVE32F=ON` and held

@@ -5170,6 +5170,17 @@ session, and every one of them recurred:
   first). **Never discard an encoder's "could not": use the form that
   takes every register, or check.**
 
+- **A corpus grown on one lowering cannot ask what only another one
+  gets wrong.** The Thumb-2 backend's lazy guest pc passed the board
+  replay of 14,457 inputs, and two of its four mutants went unseen: no
+  input looped back into a block that reads the pc before writing it,
+  or wrote r15 while a pc was pending. The corpus is grown by fuzzing
+  on the host, whose lowering stores the pc eagerly and so behaves the
+  same with or without either property -- coverage there never pointed
+  at them. Two inputs written by hand to the generator's byte layout
+  find both. **When a board-only lowering adds a state the host's does
+  not have, write the inputs for it; the corpus will not.**
+
 - **A reference checked only where the lowering runs is checked only
   there.** `test_lower_vfop` compared the interpreter's reference with
   a reading of its own only for the operations x86-64 lowers in SSE,

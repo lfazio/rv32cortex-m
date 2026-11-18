@@ -429,6 +429,31 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
         }
     }
 
+#if EMU_JIT_DUMP
+    /* Every resident block, for scripts/board-jit-dump.py. */
+    {
+        uint32_t pc;
+        const uint8_t *code;
+        uint32_t len;
+        uint32_t insns;
+
+        emu_console_printf("jitdump\n");
+        for (uint32_t i = 0; emu_jit_block_info(i, &pc, &code, &len, &insns); i++) {
+            if (code == NULL) {
+                continue;
+            }
+            emu_console_printf("block %08x %08x %u %u\n", (unsigned)pc,
+                               (unsigned)(uintptr_t)code, (unsigned)len,
+                               (unsigned)insns);
+            for (uint32_t k = 0; k < len; k++) {
+                emu_console_printf("%02x%s", (unsigned)code[k],
+                                   (k % 32u == 31u || k + 1u == len) ? "\n" : "");
+            }
+        }
+        emu_console_printf("jitdump-end\n");
+    }
+#endif
+
 #if EMU_JIT_BYTE_STATS
     /*
      * Where the emitted bytes went. On the console, not stderr, because

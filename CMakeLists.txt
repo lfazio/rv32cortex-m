@@ -502,6 +502,12 @@ option(EMU_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 # by default; see include/emu/emu_ir_bytes.h.
 option(EMU_JIT_BYTE_STATS "Count emitted bytes per IR operation" OFF)
 
+# Every resident block's guest pc, host address and bytes, printed after
+# the run, for scripts/board-jit-dump.py to disassemble beside the guest's
+# code and the PC profile's samples: what the translated code a profile
+# finds hot actually is, on a board no host can emit its code for.
+option(EMU_JIT_DUMP "Print the translated blocks after the run" OFF)
+
 # Histogram adjacent executed instruction pairs, to decide which are worth
 # fusing in the translator. Measurement scaffolding, off by default.
 #
@@ -876,6 +882,7 @@ target_compile_definitions(emucore PUBLIC
     EMU_PAIR_STATS=$<BOOL:${EMU_PAIR_STATS}>
     EMU_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
     EMU_JIT_BYTE_STATS=$<BOOL:${EMU_JIT_BYTE_STATS}>
+    EMU_JIT_DUMP=$<BOOL:${EMU_JIT_DUMP}>
     #
     # The IR backend's static code cache.
     #

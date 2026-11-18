@@ -426,6 +426,42 @@ zero whatever FPSCR says (`vfmul` of 0x3F7FFFFF and 0x00800000 gave 0
 and UF), and which was at most 5.6% of vfbench even without the guard
 that would need ([TODO](../TODO.md)).
 
+## The guest pc, stored lazily
+
+**What a hot block spends was read off the board** (`-DEMU_JIT_DUMP=ON`
+with `-DEMU_PC_PROFILE`, `scripts/board-jit-dump.py`, in
+[../performance.md](../performance.md#what-the-hot-translated-code-is)):
+vecbench's scalar checksum loop on the N6 -- `lw`, `rori`, `addi`, `xor`,
+`bne` -- was about thirty Thumb-2 instructions an iteration, and six of
+them stored the guest pc: `MOVW`/`MOVT`/`STR` at the loop's head, for
+the load's slow path, and again before the loop bound's compare, for
+the exit to the dispatcher it rarely takes.
+
+So a constant `SETPC` emits nothing now. Its value is pending
+(`g_pc_pending`), and goes to the cpu only where something can read it:
+a helper's call, a memory access's slow path (`emit_mem_stub`, through
+r0, which the stub ignores on entry), the vector accesses' helpers, a
+GET of the register that is the pc -- and a PUT to that register drops
+it, or a later store would overwrite what the PUT wrote. An exit stores
+its own. A block begins with its own pc pending, which holds on every
+way in (the dispatcher and a chained exit store it), so a loop's back
+edge stores nothing: the bound's exit stores the start pc on its way
+out, after the compare (`loop_back`).
+
+On the F746, CoreMark under the JIT at two layouts, retired counts and
+CRCs unchanged: RV32 10.81 to 10.27 (-5.0%), ARMv7-M 13.66 to 13.38
+(-2.0%), G4MH 18.98 to 18.69 (-1.5%), PowerPC 17.68 to 17.65 (-0.1%).
+On the N6 vecbench's scalar kernel 12.42 to 10.86, and vecbench 18.72
+to 17.35. isatest passes; CoreMark x650 at 32 KB validates
+(`0x25e3`, 239 compactions, 20.3 s). The corpus replay found two
+mutants -- no store on a memory slow path (405 inputs of 3,615), none
+before a helper (67) -- and two not at all: a block that does not start
+with its pc pending, and a PUT to the pc that leaves an older one
+pending. No input looped back into a block that reads the pc before
+writing it, or wrote r15 while a pc was pending; frontends do neither,
+and the IR allows both. Two inputs written for them
+(`tests/fuzz/regressions/ir/lazy-pc-*`) find each.
+
 ## Calling convention
 
 Cortex-M selects instruction set with the low bit of a branch target, so

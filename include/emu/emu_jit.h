@@ -757,6 +757,14 @@ void emu_jit_invalidate_range(uint32_t lo, uint32_t hi,
 
 void emu_jit_get_stats(emu_jit_stats_t *out);
 
+/*
+ * Resident block i of the table, for EMU_JIT_DUMP's print: its guest pc,
+ * its code and length, and the guest instructions it retires. False past
+ * the table's end; true with *code NULL for a slot a flush emptied.
+ */
+bool emu_jit_block_info(uint32_t i, uint32_t *guest_pc, const uint8_t **code,
+                        uint32_t *len, uint32_t *insns);
+
 /* For a backend, while translating: a constant exit found no chain slot. */
 void emu_jit_note_no_chain_slot(void);
 

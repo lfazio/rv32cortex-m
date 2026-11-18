@@ -732,6 +732,34 @@ static uint32_t emit_pt_holes(uint32_t k, uint8_t **out)
 }
 
 static EMU_PER_CORE uint8_t *g_body;
+
+/*
+ * The guest pc, stored lazily. A constant SETPC emits nothing: its value
+ * is pending, and goes to the cpu only where something can read it -- a
+ * helper's call, a memory access's slow path, a GET of the register
+ * that is the pc -- or an exit stores its own. A block begins with its
+ * own pc pending, which is true on every way in (the dispatcher and a
+ * chained exit store it), so a loop's back edge need store nothing: the
+ * pc stores were two of every iteration's three stores in a five-
+ * instruction RV32 loop, six instructions of about thirty on the N6.
+ */
+static EMU_PER_CORE bool g_pc_pending;
+static EMU_PER_CORE uint32_t g_pc_value;
+static EMU_PER_CORE uint32_t g_pc_off;
+
+/* Store the pending pc through `scratch`. `settle` in straight-line code;
+ * not on a slow path the fast one skips, after which it is pending still. */
+static void pc_store(uint32_t scratch, bool settle)
+{
+    if (!g_pc_pending) {
+        return;
+    }
+    t2_imm32(scratch, g_pc_value);
+    t2_str_imm(scratch, T2_CPU, g_pc_off);
+    if (settle) {
+        g_pc_pending = false;
+    }
+}
 static EMU_PER_CORE uint32_t g_start_pc;
 static EMU_PER_CORE bool g_has_start_pc;
 
@@ -909,6 +937,7 @@ static void note_exit(uint8_t *at, bool conditional);
 
 static void emit_mem_stub(uint32_t spec)
 {
+    pc_store(T2_R0, false); /* r0 is the stub's out slot: free */
     /* MOVS: the flags are dead here, and the stub sets them anyway. */
     if (!t2_movs_imm8(T2_R2, spec)) {
         t2_imm32(T2_R2, spec);
@@ -1042,14 +1071,20 @@ static bool chain_exit(uint32_t target_pc)
 /*
  * Emit a back edge to this block's own body, bounded by the retired
  * count. False if the target is not this block's start, in which case
- * the caller emits an ordinary exit.
+ * the caller stores the pc and emits an ordinary exit.
  *
- * R0 is free here: every caller has just stored the pc from it or from
- * a temp whose last use that was.
+ * The pc is not stored on the way round: the body begins with its own
+ * pending (g_pc_pending). Only the bound's exit, to the dispatcher,
+ * stores it. R0 is free here.
  */
+static bool is_loop_back(uint32_t target_pc)
+{
+    return g_has_start_pc && g_body != NULL && target_pc == g_start_pc;
+}
+
 static bool loop_back(uint32_t target_pc)
 {
-    if (!g_has_start_pc || g_body == NULL || target_pc != g_start_pc) {
+    if (!is_loop_back(target_pc)) {
         return false;
     }
     /*
@@ -1063,9 +1098,11 @@ static bool loop_back(uint32_t target_pc)
         t2_imm32(T2_R0, EMU_JIT_LOOP_CAP);
         t2_cmp(T2_CNT, T2_R0);
     }
-    /* HS/CS: unsigned >=, because the count is a count. */
-    note_exit(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GEU)), true);
-    patch_branch(t2_b_forward(), g_body, false);
+    /* LO/CC: under the bound, round again; else the pc, and out. */
+    patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_LTU)), g_body, true);
+    t2_imm32(T2_R0, target_pc);
+    t2_str_imm(T2_R0, T2_CPU, g_pc_off);
+    note_exit(t2_b_forward(), false);
     return true;
 }
 
@@ -3114,6 +3151,7 @@ static void lower_vmems(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_mov(T2_R2, ra);
     }
     t2_imm32(T2_R1, in->imm);
+    pc_store(T2_R0, false); /* the helper may trap: a slow path */
     t2_mov(T2_R0, T2_CPU);
     t2_call(t->helpers[in->aux]);
     (void)t2_cmp_imm8(T2_R0, 0u);
@@ -3285,6 +3323,7 @@ static void lower_vmem(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     if (rc != T2_R1) {
         t2_mov(T2_R1, rc);
     }
+    pc_store(T2_R0, false); /* the helper may trap: a slow path */
     t2_mov(T2_R0, T2_CPU);
     t2_call(t->helpers[in->aux]);
     (void)t2_cmp_imm8(T2_R0, 0u);
@@ -3433,6 +3472,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
             t2_imm32(rd, 0u);
         } else {
+            if (t->reg_offset(in->imm) == t->pc_offset) {
+                pc_store(rd, true); /* a register that is the pc */
+            }
             t2_ldr_imm(rd, T2_CPU, t->reg_offset(in->imm));
         }
         st_slot(rd, in->dst);
@@ -3442,6 +3484,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_PUT:
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
             break;
+        }
+        if (t->reg_offset(in->imm) == t->pc_offset) {
+            g_pc_pending = false; /* written here: nothing older may follow */
         }
         t2_str_imm(use_reg(in->a, T2_R0), T2_CPU, t->reg_offset(in->imm));
         break;
@@ -3909,12 +3954,24 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_EXIT: {
         uint32_t rp = T2_R0;
 
+        if (in->op == (uint8_t)EMU_IR_SETPC && in->a == EMU_IR_NO_TEMP) {
+            g_pc_pending = true; /* stored where something reads it */
+            g_pc_value = in->imm;
+            break;
+        }
+        if (in->op == (uint8_t)EMU_IR_EXIT && in->a == EMU_IR_NO_TEMP &&
+            is_loop_back(in->imm)) {
+            (void)loop_back(in->imm); /* stores the pc on its way out */
+            g_pc_pending = false;
+            break;
+        }
         if (in->a != EMU_IR_NO_TEMP) {
             rp = use_reg(in->a, T2_R0);
         } else {
             t2_imm32(T2_R0, in->imm);
         }
         t2_str_imm(rp, T2_CPU, t->pc_offset);
+        g_pc_pending = false;
         /*
          * A plain jump through a register goes to the stub, which finds
          * most of them a block to jump to (emu_jit_ibtc): the target in
@@ -4020,10 +4077,12 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_cmp(ra, rb);
         /* Branch *over* the exit on the inverse condition. */
         uint8_t *const skip = t2_bcond_forward(t2_cond(in->aux) ^ 1u);
-        t2_imm32(T2_R0, in->imm);
-        t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        if (!loop_back(in->imm) && !chain_exit(in->imm)) {
-            note_exit(t2_b_forward(), false);
+        if (!loop_back(in->imm)) { /* which stores the pc only to leave */
+            t2_imm32(T2_R0, in->imm);
+            t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
+            if (!chain_exit(in->imm)) {
+                note_exit(t2_b_forward(), false);
+            }
         }
         patch_branch(skip, emu_jit_here(), true);
         break;
@@ -4373,6 +4432,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             /* MOVS: its N and Z die at the call, which clobbers both. */
             (void)t2_movs_imm8(T2_R3, in->aux);
         }
+        pc_store(T2_R0, true); /* a helper may read it */
         t2_mov(T2_R0, T2_CPU);
         t2_call(t->helpers[in->imm]);
 
@@ -4446,6 +4506,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;
+    g_pc_off = t->pc_offset;
+    g_pc_pending = false;
     pool_reset();
 
     /*
@@ -4614,6 +4676,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * re-running the prologue would push it again.
      */
     g_body = emu_jit_here();
+    g_pc_pending = true; /* this block's own, already in the cpu */
+    g_pc_value = g_start_pc;
 
     for (uint32_t i = 0; i < b->count; i++) {
         if (b->insn[i].dead) {

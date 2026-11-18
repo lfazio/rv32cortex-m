@@ -523,6 +523,16 @@ inputs, 1,015,565 bytes packed, the link 29,484 bytes over -- so
 `ir-board.sh` given no slice runs one as large as `IR_BOARD_MAX` allows
 (700,000 bytes) after another, and is clean only if each is.
 
+**What the corpus could not ask, written by hand** (2026-11-18): the
+Thumb-2 lowering's lazy guest pc was clean over 14,457 inputs, and two
+of its four mutants went unseen -- no input looped back into a block
+that reads the pc (`h_peek`) before writing it, or put r15 while a pc
+was pending. The host's lowering stores the pc eagerly, so fuzzing on
+the host cannot grow the inputs that tell the two apart. Written to
+the generator's byte layout and checked with `FUZZ_SHOW=1`,
+`regressions/ir/lazy-pc-loop-back` and `lazy-pc-put-r15` each find
+their mutant on the board.
+
 
 ## Translation and protection: RV32
 

@@ -1558,6 +1558,19 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
     return b;
 }
 
+bool emu_jit_block_info(uint32_t i, uint32_t *guest_pc, const uint8_t **code,
+                        uint32_t *len, uint32_t *insns)
+{
+    if (i >= g_block_count) {
+        return false;
+    }
+    *guest_pc = g_blocks[i].guest_pc;
+    *code = g_blocks[i].code;
+    *len = g_blocks[i].len;
+    *insns = g_blocks[i].insns;
+    return true;
+}
+
 /*
  * Translate at `pc`, reclaiming space if that is what is standing in the
  * way.
