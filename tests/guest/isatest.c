@@ -2885,7 +2885,7 @@ static uint32_t k_fold(uint32_t s, uint32_t v)
     return ((s << 5) | (s >> 27)) ^ v;
 }
 
-static void test_kcrypto(void)
+__attribute__((unused)) static void test_kcrypto(void)
 {
     uint32_t s1 = 0u, s2 = 0u, s3 = 0u, s4 = 0u, s5 = 0u, s6 = 0u, s7 = 0u;
     uint32_t s8 = 0u;
@@ -5603,7 +5603,9 @@ int main(void)
 #endif
     test_zicond();
     test_bitmanip();
+#if RV32_EXT_ZK /* the runner's, as for Zkr: host-nozk failed every case */
     test_kcrypto();
+#endif
 #if RV32_EXT_ZKR
     test_zkr();
 #endif

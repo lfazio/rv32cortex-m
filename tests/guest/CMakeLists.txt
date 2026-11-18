@@ -367,6 +367,7 @@ endfunction()
 add_guest_image(isatest  SOURCES start.S isatest.c
                 FLAGS -DRV32_MISALIGNED=$<BOOL:${RV32_MISALIGNED}>
                       -DRV32_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
+                      -DRV32_EXT_ZK=$<BOOL:${RV32_EXT_ZK}>
                       -DRV32_EXT_ZKR=$<BOOL:${RV32_EXT_ZKR}>)
 add_guest_image(hello    SOURCES start.S hello.c)
 
