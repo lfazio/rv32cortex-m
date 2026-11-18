@@ -166,8 +166,10 @@ measured at.
       cycles (11% of Whetstone at most), and 80 bytes more at each FP
       site cost 20.7%, the buffer no longer fitting the DTCM
       ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
-      Left: one call for a run of consecutive FP instructions, at most
-      3-4% (346,000 of 1.25M are followed by another).
+      And one call for an adjacent pair, measured 2026-11-18: 11%
+      slower on the F746, the dispatch on the operation in the helper
+      costing more than the call it saved (`wip/ppc-efs2-pair`). The
+      call stays one per instruction.
 
 ## Linux
 

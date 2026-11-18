@@ -1128,6 +1128,19 @@ What fewer calls could give instead: of 1.25 million fast-path FP
 instructions at least 346,000 are followed straight by another
 (`-DEMU_PAIR_STATS=ON`, interpreted, the listed pairs only), so a
 helper taking a run of them in one call would save at most about 3-4%.
+
+**And that lost too** (2026-11-18, branch `wip/ppc-efs2-pair`): one
+call for an adjacent pair -- the first's fast case or general path,
+trapping as its single helper would, the second's fast case only, and
+the block leaving at the second where that declines (a flag in the
+cpu; leaving at the first would come back to the same block). Correct
+by the PowerPC ctest, the retired counts, two minutes of fuzz-ppc-jit
+and three mutants the FP seeds find; and on the F746 Whetstone under
+the JIT went 29.39 to 32.74 and 29.36 to 32.69, **11% slower**, 153
+pairs translated. Nothing left ITCM -- the pair helper took 2.1 KB of
+it -- so it is the shape: two multi-way branches on the operation per
+call, and the flag's load and exit, cost the M7 more than the second
+direct call. The call stays one per instruction.
 The PC profile of the same run: the FP helpers about a quarter of the
 run's samples, their own entry and exit lines about 4%, the arithmetic
 the rest.
