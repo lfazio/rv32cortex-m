@@ -19,6 +19,9 @@
 #include "emu/emu_ir_bytes.h"
 #include "emu/emu_jit.h"
 #include "emu/emu_memmap.h"
+#if defined(EMU_HOST_JIT_THUMB2)
+#include "emu/emu_thumb2.h"
+#endif
 
 #if EMU_PAIR_STATS
 #include "emu/emu_pairstats.h"
@@ -462,6 +465,11 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
                 (unsigned)o.addr_folded, (unsigned)o.identities,
                 (unsigned)o.macs, (unsigned)o.tail_exits);
         }
+#if defined(EMU_HOST_JIT_THUMB2)
+        emu_console_printf("  loops    %u blocks kept %u guest registers in host ones\n",
+                           (unsigned)t2_loop_cached_blocks,
+                           (unsigned)t2_loop_cached_regs);
+#endif
 
         uint8_t op = 0u;
         uint8_t aux = 0u;

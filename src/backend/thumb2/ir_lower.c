@@ -1046,10 +1046,14 @@ static void pool_check_reach(void)
  * at every access. The address is in r1 and a store's value in r3.
  */
 static void note_exit(uint8_t *at, bool conditional);
+static void note_exit_trap(uint8_t *at, bool conditional);
+static void lc_writeback(void);
+static void lc_reload_after_call(void);
 
 static void emit_mem_stub(uint32_t spec)
 {
     pc_store(T2_R0, false); /* r0 is the stub's out slot: free */
+    lc_writeback(); /* the accessor may enter an exception, which reads them */
     /* MOVS: the flags are dead here, and the stub sets them anyway. */
     if (!t2_movs_imm8(T2_R2, spec)) {
         t2_imm32(T2_R2, spec);
@@ -1057,7 +1061,8 @@ static void emit_mem_stub(uint32_t spec)
     /* Through r12, which the stub clobbers anyway: r11 is the RAM's */
     emit_pooled(T2_R12, (uint32_t)(uintptr_t)t2_mem_stub);
     t2_blx(T2_R12);
-    note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+    note_exit_trap(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+    lc_reload_after_call();
 }
 
 /*
@@ -1126,6 +1131,86 @@ static void note_exit_nf(uint8_t *at, bool conditional)
     }
 }
 
+/*
+ * Guest registers a loop keeps in host registers.
+ *
+ * A block whose exit branches back to its own start reloads every guest
+ * register it reads at the top of each iteration and stores every one it
+ * writes at the bottom: register traffic was 16-18% of RV32's and
+ * ARMv7-M's time in translated CoreMark code. Here the block's most used
+ * registers -- up to T2_LOOP_CACHE of them, the top of the allocator's
+ * set -- are loaded once before the body, read and written as host
+ * registers, and written back where anything outside the block could
+ * read them: every exit, and before a memory access's slow path, whose
+ * accessor may enter an exception that reads them.
+ *
+ * Not on a trap's way out: the exception entry may itself have written
+ * a cached register (ARMv7-M's sp and lr), and the copy is older. That
+ * exit was preceded by the write-back before the call, so nothing is
+ * lost. Blocks that call a helper are not cached at all -- a helper may
+ * read or write any register -- nor those that touch the FP unit.
+ */
+#ifndef T2_LOOP_CACHE
+#define T2_LOOP_CACHE 1u
+#endif
+/* In lr, which the allocator never hands out (1), or the allocator's top (0). */
+#ifndef T2_LOOP_CACHE_LR
+#define T2_LOOP_CACHE_LR 1
+#endif
+uint32_t t2_loop_cached_blocks, t2_loop_cached_regs;
+static EMU_PER_CORE uint32_t g_lc_n;              /* cached registers */
+static EMU_PER_CORE uint32_t g_lc_reg[T2_LOOP_CACHE];   /* guest register */
+static EMU_PER_CORE uint32_t g_lc_off[T2_LOOP_CACHE];   /* its offset */
+static EMU_PER_CORE uint32_t g_lc_host[T2_LOOP_CACHE];  /* its host register */
+static EMU_PER_CORE bool g_lc_put[T2_LOOP_CACHE];       /* written in the block */
+static EMU_PER_CORE ir_exit_t g_exits_trap[IR_MAX_EXITS];
+static EMU_PER_CORE uint32_t g_nexits_trap;
+
+/* The host register caching guest register n, or -1. */
+static int lc_host(uint32_t n)
+{
+    for (uint32_t i = 0; i < g_lc_n; i++) {
+        if (g_lc_reg[i] == n) {
+            return (int)g_lc_host[i];
+        }
+    }
+    return -1;
+}
+
+/* Store every cached register the block writes: the cpu is current. */
+static void lc_writeback(void)
+{
+    for (uint32_t i = 0; i < g_lc_n; i++) {
+        if (g_lc_put[i]) {
+            t2_str_imm(g_lc_host[i], T2_CPU, g_lc_off[i]);
+        }
+    }
+}
+
+/* After a call, which took lr: back from the cpu, where it was written. */
+static void lc_reload_after_call(void)
+{
+    if (T2_LOOP_CACHE_LR) {
+        for (uint32_t i = 0; i < g_lc_n; i++) {
+            t2_ldr_imm(g_lc_host[i], T2_CPU, g_lc_off[i]);
+        }
+    }
+}
+
+/* A trap's exit: to the epilogue past the write-back. */
+static void note_exit_trap(uint8_t *at, bool conditional)
+{
+    if (g_lc_n == 0u) {
+        note_exit(at, conditional);
+    } else if (g_nexits_trap < IR_MAX_EXITS) {
+        g_exits_trap[g_nexits_trap].at = at;
+        g_exits_trap[g_nexits_trap].conditional = conditional;
+        g_nexits_trap++;
+    } else {
+        g_exits_lost = true;
+    }
+}
+
 /* This block's frame, needed at every chained exit. */
 static EMU_PER_CORE uint32_t g_frame;
 /* Where its code begins, so a patch site can be an offset. */
@@ -1160,6 +1245,7 @@ static bool chain_exit(uint32_t target_pc)
         emu_jit_note_no_chain_slot();
         return false;
     }
+    lc_writeback(); /* the next block reads the cpu */
     emit_frame_release(g_frame);
     /*
      * The bound, for the same reason the self-loop has one: a chain
@@ -3702,6 +3788,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
             t2_imm32(rd, 0u);
+        } else if (lc_host(in->imm) >= 0) {
+            t2_mov(rd, (uint32_t)lc_host(in->imm));
         } else {
             if (t->reg_offset(in->imm) == t->pc_offset) {
                 pc_store(rd, true); /* a register that is the pc */
@@ -3714,6 +3802,15 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     case EMU_IR_PUT:
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
+            break;
+        }
+        if (lc_host(in->imm) >= 0) {
+            const uint32_t h = (uint32_t)lc_host(in->imm);
+            const uint32_t ra = use_reg(in->a, T2_R0);
+
+            if (ra != h) {
+                t2_mov(h, ra);
+            }
             break;
         }
         if (t->reg_offset(in->imm) == t->pc_offset) {
@@ -4249,6 +4346,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             if (rp != T2_R0) {
                 t2_mov(T2_R0, rp);
             }
+            lc_writeback();
             emit_frame_release(g_frame);
             emit_pooled(T2_R12, (uint32_t)(uintptr_t)t2_ibtc_stub);
             t2_emit16((uint16_t)(0x4700u | (T2_R12 << 3))); /* BX r12 */
@@ -4738,6 +4836,107 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     return true;
 }
 
+/*
+ * Which guest registers this block's loop keeps in host registers, if
+ * it is a loop that may: see g_lc_n. The most read and written first,
+ * and only those used at least twice an iteration or both read and
+ * written -- a register read once costs a host register the temps lose
+ * for one load an iteration.
+ */
+static void lc_choose(const emu_ir_block_t *b, const emu_ir_target_t *t)
+{
+    enum { LC_MAX = 64 };
+    uint8_t gets[LC_MAX], puts[LC_MAX];
+    bool loops = false;
+
+    g_lc_n = 0u;
+    if (T2_LOOP_CACHE == 0u || !g_has_start_pc) {
+        return;
+    }
+    memset(gets, 0, sizeof(gets));
+    memset(puts, 0, sizeof(puts));
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_EXIT:
+            loops = loops || (in->a == EMU_IR_NO_TEMP && in->imm == b->start_pc);
+            break;
+        case EMU_IR_EXIT_IF:
+            loops = loops || in->imm == b->start_pc;
+            break;
+        case EMU_IR_GET:
+        case EMU_IR_PUT:
+            if (in->imm < LC_MAX) {
+                uint8_t *const c = (in->op == (uint8_t)EMU_IR_GET) ? gets : puts;
+
+                c[in->imm] = (c[in->imm] == 255u) ? 255u : (uint8_t)(c[in->imm] + 1u);
+            } else {
+                return; /* a register this cannot track: leave it alone */
+            }
+            break;
+        case EMU_IR_HELPER:
+        case EMU_IR_HELPER_TRAP:
+        case EMU_IR_VMEM:
+        case EMU_IR_VMEMS:
+        case EMU_IR_VFOP:
+            return; /* a call may read or write any register */
+        case EMU_IR_VOP:
+        case EMU_IR_VOPM:
+        case EMU_IR_VRED:
+            if (T2_LOOP_CACHE_LR) {
+                return; /* lowered with lr as a scratch */
+            }
+            break;
+        default:
+            if (in->op >= (uint8_t)EMU_IR_FADD && in->op <= (uint8_t)EMU_IR_FCLASS) {
+                return; /* the FP tail, which this does not write back for */
+            }
+            break;
+        }
+    }
+    if (!loops) {
+        return;
+    }
+    for (uint32_t k = 0; k < T2_LOOP_CACHE; k++) {
+        uint32_t best = LC_MAX, score = 0u;
+
+        for (uint32_t n = 0; n < LC_MAX; n++) {
+            const uint32_t s = (uint32_t)gets[n] + puts[n];
+            const uint32_t off = (s != 0u) ? t->reg_offset(n) : 0u;
+
+            if (s == 0u || (s < 2u && !(gets[n] && puts[n])) || s <= score ||
+                lc_host(n) >= 0 || (t->reg_is_zero != NULL && t->reg_is_zero(n)) ||
+                off == t->pc_offset || (off & ~3u) == (t->flags_offset & ~3u) ||
+                (g_has_fast && g_fast.store_guard_offset != EMU_IR_NO_GUARD &&
+                 (off & ~3u) == (g_fast.store_guard_offset & ~3u)) ||
+                (g_has_dtlb && g_dtlb.store_guard_offset != EMU_IR_NO_GUARD &&
+                 (off & ~3u) == (g_dtlb.store_guard_offset & ~3u)) ||
+                (t->vsat_offset != 0u && (off & ~3u) == (t->vsat_offset & ~3u))) {
+                continue;
+            }
+            best = n;
+            score = s;
+        }
+        if (best == LC_MAX) {
+            break;
+        }
+        g_lc_reg[g_lc_n] = best;
+        g_lc_off[g_lc_n] = t->reg_offset(best);
+        g_lc_host[g_lc_n] = T2_LOOP_CACHE_LR ? T2_LR - g_lc_n
+                                             : t2_alloc_regs[T2_ALLOC_REGS - 1u - g_lc_n];
+        g_lc_put[g_lc_n] = puts[best] != 0u;
+        g_lc_n++;
+    }
+    if (g_lc_n != 0u) {
+        t2_loop_cached_blocks++;
+        t2_loop_cached_regs += g_lc_n;
+    }
+}
+
 bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 {
     if (b->overflow) {
@@ -4748,6 +4947,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_r0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
     g_nexits = 0u;
+    g_nexits_trap = 0u;
+    g_lc_n = 0u;
     g_exits_lost = false;
     g_has_fast = b->has_fast;
     g_has_dtlb = !b->has_fast && b->has_dtlb;
@@ -4788,7 +4989,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * helper call, which AAPCS requires and nothing here would fault on
      * until something used LDRD or a double.
      */
-    (void)emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
+    lc_choose(b, t);
+    (void)emu_ir_regalloc(b, T2_ALLOC_REGS - (T2_LOOP_CACHE_LR ? 0u : g_lc_n), g_reg);
     g_nsaved = T2_ALLOC_REGS;
     kcmp_scan(b);
 
@@ -4951,6 +5153,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * than to the block's entry, because the frame is already pushed and
      * re-running the prologue would push it again.
      */
+    for (uint32_t i = 0; i < g_lc_n; i++) {
+        t2_ldr_imm(g_lc_host[i], T2_CPU, g_lc_off[i]);
+    }
     g_body = emu_jit_here();
     g_pc_pending = true; /* this block's own, already in the cpu */
     g_pc_value = g_start_pc;
@@ -5004,6 +5209,10 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     for (uint32_t i = 0; i < g_nexits; i++) {
         patch_branch(g_exits[i].at, emu_jit_here(), g_exits[i].conditional);
+    }
+    lc_writeback();
+    for (uint32_t i = 0; i < g_nexits_trap; i++) {
+        patch_branch(g_exits_trap[i].at, emu_jit_here(), g_exits_trap[i].conditional);
     }
 
     if (g_has_fp) {

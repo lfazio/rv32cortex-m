@@ -318,6 +318,9 @@ uint32_t t2_cond(uint8_t c);
  * with nothing emitted around it.
  */
 #define T2_ALLOC_REGS 5u
+/* Blocks lowered with guest registers kept in host registers, and how
+ * many registers that was in all (ir_lower.c, g_lc_n). */
+extern uint32_t t2_loop_cached_blocks, t2_loop_cached_regs;
 extern const uint32_t t2_alloc_regs[T2_ALLOC_REGS];
 
 /*
