@@ -254,7 +254,11 @@ Each has cost more than one session, and every one recurred.
   written for a lowering must be shown to reach it: `fpedge-v`'s vector
   cases ran in the helper twice -- cold after a compaction, then behind
   a declined CSR write whose batch took the `vsetivli` -- and printed
-  RISC-V's flags on the board; count the replaced path's calls first.
+  RISC-V's flags on the board; count the replaced path's calls first --
+  on the board: `vecops`, reached on the host, ran translated only in its
+  first group on both boards, whose buffer compacts before the run and
+  then waits for 8 entries a context (vxrm in it). A mutant must change
+  the lines it should, each line its own checksum.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all;

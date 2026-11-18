@@ -254,6 +254,14 @@ option(EMU_WFI_CHECK "Time a WFI from inside the firmware on its first park" OFF
 target_compile_definitions(emu-stm32n6 PRIVATE
     EMU_WFI_CHECK=$<BOOL:${EMU_WFI_CHECK}>)
 
+# A PC profile from the tick, printed on the console after the run, as
+# the F746's (stm32n6xx_it.c, board.c): probe-rs cannot reach the M55's
+# access port, so scripts/board-pc-profile.py --capture reads the print.
+set(EMU_PC_PROFILE 0 CACHE STRING
+    "pc samples to take at 1 kHz and print after the run (0: none)")
+target_compile_definitions(emu-stm32n6 PRIVATE
+    EMU_PC_PROFILE=${EMU_PC_PROFILE})
+
 option(EMU_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
 if(EMU_NATIVE_COREMARK)
     include(${CMAKE_SOURCE_DIR}/cmake/coremark_native.cmake)

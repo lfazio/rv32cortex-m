@@ -329,9 +329,23 @@ instruction, where the F746's DSP extension does 4: vecbench under the
 JIT 25.02 to 20.45 host cycles an instruction
 ([backend/thumb2.md](../backend/thumb2.md#helium-mve-on-the-n6)).
 `tests/guest/vecops.c` (`guest-vecops-both`) runs every operation it
-covers at every width, at m1, m2 and m8 and vl's edges, under each
-vxrm; the host's checksum, `862031b0`, is the N6's and the F746's under
-the JIT. vecbench takes any round count now: its lengths shrink with
+covers -- and the reductions, masked operations and `vmerge` -- at
+every width, at m1, m2 and m8 and vl's edges, under each vxrm, ten times
+a case so that a board's JIT translates it; the host's checksum,
+`dfa078a9`, is the N6's and the F746's under the JIT.
+
+### On the N6, by kernel
+
+A PC profile cannot name the guest kernel translated code belongs to,
+so `-DVECBENCH_ONLY=<mask>` runs vecbench's kernels one at a time. On
+the N6 under the JIT, 400 rounds, host cycles less the 3.2M every run
+pays (`-DVECBENCH_ONLY=0`): add with its scalar checksum loop 29.7M,
+the narrowing clip 13.7M, avg 11.2M, dot (a widening multiply-add and
+a reduction) 10.3M, max 8.3M, axpy 7.3M, the strided gather 4.1M, copy
+3.4M -- 91.2M against the whole run's 94.4M. The PC profile
+(`board-pc-profile.py --capture`, the N6 printing its samples after the
+run) put 88% of the run in translated code, the dispatcher at 6% and
+the vector helper at 0.06%. vecbench takes any round count now: its lengths shrink with
 the round modulo 64, where they ran negative past a third of N, so a
 run of 400 rounds trapped on the host -- the checksum of up to 64
 rounds is what it was.

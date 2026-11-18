@@ -207,6 +207,21 @@ vdup.16   q1, r2
 vdup.32   q3, r12
 usat      r2, #8, r2
 usat      r0, #8, lr
+vpsel     q1, q1, q3
+vpsel     q2, q2, q0
+vctp.32   r2
+vctp.8    lr
+vmsr      p0, r2
+vmrs      r1, p0
+vpst
+vaddvat.u8 r0, q0
+vpst
+vaddvat.s16 r2, q0
+vaddva.u32 r0, q3
+vminv.s8  r0, q0
+vminv.u32 r2, q0
+vmaxv.s32 r0, q3
+vmaxv.u16 r0, q0
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -466,6 +481,21 @@ int main(void)
     t2_vdup(2u, 3u, 12u);
     t2_usat(2u, 8u, 2u);
     t2_usat(0u, 8u, 14u);
+    t2_mve3(T2_MVE_VPSEL_HI, T2_MVE_VPSEL_LO, 1u, 1u, 3u);
+    t2_mve3(T2_MVE_VPSEL_HI, T2_MVE_VPSEL_LO, 2u, 2u, 0u);
+    t2_vctp(2u, 2u);
+    t2_vctp(0u, 14u);
+    t2_vmsr_p0(2u);
+    t2_vmrs_p0(1u);
+    t2_vpst();
+    t2_vredv(T2_MVE_VADDVA_HI, T2_MVE_VADDVA_LO, 0u, true, 0u, 0u);
+    t2_vpst();
+    t2_vredv(T2_MVE_VADDVA_HI, T2_MVE_VADDVA_LO, 1u, false, 2u, 0u);
+    t2_vredv(T2_MVE_VADDVA_HI, T2_MVE_VADDVA_LO, 2u, true, 0u, 3u);
+    t2_vredv(T2_MVE_VMINV_HI, T2_MVE_VMINV_LO, 0u, false, 0u, 0u);
+    t2_vredv(T2_MVE_VMINV_HI, T2_MVE_VMINV_LO, 2u, true, 2u, 0u);
+    t2_vredv(T2_MVE_VMAXV_HI, T2_MVE_VMAXV_LO, 2u, false, 0u, 3u);
+    t2_vredv(T2_MVE_VMAXV_HI, T2_MVE_VMAXV_LO, 1u, true, 0u, 0u);
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);
     }

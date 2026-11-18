@@ -23,6 +23,10 @@ from the start of the run, so this says *when*, which a total cannot --
 two firmwares a fixed tenth of a second apart whatever the run length
 differ in one phase, and the totals of a long run hide it.
 
+--capture FILE reads the samples from a console capture instead --
+board-measure.sh's build/board/NAME.txt, where the firmware prints them
+after the run (`pcprof N`, the pcs, `pcprof-end`): the only way on the
+N6, whose access port probe-rs cannot reach.
 --regions N buckets the samples by the F746 memory they ran from: ITCM,
 flash, DTCM and SRAM1 -- and the JIT's buffer (`g_static_code`) apart,
 split where the DTCM ends. Translated code has no symbol, so this is
@@ -133,7 +137,26 @@ def main():
     ap.add_argument("--regions", type=int, default=0, metavar="N",
                     help="samples by memory, the JIT's buffer split, "
                          "with each region's N hottest functions")
+    ap.add_argument("--capture", default="",
+                    help="read the samples the firmware printed in this "
+                         "console capture, not over the probe")
     a = ap.parse_args()
+
+    if a.capture:
+        pcs, inside = [], False
+        for line in open(a.capture, errors="replace"):
+            line = line.strip()
+            if line.startswith("pcprof-end"):
+                break
+            if line.startswith("pcprof "):
+                inside = True
+                continue
+            if inside and re.fullmatch(r"[0-9a-fA-F]{8}", line):
+                pcs.append(int(line, 16))
+        if not pcs:
+            sys.exit("no pcprof samples in %s" % a.capture)
+        report(a, [pc & ~1 for pc in pcs])
+        return
 
     # **One read.** Each attach is under reset, and the firmware's start-up
     # zeroes .bss as soon as the probe lets go -- so a second read finds the
@@ -148,7 +171,10 @@ def main():
     if not words:
         sys.exit("could not read the profile")
     pcs = words[:min(words[-1], len(words) - 1)]
-    pcs = [pc & ~1 for pc in pcs]
+    report(a, [pc & ~1 for pc in pcs])
+
+
+def report(a, pcs):
     uniq = sorted(set(pcs))
     out = subprocess.run(["arm-none-eabi-addr2line", "-f", "-C", "-e", a.elf] +
                          ["0x%x" % pc for pc in uniq], stdout=subprocess.PIPE,

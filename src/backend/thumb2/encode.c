@@ -894,6 +894,39 @@ void t2_vdup(uint32_t sew, uint32_t qd, uint32_t rt)
               (uint16_t)((rt << 12) | 0x0B10u | ((sew == 1u) ? 0x20u : 0u)));
 }
 
+/* VPST: the next instruction predicated on P0. */
+void t2_vpst(void)
+{
+    t2_emit32(0xFE71u, 0x0F4Du);
+}
+
+/* The across-vector reductions into Rda: VADDVA (Rda += the lanes'
+ * sum, in 32 bits), VMINV and VMAXV (Rda = the extreme of Rda's low
+ * element and the lanes). */
+void t2_vredv(uint16_t hi, uint16_t lo, uint32_t sew, bool u, uint32_t rda,
+              uint32_t qm)
+{
+    t2_emit32((uint16_t)(hi | (u ? T2_MVE_U : 0u) | (sew << 2)),
+              (uint16_t)((rda << 12) | lo | (qm << 1)));
+}
+
+/* VCTP.<8|16|32> Rn: P0's first Rn elements' bytes set, the rest clear. */
+void t2_vctp(uint32_t sew, uint32_t rn)
+{
+    t2_emit32((uint16_t)(0xF000u | (sew << 4) | rn), 0xE801u);
+}
+
+/* VMSR P0, Rt and VMRS Rt, P0: the predicate, a bit a byte lane. */
+void t2_vmsr_p0(uint32_t rt)
+{
+    t2_emit32(0xEEEDu, (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+void t2_vmrs_p0(uint32_t rt)
+{
+    t2_emit32(0xEEFDu, (uint16_t)((rt << 12) | 0x0A10u));
+}
+
 /* USAT Rd, #sat, Rn: Rn clamped to 0..2^sat - 1. */
 void t2_usat(uint32_t rd, uint32_t sat, uint32_t rn)
 {

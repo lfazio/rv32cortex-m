@@ -76,6 +76,13 @@ kept because every part of it was carried out: the shared runner
   is 272 KiB, not 220 (`EMU_N6_ROM_KIB`, passed to the linker script as
   `__emu_rom_k`): a G4MH build cannot give RAM away like that, so the
   line is the build's.
+- **A PC profile is printed, not read**: probe-rs cannot reach the
+  M55's access port, so `-DEMU_PC_PROFILE=<samples>` samples the tick
+  as the F746 does and the firmware prints the samples after the run;
+  `scripts/board-pc-profile.py ELF --capture build/board/NAME.txt`
+  reads them from the console capture. The print used to loop to a
+  count still growing, and profiled itself (`board_console_putc`, 12%):
+  it snapshots the count first now.
 
 ## The memory map, from STM32CubeN6
 

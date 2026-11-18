@@ -2616,6 +2616,132 @@ static void lower_vred(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     patch_branch(none, emu_jit_here(), true);
 }
 
+/* A nibble's bits each doubled, and each quadrupled: a mask's element
+ * bits spread to P0's byte bits at 16 and 32 bits. */
+static const uint8_t k_spread2[16] = {
+    0x00u, 0x03u, 0x0Cu, 0x0Fu, 0x30u, 0x33u, 0x3Cu, 0x3Fu,
+    0xC0u, 0xC3u, 0xCCu, 0xCFu, 0xF0u, 0xF3u, 0xFCu, 0xFFu,
+};
+static const uint16_t k_spread4[16] = {
+    0x0000u, 0x000Fu, 0x00F0u, 0x00FFu, 0x0F00u, 0x0F0Fu, 0x0FF0u, 0x0FFFu,
+    0xF000u, 0xF00Fu, 0xF0F0u, 0xF0FFu, 0xFF00u, 0xFF0Fu, 0xFFF0u, 0xFFFFu,
+};
+
+/*
+ * P0 for register r of a group: its active elements -- VCTP of vl (r3)
+ * less the register's first element, saturated at 0 -- and under a mask
+ * only those whose bit in the mask register (16 * mreg from r12) is set,
+ * the bits spread to bytes. r1, r2 and lr are scratch.
+ */
+static void mve_active(uint32_t sew, uint32_t r, bool masked, uint32_t mreg)
+{
+    const uint32_t per = EMU_IR_VREG_BYTES >> sew; /* elements a register */
+    const uint32_t mo = EMU_IR_VREG_BYTES * mreg;
+    uint16_t enc;
+
+    if (r == 0u) {
+        t2_usat(T2_R2, 8u, T2_R3);
+    } else {
+        (void)t2_expand_imm(per * r, &enc);
+        t2_sub_imm(T2_R2, T2_R3, enc);
+        t2_usat(T2_R2, 8u, T2_R2);
+    }
+    t2_vctp(sew, T2_R2);
+    if (!masked) {
+        return;
+    }
+    switch (sew) {
+    case 0u: /* 16 bits, one a byte */
+        t2_imm32(T2_R1, mo + 2u * r);
+        (void)t2_ld_reg(T2_R1, T2_R12, T2_R1, 2u, false);
+        break;
+    case 1u: /* 8 bits, each doubled */
+        t2_ldrb_imm(T2_R1, T2_R12, mo + r);
+        emit_pooled(T2_LR, (uint32_t)(uintptr_t)k_spread2);
+        t2_and_imm(T2_R2, T2_R1, 15u);
+        t2_shift_imm(T2_LSR, T2_R1, T2_R1, 4u);
+        (void)t2_ld_reg(T2_R2, T2_LR, T2_R2, 1u, false);
+        (void)t2_ld_reg(T2_R1, T2_LR, T2_R1, 1u, false);
+        t2_add_lsl(T2_R1, T2_R2, T2_R1, 8u);
+        break;
+    default: /* 4 bits, each quadrupled */
+        t2_ldrb_imm(T2_R1, T2_R12, mo + r / 2u);
+        if ((r & 1u) != 0u) {
+            t2_shift_imm(T2_LSR, T2_R1, T2_R1, 4u);
+        }
+        t2_and_imm(T2_R1, T2_R1, 15u);
+        emit_pooled(T2_LR, (uint32_t)(uintptr_t)k_spread4);
+        (void)t2_ld_reg_lsl(T2_R1, T2_LR, T2_R1, 1u, 2u, false);
+        break;
+    }
+    t2_vmrs_p0(T2_R2);
+    t2_and(T2_R2, T2_R2, T2_R1);
+    t2_vmsr_p0(T2_R2);
+}
+
+/* The reductions MVE has an across-vector instruction for. */
+static bool vred_mve(uint32_t rop)
+{
+    return rop != EMU_IR_R_AND && rop != EMU_IR_R_OR && rop != EMU_IR_R_XOR &&
+           rop < EMU_IR_R_COUNT;
+}
+
+/*
+ * EMU_IR_VRED in MVE: r0 starts as vs1's element 0 -- extended as the
+ * operation reads it -- and each register of vs2's group goes into it
+ * through a predicated across-vector instruction, P0 its active elements
+ * (mve_active): VADDVA adds the lanes in 32 bits, which is also the
+ * widening sums' arithmetic, VMINV and VMAXV take the extreme of r0's
+ * element and the lanes. Inactive lanes take no part, so no identity is
+ * needed. Then r0's element into vd unless vl is 0.
+ */
+static void lower_vred_mve(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const uint32_t rop = EMU_IR_VRED_OP(in->aux);
+    const uint32_t sew = EMU_IR_VRED_SEW(in->aux);
+    const bool masked = EMU_IR_VRED_MASKED(in->aux);
+    const uint32_t rsew = EMU_IR_R_IS_WIDE(rop) ? sew + 1u : sew;
+    const uint32_t nregs = EMU_IR_VOP_NREGS(in->imm);
+    const uint32_t vs2 = EMU_IR_VOP_VS2(in->imm);
+    const bool sign = rop == EMU_IR_R_MIN || rop == EMU_IR_R_MAX || rop == EMU_IR_R_WSUM;
+    const uint32_t base = t->vreg_offset(0u);
+
+    ld_operand(T2_R3, in->b);
+    if (base < 4096u) {
+        t2_addw(T2_R12, T2_CPU, (uint16_t)base);
+    } else {
+        t2_imm32(T2_R12, base);
+        t2_add(T2_R12, T2_R12, T2_CPU);
+    }
+    t2_imm32(T2_R0, EMU_IR_VREG_BYTES * EMU_IR_VOP_VS1(in->imm));
+    (void)t2_ld_reg(T2_R0, T2_R12, T2_R0, 1u << rsew, sign && rsew < 2u);
+    for (uint32_t r = 0; r < nregs; r++) {
+        mve_active(sew, r, masked, EMU_IR_VOP_MREG(in->imm));
+        t2_vldrw(0u, T2_R12, (int32_t)(EMU_IR_VREG_BYTES * (vs2 + r)));
+        t2_vpst();
+        switch (rop) {
+        case EMU_IR_R_MINU:
+        case EMU_IR_R_MIN:
+            t2_vredv(T2_MVE_VMINV_HI, T2_MVE_VMINV_LO, sew, rop == EMU_IR_R_MINU, T2_R0, 0u);
+            break;
+        case EMU_IR_R_MAXU:
+        case EMU_IR_R_MAX:
+            t2_vredv(T2_MVE_VMAXV_HI, T2_MVE_VMAXV_LO, sew, rop == EMU_IR_R_MAXU, T2_R0, 0u);
+            break;
+        default: /* SUM, WSUMU, WSUM */
+            t2_vredv(T2_MVE_VADDVA_HI, T2_MVE_VADDVA_LO, sew, rop != EMU_IR_R_WSUM, T2_R0,
+                     0u);
+            break;
+        }
+    }
+    (void)t2_cmp_imm8(T2_R3, 0u);
+    uint8_t *const none = t2_bcond_forward(0x0u); /* EQ: vl 0, vd kept */
+
+    t2_imm32(T2_R1, EMU_IR_VREG_BYTES * EMU_IR_VOP_VD(in->imm));
+    (void)t2_st_reg(T2_R0, T2_R12, T2_R1, 1u << rsew);
+    patch_branch(none, emu_jit_here(), true);
+}
+
 /*
  * The element loop both inline vector accesses share: r2 the first
  * element's offset in the RAM window, r3 vl's bytes -- not 0, and every
@@ -3601,6 +3727,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_VRED:
         if (!emu_ir_can_lower(EMU_IR_VRED, in->aux) || t->vreg_offset == NULL) {
             return false;
+        }
+        if (have_mve() && vred_mve(EMU_IR_VRED_OP(in->aux)) && vfile_mve(t)) {
+            lower_vred_mve(in, t);
+            break;
         }
         lower_vred(in, t);
         break;

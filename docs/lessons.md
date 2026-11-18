@@ -5141,6 +5141,24 @@ session, and every one of them recurred:
   place (N was the first). **An encoder's register fields are tested at
   odd values, in every position, against the assembler.**
 
+- **What reaches the JIT on the host is not what reaches it on a
+  board.** `vecops` was written after fpedge-v's lesson, and its reach
+  was checked -- on the host, by counting the vector helper's calls
+  (1,584 for 8,856 cases). On the boards it printed the host's checksum
+  and four MVE mutants changed it, and only its first group had run
+  translated: a board's buffer has compacted before the run starts, and
+  from then a block is translated on its eighth entry in one context;
+  vxrm is part of the context, and each case met its block six times a
+  context. The mutants had been caught in that first group, and the
+  per-group lines, a running checksum, all differed after it. A mutant
+  of the 16-bit mask spread changed nothing, and a line per group with
+  its own checksum then showed a mask mutant reaching one line of 36.
+  The host's 64 MB buffer never compacts, so nothing the host counted
+  could show it. Each case runs ten times now and each mutant hits
+  exactly its groups. **Show a board run reached the code on the board:
+  a mutant that changes the lines it should, each line its own
+  checksum.**
+
 - **A reference checked only where the lowering runs is checked only
   there.** `test_lower_vfop` compared the interpreter's reference with
   a reading of its own only for the operations x86-64 lowers in SSE,

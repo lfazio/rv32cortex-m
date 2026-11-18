@@ -346,15 +346,44 @@ the N6 under the JIT, 400 rounds, 25.02 and 24.99 host cycles an
 instruction to **20.45 and 20.41** at two layouts, 18% fewer, the code it
 translated 62,084 bytes to 47,700 and the checksum the host's. The baseline was
 measured again from a worktree given the same ROM/RAM line: the first,
-at 256 KiB of ROM, read 25.05 and 25.01. `tests/guest/vecops.c` --
-every operation this covers, .vv and .vx, at e8, e16 and e32, m1, m2
-and m8, vl at its edges, each vxrm -- prints the host's 36 lines and
-checksum on the N6 and on the F746 (the DSP path), and four mutants each
-change all 36 on the N6: a reversed subtract not reversed, the tail
-window not applied, a right shift's count not negated, the store copy
-reading the group's first register each time. Not yet in MVE: the
-masked forms (the mask's bits spread to bytes for `VPSEL`), widening and
-narrowing, the reductions and the vector FP ([TODO](../TODO.md)).
+at 256 KiB of ROM, read 25.05 and 25.01.
+
+**The reductions** (`lower_vred_mve`) are predicated across-vector
+instructions into a general register that starts as vs1's element 0:
+`VADDVA` adds the lanes in 32 bits -- the widening sums' arithmetic too
+-- and `VMINV`/`VMAXV` take the extreme of the register's element and the
+lanes. P0 is the register's active elements: `VCTP` of what vl leaves
+it, and under a mask ANDed with the mask's bits, spread to P0's byte
+bits by a 16-entry table at 16 and 32 bits (`mve_active`). Inactive
+lanes take no part, so there is no identity to fill. AND, OR and XOR
+have no MVE across-vector form and keep the DSP path. On vecbench they
+are worth 0.2% (20.45 to 20.41, 20.41 to 20.39), because its
+reductions run once a call, after the loop: the kernels' cost was the
+loops, which a measurement of each kernel alone said
+([frontend/rv32-vector.md](../frontend/rv32-vector.md#on-the-n6-by-kernel)).
+
+**`tests/guest/vecops.c` checks it on the board**, and its first
+version did not: every operation this covers, .vv and .vx, the
+reductions plain and masked, masked operations and `vmerge`, at e8,
+e16 and e32, m1, m2 and m8, vl at its edges, each vxrm, a line a group.
+Run once a case, it printed the host's checksum on both boards and four
+MVE mutants each changed it -- but on a board the buffer has compacted
+before the run, so a block is translated on its eighth entry in one
+context, vxrm is part of the context, and a case met its block six
+times a context: only the first group ran translated. A mutant of the
+16-bit mask spread changed nothing at all, which is how it showed; the
+host's buffer never compacts, so its count of helper calls could not.
+Each case runs ten times now, and the mutants hit exactly their groups:
+the 16-bit spread all 12 e16 lines, the mask not applied all 36, the
+signed widening sum made unsigned the 24 at e8 and e16, and the
+reversed subtract, the tail window, a right shift not negated, the
+store copy's register and the signed minimum each all 36. The N6 then
+translated 3,529 blocks and interpreted 5.1M of 95.5M instructions.
+Not yet in MVE: the masked single-width operations (`VPSEL` on the same
+P0), widening and narrowing, and the vector FP -- which MVE computes
+flushing subnormals to zero whatever FPSCR says (`vfmul` of
+0x3F7FFFFF and 0x00800000 gave 0 and UF), and which was at most 5.6%
+of vfbench even without the guard that would need ([TODO](../TODO.md)).
 
 ## Calling convention
 

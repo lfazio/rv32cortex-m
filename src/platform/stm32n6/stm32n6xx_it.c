@@ -63,7 +63,44 @@ void DebugMon_Handler(void)
 {
 }
 
+#if EMU_PC_PROFILE
+/*
+ * A PC profile, sampled by the tick, as the F746's (stm32f7xx_it.c):
+ * the interrupted pc of the first EMU_PC_PROFILE ticks, printed after
+ * the run (board.c) -- this core's access port is not probe-rs's to read.
+ */
+__attribute__((used)) uint32_t g_pc_profile[EMU_PC_PROFILE];
+__attribute__((used)) volatile uint32_t g_pc_profile_n;
+
+__attribute__((used)) void pc_profile_take(const uint32_t *frame)
+{
+    const uint32_t n = g_pc_profile_n;
+
+    if (n < (uint32_t)EMU_PC_PROFILE) {
+        g_pc_profile[n] = frame[6]; /* the stacked pc */
+        g_pc_profile_n = n + 1u;
+    }
+}
+
+__attribute__((used)) void systick_body(void);
+
+/* Find the exception frame on whichever stack it was pushed to. */
+__attribute__((naked)) void SysTick_Handler(void)
+{
+    __asm volatile("tst lr, #4\n"
+                   "ite eq\n"
+                   "mrseq r0, msp\n"
+                   "mrsne r0, psp\n"
+                   "push {r4, lr}\n"
+                   "bl pc_profile_take\n"
+                   "pop {r4, lr}\n"
+                   "b systick_body\n");
+}
+
+void systick_body(void)
+#else
 void SysTick_Handler(void)
+#endif
 {
     /*
      * Shared: the HAL's millisecond, which its timeout loops depend on,

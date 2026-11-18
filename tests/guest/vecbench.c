@@ -33,6 +33,18 @@
 #define VECBENCH_ROUNDS 40
 #endif
 
+/*
+ * Which kernels run, a bit each in the order of the loop below: add,
+ * axpy, dot, copy, avg, clip, max, gather. All by default; one at a
+ * time says what each costs on a board, where a PC profile of
+ * translated code cannot name the kernel it is in. The checksum is the
+ * default's only with all of them.
+ */
+#ifndef VECBENCH_ONLY
+#define VECBENCH_ONLY 0xFFu
+#endif
+#define K_ON(k) ((VECBENCH_ONLY >> (k)) & 1u)
+
 #define N 1024
 
 #define csr_read(name)                                                         \
@@ -278,15 +290,31 @@ int main(void)
          * bounds, and the first 64 rounds are what they always were */
         const int q = r % 64;
 
-        k_add(g_c, g_a, g_b, N - (size_t)q);
-        sum = mix(sum, sum_words(g_c, sizeof(g_c)));
-        k_axpy(g_c, g_a, 3 - q, N);
-        sum = mix(sum, (uint32_t)k_dot(g_h, g_k, N - 3u * (size_t)q));
-        k_copy(g_d, g_s, 4u * N - (size_t)q);
-        k_avg(g_d, g_d, g_s + 1, 4u * N - 1u);
-        k_clip(g_h, g_c, N);
-        sum = mix(sum, (uint32_t)k_max(g_c, g_a, N - (size_t)q));
-        k_gather(g_c, g_a, g_b, N / 4u);
+        if (K_ON(0)) {
+            k_add(g_c, g_a, g_b, N - (size_t)q);
+            sum = mix(sum, sum_words(g_c, sizeof(g_c)));
+        }
+        if (K_ON(1)) {
+            k_axpy(g_c, g_a, 3 - q, N);
+        }
+        if (K_ON(2)) {
+            sum = mix(sum, (uint32_t)k_dot(g_h, g_k, N - 3u * (size_t)q));
+        }
+        if (K_ON(3)) {
+            k_copy(g_d, g_s, 4u * N - (size_t)q);
+        }
+        if (K_ON(4)) {
+            k_avg(g_d, g_d, g_s + 1, 4u * N - 1u);
+        }
+        if (K_ON(5)) {
+            k_clip(g_h, g_c, N);
+        }
+        if (K_ON(6)) {
+            sum = mix(sum, (uint32_t)k_max(g_c, g_a, N - (size_t)q));
+        }
+        if (K_ON(7)) {
+            k_gather(g_c, g_a, g_b, N / 4u);
+        }
     }
     sum = mix(sum, sum_words(g_c, sizeof(g_c)));
     sum = mix(sum, sum_words(g_h, sizeof(g_h)));

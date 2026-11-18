@@ -264,6 +264,16 @@ void t2_vsqrt(uint32_t sd, uint32_t sm);
 #define T2_MVE_VRHADD_LO 0x0140u
 #define T2_MVE_VHADD_HI 0xEF00u
 #define T2_MVE_VHADD_LO 0x0040u
+/* the across-vector reductions, for t2_vredv */
+#define T2_MVE_VADDVA_HI 0xEEF1u
+#define T2_MVE_VADDVA_LO 0x0F20u
+#define T2_MVE_VMINV_HI 0xEEE2u
+#define T2_MVE_VMINV_LO 0x0F80u
+#define T2_MVE_VMAXV_HI 0xEEE2u
+#define T2_MVE_VMAXV_LO 0x0F00u
+/* VPSEL Qd, Qn, Qm: Qn where P0's bit for the byte is set, Qm where not */
+#define T2_MVE_VPSEL_HI 0xFE31u
+#define T2_MVE_VPSEL_LO 0x0F01u
 void t2_vldrw(uint32_t qd, uint32_t rn, int32_t off);
 void t2_vstrw(uint32_t qd, uint32_t rn, int32_t off);
 void t2_vldrb(uint32_t qd, uint32_t rn, int32_t off);
@@ -273,6 +283,12 @@ void t2_vshl(uint32_t sew, bool u, uint32_t qd, uint32_t qval, uint32_t qshift);
 void t2_vneg(uint32_t sew, uint32_t qd, uint32_t qm);
 void t2_vdup(uint32_t sew, uint32_t qd, uint32_t rt);
 void t2_usat(uint32_t rd, uint32_t sat, uint32_t rn);
+void t2_vctp(uint32_t sew, uint32_t rn);
+void t2_vpst(void);
+void t2_vredv(uint16_t hi, uint16_t lo, uint32_t sew, bool u, uint32_t rda,
+              uint32_t qm);
+void t2_vmsr_p0(uint32_t rt);
+void t2_vmrs_p0(uint32_t rt);
 /* VLDR/VSTR Sd, [Rn, #off], off a multiple of 4 below 1024. */
 void t2_vldr(uint32_t sd, uint32_t rn, uint32_t off);
 void t2_vstr(uint32_t sd, uint32_t rn, uint32_t off);

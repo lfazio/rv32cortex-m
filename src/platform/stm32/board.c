@@ -491,7 +491,7 @@ uint64_t board_perf_cycles(void)
  * written out here and in the host's board.c -- the same four steps in
  * the same order, differing only in this answer and in what "wait" means.
  */
-#if defined(EMU_PC_PROFILE) && EMU_PC_PROFILE /* the F746 alone */
+#if defined(EMU_PC_PROFILE) && EMU_PC_PROFILE /* the F746 and the N6 */
 #include "emu_console.h"
 
 /* The tick's samples (stm32f7xx_it.c), printed once after the run. */
@@ -505,9 +505,14 @@ bool board_parks_after_run(void)
     static bool dumped;
 
     if (!dumped) {
+        /* The count first: the tick goes on sampling while this prints,
+         * and looping to a count that grows put the print in the profile
+         * (board_console_putc, 12% of an N6 run's samples). */
+        const uint32_t n = g_pc_profile_n;
+
         dumped = true;
-        emu_console_printf("pcprof %u\n", (unsigned)g_pc_profile_n);
-        for (uint32_t i = 0; i < g_pc_profile_n; i++) {
+        emu_console_printf("pcprof %u\n", (unsigned)n);
+        for (uint32_t i = 0; i < n; i++) {
             emu_console_printf("%08x\n", (unsigned)g_pc_profile[i]);
         }
         emu_console_printf("pcprof-end\n");
