@@ -750,6 +750,110 @@ static void pass_dead_flags(emu_ir_block_t *b, uint8_t live_out,
 }
 
 /* ------------------------------------------------------------------ */
+/* Pass: a condition read from the compare that set it                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The flags a condition reads, as EMU_IR_F_*: eval_cond's.
+ */
+static uint8_t cond_reads(uint8_t cond)
+{
+    switch ((emu_ir_cond_t)cond) {
+    case EMU_IR_C_EQ:
+    case EMU_IR_C_NE:
+        return EMU_IR_F_Z;
+    case EMU_IR_C_LT:
+    case EMU_IR_C_GE:
+        return EMU_IR_F_S | EMU_IR_F_V;
+    case EMU_IR_C_LTU:
+    case EMU_IR_C_GEU:
+        return EMU_IR_F_C;
+    case EMU_IR_C_LE:
+    case EMU_IR_C_GT:
+        return EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V;
+    case EMU_IR_C_LEU:
+    case EMU_IR_C_GTU:
+        return EMU_IR_F_C | EMU_IR_F_Z;
+    default:
+        return 0u; /* MI, PL, VS, VC and ALWAYS: not a compare of a and b */
+    }
+}
+
+static bool op_is_pure(uint8_t op);
+
+/* Whether an instruction leaves the guest's flag word as it found it. */
+static bool keeps_flags(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    switch ((emu_ir_op_t)in->op) {
+    case EMU_IR_LOAD:  /* a trap leaves the block: nothing after runs */
+    case EMU_IR_STORE:
+    case EMU_IR_EXIT_IF:
+    case EMU_IR_RETIRE:
+    case EMU_IR_SETPC:
+        return true;
+    case EMU_IR_PUT:
+        return t == NULL || (t->reg_offset(in->imm) & ~3u) != (t->flags_offset & ~3u);
+    default:
+        return op_is_pure(in->op);
+    }
+}
+
+/*
+ * A GETCOND whose flags a subtract set: the compare of the subtract's
+ * operands. G4MH's `cmp r6, 0` then `bz` was SETF -- the subtract
+ * recomputed, the APSR moved into the PSW -- then GETCOND loading the PSW
+ * back and extracting Z, then EXIT_IF on that against zero. The SETF
+ * still runs (the flags are the guest's, live at the block's exits), but
+ * the branch compares the registers it was always about.
+ *
+ * Only FS_SUB, where each compare condition is exactly the relation of
+ * `a` and `b` (eval_cond: LT is S != V, LTU the borrow), and only where
+ * the target maps every flag the condition reads -- an unmapped flag
+ * reads 0, and LT is then S alone, not a < b -- and the SETF defines
+ * them all. Anything between that may write the flag word ends it.
+ */
+static void pass_cond_forward(emu_ir_block_t *b, const emu_ir_target_t *t,
+                              emu_ir_opt_stats_t *st)
+{
+    const emu_ir_insn_t *setf = NULL;
+
+    if (t == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < b->count; i++) {
+        emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->op == (uint8_t)EMU_IR_SETF) {
+            setf = (in->aux == (uint8_t)EMU_IR_FS_SUB) ? in : NULL;
+            continue;
+        }
+        if (in->op == (uint8_t)EMU_IR_GETCOND && setf != NULL) {
+            const uint8_t need = cond_reads(in->aux);
+            bool mapped = need != 0u && (setf->defs & need) == need;
+
+            for (unsigned f = 0; f < 4u && mapped; f++) {
+                if ((need & (1u << f)) != 0u && t->flag_bit[f] == 0u) {
+                    mapped = false;
+                }
+            }
+            if (mapped) {
+                in->op = (uint8_t)EMU_IR_SETCC;
+                in->a = setf->a;
+                in->b = setf->b;
+                st->conds_forwarded++;
+            }
+            continue;
+        }
+        if (!keeps_flags(in, t)) {
+            setf = NULL;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Pass: guest register traffic                                        */
 /* ------------------------------------------------------------------ */
 
@@ -1351,6 +1455,24 @@ static bool backend_can_lower(uint8_t op, uint8_t aux)
 /* A shift amount only folds when it is one the immediate form can mean.
  * Guests mask this -- RISC-V takes rs2 modulo 32 -- and an immediate of
  * 33 would be masked by one backend and not another. */
+/* A compare condition's inverse, or 0xFF for one that is not a compare. */
+static uint8_t cond_inverse(uint8_t c)
+{
+    switch ((emu_ir_cond_t)c) {
+    case EMU_IR_C_EQ: return (uint8_t)EMU_IR_C_NE;
+    case EMU_IR_C_NE: return (uint8_t)EMU_IR_C_EQ;
+    case EMU_IR_C_LT: return (uint8_t)EMU_IR_C_GE;
+    case EMU_IR_C_GE: return (uint8_t)EMU_IR_C_LT;
+    case EMU_IR_C_LTU: return (uint8_t)EMU_IR_C_GEU;
+    case EMU_IR_C_GEU: return (uint8_t)EMU_IR_C_LTU;
+    case EMU_IR_C_LE: return (uint8_t)EMU_IR_C_GT;
+    case EMU_IR_C_GT: return (uint8_t)EMU_IR_C_LE;
+    case EMU_IR_C_LEU: return (uint8_t)EMU_IR_C_GTU;
+    case EMU_IR_C_GTU: return (uint8_t)EMU_IR_C_LEU;
+    default: return 0xFFu;
+    }
+}
+
 static bool shift_imm_ok(uint8_t op, uint32_t imm)
 {
     switch ((emu_ir_op_t)op) {
@@ -1603,6 +1725,35 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
                 src->dead = true;
                 uses[in->a] = (uses[in->a] == 255u) ? 255u : uses[in->a];
                 st->addr_folded++;
+            }
+        }
+
+        /* --- a branch on a compare's 0/1 is a branch on the compare -- */
+        if (in->op == (uint8_t)EMU_IR_EXIT_IF &&
+            (in->aux == (uint8_t)EMU_IR_C_NE || in->aux == (uint8_t)EMU_IR_C_EQ) &&
+            in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS && uses[in->a] == 1u &&
+            def[in->a] != (uint16_t)EMU_IR_NO_TEMP && in->b != EMU_IR_NO_TEMP &&
+            in->b < EMU_IR_MAX_TEMPS && def[in->b] != (uint16_t)EMU_IR_NO_TEMP &&
+            b->insn[def[in->b]].op == (uint8_t)EMU_IR_CONST &&
+            b->insn[def[in->b]].imm == 0u) {
+            emu_ir_insn_t *const cc = &b->insn[def[in->a]];
+            const uint8_t inv = cond_inverse(cc->aux);
+
+            if (!cc->dead && cc->op == (uint8_t)EMU_IR_SETCC && inv != 0xFFu) {
+                /*
+                 * `x != 0` where x = (a c b) is (a c b); `x == 0` its
+                 * inverse. The SETCC goes, and the zero with it once
+                 * nothing else reads it: RV32's `slt; bnez`, and every
+                 * condition a frontend turns into a 0/1 first.
+                 */
+                if (uses[in->b] != 255u && uses[in->b] != 0u) {
+                    uses[in->b]--;
+                }
+                in->aux = (in->aux == (uint8_t)EMU_IR_C_NE) ? cc->aux : inv;
+                in->a = cc->a;
+                in->b = cc->b;
+                cc->dead = true;
+                st->branch_folded++;
             }
         }
 
@@ -1962,6 +2113,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
      * into MOVs; dead values last, to sweep up what the other two
      * orphaned.
      */
+    pass_cond_forward(b, t, stats); /* first: what it rewrites reads no flags */
     pass_dead_flags(b, live_out, stats);
     pass_reg_traffic(b, t, stats);
     /*
@@ -1983,6 +2135,8 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.flags_removed += stats->flags_removed;
     g_opt_totals.gets_removed += stats->gets_removed;
     g_opt_totals.zero_gets += stats->zero_gets;
+    g_opt_totals.conds_forwarded += stats->conds_forwarded;
+    g_opt_totals.branch_folded += stats->branch_folded;
     g_opt_totals.puts_removed += stats->puts_removed;
     g_opt_totals.setpcs_removed += stats->setpcs_removed;
     g_opt_totals.folded += stats->folded;

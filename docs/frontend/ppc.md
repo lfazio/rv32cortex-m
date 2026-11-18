@@ -1236,6 +1236,15 @@ PowerPC's guests translate to more code: about 70 bytes per guest
 instruction on x86-64, a quarter to a half of it memory accesses and
 much of the rest condition-register arithmetic.
 
+**A compare and its branch** (2026-11-18): a CR field is
+`2 << (lt + ne)` -- two compares where it was three -- and a `bc` on LT,
+GT or EQ of a field a compare set, with no CR write or helper since,
+compares the compare's operands rather than extracting the bit
+(`put_cmp`, `crbit_cmp`; a seed, `cr-written-before-branch.S`, puts a
+second write of the field between them, which a mutant skipping the
+check needed to be found). CoreMark on the F746 2.9% faster
+([../backend/thumb2.md](../backend/thumb2.md#then-the-flags)).
+
 ### What it still interprets
 
 `-DEMU_PAIR_STATS=ON` counts executed instructions by kind and adjacent

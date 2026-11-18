@@ -446,21 +446,24 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
 
         emu_ir_opt_totals(&o);
         if (o.blocks != 0u) {
-            emu_console_printf(
-                "\n-- ir --\n"
-                "  blocks   %u optimised\n"
-                "  elided   gets %u (zero %u)  puts %u  setpc %u  flags %u"
-                "  dead %u  retire %u\n"
-                "  fused    const->imm %u  addr %u  identities %u  mac %u\n"
-                "  tail     %u exits\n",
-                (unsigned)o.blocks, (unsigned)o.gets_removed,
-                (unsigned)o.zero_gets,
-                (unsigned)o.puts_removed, (unsigned)o.setpcs_removed,
-                (unsigned)o.flags_removed,
-                (unsigned)o.dead_removed, (unsigned)o.retires_merged,
-                (unsigned)o.folded,
-                (unsigned)o.addr_folded, (unsigned)o.identities,
-                (unsigned)o.macs, (unsigned)o.tail_exits);
+            /*
+             * A line a call: emu_console_printf formats into 192 bytes, and
+             * the whole report as one format string passed that once it
+             * grew -- the last line, then the fused counts, cut off.
+             */
+            emu_console_printf("\n-- ir --\n  blocks   %u optimised\n", (unsigned)o.blocks);
+            emu_console_printf("  elided   gets %u (zero %u)  puts %u  setpc %u  flags %u"
+                               "  dead %u  retire %u\n",
+                               (unsigned)o.gets_removed, (unsigned)o.zero_gets,
+                               (unsigned)o.puts_removed, (unsigned)o.setpcs_removed,
+                               (unsigned)o.flags_removed, (unsigned)o.dead_removed,
+                               (unsigned)o.retires_merged);
+            emu_console_printf("  fused    const->imm %u  addr %u  identities %u  mac %u"
+                               "  cond %u  branch %u\n",
+                               (unsigned)o.folded, (unsigned)o.addr_folded,
+                               (unsigned)o.identities, (unsigned)o.macs,
+                               (unsigned)o.conds_forwarded, (unsigned)o.branch_folded);
+            emu_console_printf("  tail     %u exits\n", (unsigned)o.tail_exits);
         }
 
         uint8_t op = 0u;

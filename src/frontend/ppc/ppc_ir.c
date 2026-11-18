@@ -571,22 +571,86 @@ static void put_crf(B *b, uint32_t f, uint16_t v4)
     P(b, R_CR, OP(b, EMU_IR_OR, ANDK(b, G(b, R_CR), ~(0xFu << sh)), SHL(b, v4, sh)));
 }
 
-/* LT, GT, EQ and SO from a compare: the value a CR field takes. */
+/*
+ * LT, GT, EQ and SO from a compare: the value a CR field takes.
+ *
+ * The three bits are 8, 4 or 2 -- `2 << (lt + ne)`, since less implies
+ * not equal: two compares, an add and a shift. It was three compares,
+ * each shifted to its bit and ORed in, the most of what a `cmpwi` cost
+ * on the F746 (backend/thumb2.md, what the dumps found).
+ */
 static uint16_t cmp4(B *b, uint16_t x, uint16_t y, bool sgn)
 {
     const uint16_t lt = CC(b, sgn ? EMU_IR_C_LT : EMU_IR_C_LTU, x, y);
-    const uint16_t gt = CC(b, sgn ? EMU_IR_C_GT : EMU_IR_C_GTU, x, y);
-    const uint16_t eq = CC(b, EMU_IR_C_EQ, x, y);
+    const uint16_t ne = CC(b, EMU_IR_C_NE, x, y);
 
-    return OP(b, EMU_IR_OR, OP(b, EMU_IR_OR, SHL(b, lt, 3u), SHL(b, gt, 2u)),
-              OP(b, EMU_IR_OR, SHL(b, eq, 1u), so01(b)));
+    return OP(b, EMU_IR_OR, OP(b, EMU_IR_SHL, K(b, 2u), OP(b, EMU_IR_ADD, lt, ne)),
+              so01(b));
+}
+
+/*
+ * The last compare into a CR field in this block, for a branch on it.
+ *
+ * `cmpwi cr7, r10, 0` then `bne cr7` built the field and then took its
+ * EQ bit back out -- a shift, a mask, a compare with zero. A branch on
+ * LT, GT or EQ of a field a compare set, with nothing since that may
+ * have written the CR, compares the compare's operands instead: one host
+ * compare and a branch once the IR's passes are done with it. The field
+ * is written all the same; only the branch stops reading it.
+ */
+static EMU_PER_CORE struct {
+    const B *b;      /* the block it is in; NULL for none */
+    uint32_t mark;   /* b->count after the field was written */
+    uint16_t x, y;
+    uint8_t crf;
+    bool sgn;
+} g_cmp;
+
+/* put_crf of cmp4, remembered for a branch. */
+static void put_cmp(B *b, uint32_t f, uint16_t x, uint16_t y, bool sgn)
+{
+    put_crf(b, f, cmp4(b, x, y, sgn));
+    g_cmp.b = b;
+    g_cmp.mark = b->count;
+    g_cmp.x = x;
+    g_cmp.y = y;
+    g_cmp.crf = (uint8_t)f;
+    g_cmp.sgn = sgn;
+}
+
+/*
+ * CR bit `bi`, 1 when set or when clear as `set` asks, from the compare
+ * that wrote its field -- or NOT, where none did or something since may
+ * have written the CR: a PUT of it, or a helper, which may write
+ * anything.
+ */
+static uint16_t crbit_cmp(B *b, uint32_t bi, bool set)
+{
+    static const emu_ir_cond_t k[2][3][2] = {
+        /* unsigned: LT, GT, EQ; each as set and clear */
+        {{EMU_IR_C_LTU, EMU_IR_C_GEU}, {EMU_IR_C_GTU, EMU_IR_C_LEU}, {EMU_IR_C_EQ, EMU_IR_C_NE}},
+        {{EMU_IR_C_LT, EMU_IR_C_GE}, {EMU_IR_C_GT, EMU_IR_C_LE}, {EMU_IR_C_EQ, EMU_IR_C_NE}},
+    };
+
+    if (g_cmp.b != b || bi / 4u != g_cmp.crf || bi % 4u == 3u) {
+        return NOT;
+    }
+    for (uint32_t i = g_cmp.mark; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if ((in->op == (uint8_t)EMU_IR_PUT && in->imm == R_CR) ||
+            in->op == (uint8_t)EMU_IR_HELPER || in->op == (uint8_t)EMU_IR_HELPER_TRAP) {
+            return NOT;
+        }
+    }
+    return CC(b, k[g_cmp.sgn ? 1 : 0][bi % 4u][set ? 0 : 1], g_cmp.x, g_cmp.y);
 }
 
 /* The record bit: the result against zero, into CR0. */
 static void rc0(B *b, const I *d, uint16_t res)
 {
     if (d->rc) {
-        put_crf(b, 0u, cmp4(b, res, K(b, 0u), true));
+        put_cmp(b, 0u, res, K(b, 0u), true);
     }
 }
 
@@ -670,10 +734,13 @@ static uint16_t bo_cond(T *t, uint32_t bo, uint32_t bi)
         cond = CC(b, ((bo & 0x02u) != 0u) ? EMU_IR_C_EQ : EMU_IR_C_NE, ctr, K(b, 0u));
     }
     if ((bo & 0x10u) == 0u) {
-        uint16_t bit = crbit(b, bi);
+        uint16_t bit = crbit_cmp(b, bi, (bo & 0x08u) != 0u);
 
-        if ((bo & 0x08u) == 0u) {
-            bit = XORK(b, bit, 1u);
+        if (bit == NOT) {
+            bit = crbit(b, bi);
+            if ((bo & 0x08u) == 0u) {
+                bit = XORK(b, bit, 1u);
+            }
         }
         cond = (cond == NOT) ? bit : OP(b, EMU_IR_AND, cond, bit);
     }
@@ -1006,21 +1073,16 @@ static bool lower_cr(T *t, const I *d)
     switch (d->sem) {
     case PPC_S_CMP:
     case PPC_S_CMPL:
-        put_crf(b, d->crf,
-                cmp4(b, G(b, d->ra), cmp_reg(d) ? G(b, d->rb) : K(b, d->imm),
-                     d->sem == PPC_S_CMP));
+        put_cmp(b, d->crf, G(b, d->ra), cmp_reg(d) ? G(b, d->rb) : K(b, d->imm),
+                d->sem == PPC_S_CMP);
         return true;
     case PPC_S_CMPH:
-        put_crf(b, d->crf,
-                cmp4(b, U(b, EMU_IR_SEXT16, G(b, d->ra)),
-                     cmp_reg(d) ? U(b, EMU_IR_SEXT16, G(b, d->rb)) : K(b, d->imm),
-                     true));
+        put_cmp(b, d->crf, U(b, EMU_IR_SEXT16, G(b, d->ra)),
+                cmp_reg(d) ? U(b, EMU_IR_SEXT16, G(b, d->rb)) : K(b, d->imm), true);
         return true;
     case PPC_S_CMPHL:
-        put_crf(b, d->crf,
-                cmp4(b, ANDK(b, G(b, d->ra), 0xFFFFu),
-                     cmp_reg(d) ? ANDK(b, G(b, d->rb), 0xFFFFu) : K(b, d->imm),
-                     false));
+        put_cmp(b, d->crf, ANDK(b, G(b, d->ra), 0xFFFFu),
+                cmp_reg(d) ? ANDK(b, G(b, d->rb), 0xFFFFu) : K(b, d->imm), false);
         return true;
     case PPC_S_BTST: {
         /* GT if the bit is set, EQ if not, and SO. */
@@ -1531,6 +1593,7 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
     b->start_pc = pc;
     b->has_fast = ppc_fast_mem(c, &b->fast);
+    g_cmp.b = NULL; /* the block buffer is reused: its temps are not these */
 
     while (count < PPC_MAX_BLOCK_INSNS && !b->overflow &&
            b->count + PPC_IR_HEADROOM <= EMU_IR_MAX_INSNS &&
@@ -1576,6 +1639,9 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                  * instruction does not fail, it computes something else. */
                 b->count = mark;
                 b->next_temp = mark_temp;
+                if (g_cmp.b == b && g_cmp.mark > mark) {
+                    g_cmp.b = NULL; /* its temps were taken back */
+                }
                 t.ends = false;
                 t.counted = false;
                 if (is_efs(&d)) {

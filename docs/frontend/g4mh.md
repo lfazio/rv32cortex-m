@@ -1052,6 +1052,13 @@ arithmetic passed with `SUBF.D`'s operands reversed — 2.0 against -2.0
 differ in the sign bit, which is the top of the *high* word. `CHECK_EQ64`
 exists now; use it for anything wider than a register.
 
+**A condition read from the compare that set it** (2026-11-18): a
+GETCOND after a subtract's SETF, nothing between that may write the PSW,
+is the compare of the subtract's operands (`pass_cond_forward` in the
+shared IR), so `cmp r6, 0; bz` branches on r6 and 0 rather than loading
+the PSW back for Z. The SETF still runs. CoreMark on the F746 6.4%
+faster ([../backend/thumb2.md](../backend/thumb2.md#then-the-flags)).
+
 ## The FXU
 
 The extended floating-point unit, R01US0209EJ0220 section 2.5: 32

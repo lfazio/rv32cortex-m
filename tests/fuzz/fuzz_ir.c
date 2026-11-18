@@ -1463,13 +1463,14 @@ static void print_stats(void)
     fprintf(stderr,
             "fuzz-ir: passes over %u blocks: gets %u puts %u setpcs %u "
             "flags %u dead %u folded %u addr %u identities %u mac %u "
-            "retires %u\n",
+            "retires %u zero %u cond %u branch %u\n",
             (unsigned)o.blocks, (unsigned)o.gets_removed,
             (unsigned)o.puts_removed, (unsigned)o.setpcs_removed,
             (unsigned)o.flags_removed, (unsigned)o.dead_removed,
             (unsigned)o.folded, (unsigned)o.addr_folded,
             (unsigned)o.identities, (unsigned)o.macs,
-            (unsigned)o.retires_merged);
+            (unsigned)o.retires_merged, (unsigned)o.zero_gets,
+            (unsigned)o.conds_forwarded, (unsigned)o.branch_folded);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);

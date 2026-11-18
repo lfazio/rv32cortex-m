@@ -542,7 +542,9 @@ when the left operand used it (108), BIC's mask as AND's (11), SETCC
 forwarding r0 after zeroing it (25), ORN's as ORR's (30), a load through
 the wrong base register (a fault) -- and one not found: an ADDI by a
 negative constant beyond ADDW's 4,095 lowered as SUB of the negation,
-which no corpus input holds. The driver's first version stacked nine
+which no corpus input holds. Written to the generator's layout,
+`regressions/ir/addi-negative-past-addw` (0xDEADBEEF plus 0xFFFF0000)
+is clean on the board and finds it. The driver's first version stacked nine
 mutants in one file (docs/lessons.md); it restores before it prints
 now.
 

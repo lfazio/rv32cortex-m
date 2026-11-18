@@ -107,19 +107,18 @@ measured at.
 
 ## JIT
 
-- [ ] **The flag ISAs' flags on Thumb-2**, what the dumps leave
-      ([backend/thumb2.md](backend/thumb2.md#what-the-dumps-found-and-what-came-of-it)):
-      arithmetic, mostly flags, was 26-43% of the time ARMv7-M, PowerPC
-      and G4MH CoreMark spend in translated code, and frame spills 19-20%
-      on the first two. PowerPC's `cmpwi` computes LT, GT and EQ as three
-      compares and assembles the CR field, then a `bne` right after
-      extracts EQ again -- one `CMP` and two `IT`-predicated moves make
-      the field, and a branch straight after its compare could branch on
-      the host's flags. ARMv7-M stores four words of lazy flag state at
-      every flag-setting instruction, in loops whose next instruction
-      reads them back. Profile again (`board-jit-dump.py --classes`)
-      before choosing: the shares above are from before the five changes
-      that took 13-20% off these three.
+- [ ] **The flag ISAs' flags on Thumb-2**, what is left
+      ([backend/thumb2.md](backend/thumb2.md#then-the-flags)): G4MH's
+      branches compare a subtract's operands now and PowerPC's a
+      compare's, and PowerPC's CR field is two compares -- still built
+      in IR, where a three-way compare op would be one `CMP` and two
+      `IT`-predicated moves. ARMv7-M stores four words of flag state at
+      every flag-setting instruction (N and Z as the result, C, V), in
+      loops whose next instruction reads only one of them. Profile again
+      (`board-jit-dump.py --classes`) before choosing: the shares that
+      led here are from before the changes that took 16-30% off these
+      three (ARMv7-M 13.40 to 11.31, PowerPC 17.69 to 12.46, G4MH 18.74
+      to 14.30).
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have. It is inlined on Thumb-2 for RV32
       (2.5-7x on driver code,

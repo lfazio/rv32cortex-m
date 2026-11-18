@@ -1364,6 +1364,8 @@ typedef struct emu_ir_opt_stats {
     uint32_t flags_removed; /* dead EMU_IR_SETF deleted              */
     uint32_t gets_removed; /* guest register reloads elided         */
     uint32_t zero_gets; /* reads of a zero register made constants */
+    uint32_t conds_forwarded; /* GETCONDs made compares of a SUB's operands */
+    uint32_t branch_folded; /* EXIT_IFs on a SETCC's 0/1 made compares */
     uint32_t puts_removed; /* guest register stores made redundant  */
     uint32_t setpcs_removed; /* pc writes overwritten unobserved     */
     uint32_t folded; /* constants absorbed into an immediate  */

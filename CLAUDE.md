@@ -906,7 +906,8 @@ sixteen defects the first time anything fuzzed them.
   (`emu_bus_add` took a region past 4 GB for one ending below its base).
 - **A buffer sized for the configuration a test had** is too small for
   the one that ships (the console's 192 bytes cut the banner once the
-  ISA string grew by the crypto extensions): `qSupported` fitted test_gdb's (no description)
+  ISA string grew by the crypto extensions, and then the `-- ir --`
+  report, one format string, once it grew three counters): `qSupported` fitted test_gdb's (no description)
   and gdb-check's (no flash), and every board, which has both, wrote 12
   bytes past it.
 - **Two clients of one resource need an owner**: TFTP and gdb shared

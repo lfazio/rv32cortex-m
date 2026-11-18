@@ -108,7 +108,10 @@ static void test_flags_kept_when_read(void)
     const uint16_t s1 = emu_ir_alu(&g_b, EMU_IR_SUB, a, b);
     (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, s1, b, 0u,
                       EMU_IR_F_ALL);
-    const uint16_t c = emu_ir_emit(&g_b, EMU_IR_GETCOND, EMU_IR_C_EQ,
+    /* MI: a read pass_cond_forward leaves a read (it forwards a SUB's
+     * compare conditions to the operands, and the SETF has no reader
+     * then -- test_cond_forwarded) */
+    const uint16_t c = emu_ir_emit(&g_b, EMU_IR_GETCOND, EMU_IR_C_MI,
                                    EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
     emu_ir_put(&g_b, 4u, c);
 
@@ -1072,6 +1075,123 @@ static const emu_ir_target_t g_fake_target = {
     .freg_offset = fake_freg_offset,
     .fp_flags = fake_fp_flags,
 };
+
+/*
+ * pass_cond_forward: a GETCOND straight after a SUB's SETF is the compare
+ * of its operands. Checked by value against the block as built, run by
+ * the interpreter, on operands where S and V differ (INT_MIN - 1
+ * overflows: LT is true and the result's sign is not), for each of the
+ * ten compare conditions -- and that it did happen, and did not where
+ * the target has no V or a helper sits between.
+ */
+static emu_ir_block_t g_b_built;
+
+static void cond_block(uint8_t cond, bool helper_between)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t a = emu_ir_get(&g_b, 1u);
+    const uint16_t b = emu_ir_get(&g_b, 2u);
+
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u, EMU_IR_F_ALL);
+    if (helper_between) {
+        (void)emu_ir_emit(&g_b, EMU_IR_HELPER, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+    }
+    const uint16_t c =
+        emu_ir_emit(&g_b, EMU_IR_GETCOND, cond, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+    emu_ir_put(&g_b, 4u, c);
+}
+
+static void test_cond_forwarded(void)
+{
+    static const uint32_t pairs[][2] = {
+        {0x80000000u, 1u}, {0x7FFFFFFFu, 0xFFFFFFFFu}, {5u, 5u}, {0u, 1u},
+        {1u, 0u}, {0xFFFFFFFFu, 0u}, {0u, 0xFFFFFFFFu}, {0x80000000u, 0x80000000u},
+    };
+    static const uint8_t conds[] = {
+        EMU_IR_C_EQ, EMU_IR_C_NE, EMU_IR_C_LT, EMU_IR_C_GE, EMU_IR_C_LTU,
+        EMU_IR_C_GEU, EMU_IR_C_LE, EMU_IR_C_GT, EMU_IR_C_LEU, EMU_IR_C_GTU,
+    };
+
+    for (uint32_t k = 0; k < sizeof(conds); k++) {
+        for (uint32_t p = 0; p < sizeof(pairs) / sizeof(pairs[0]); p++) {
+            fake_cpu_t want, got;
+
+            cond_block(conds[k], false);
+            g_b_built = g_b;
+            memset(&want, 0, sizeof(want));
+            want.r[1] = pairs[p][0];
+            want.r[2] = pairs[p][1];
+            got = want;
+            CHECK(emu_ir_interp(&g_b_built, (emu_cpu_t *)&want, &g_fake_target, NULL));
+
+            emu_ir_opt_stats_t st;
+
+            emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+            CHECK_EQ(st.conds_forwarded, 1u);
+            CHECK_EQ(count_op(EMU_IR_GETCOND), 0u);
+            CHECK(emu_ir_interp(&g_b, (emu_cpu_t *)&got, &g_fake_target, NULL));
+            CHECK_EQ(got.r[4], want.r[4]);
+            CHECK_EQ(got.flags, want.flags); /* the SETF still ran */
+        }
+    }
+}
+
+static void test_cond_not_forwarded(void)
+{
+    emu_ir_target_t no_v = g_fake_target;
+    emu_ir_opt_stats_t st;
+
+    no_v.flag_bit[2] = 0u; /* LT would read S alone: not a < b */
+    cond_block(EMU_IR_C_LT, false);
+    emu_ir_optimise(&g_b, &no_v, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.conds_forwarded, 0u);
+    CHECK_EQ(count_op(EMU_IR_GETCOND), 1u);
+
+    /* ...but EQ reads only Z, which it has */
+    cond_block(EMU_IR_C_EQ, false);
+    emu_ir_optimise(&g_b, &no_v, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.conds_forwarded, 1u);
+
+    cond_block(EMU_IR_C_EQ, true); /* a helper may write the flag word */
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.conds_forwarded, 0u);
+    CHECK_EQ(count_op(EMU_IR_GETCOND), 1u);
+}
+
+/*
+ * pass_fuse: EXIT_IF on a SETCC's 0/1 against zero is the compare, NE
+ * taking the condition and EQ its inverse; the SETCC goes.
+ */
+static void test_branch_on_setcc_folded(void)
+{
+    for (uint32_t eq = 0; eq < 2u; eq++) {
+        emu_ir_reset(&g_b);
+
+        const uint16_t a = emu_ir_get(&g_b, 1u);
+        const uint16_t b = emu_ir_get(&g_b, 2u);
+        const uint16_t c = emu_ir_emit(&g_b, EMU_IR_SETCC, EMU_IR_C_LTU, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_EXIT_IF, eq ? EMU_IR_C_EQ : EMU_IR_C_NE, c,
+                          emu_ir_const(&g_b, 0u), 0x1000u, 0u);
+
+        emu_ir_opt_stats_t st;
+
+        emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+        CHECK_EQ(st.branch_folded, 1u);
+        CHECK_EQ(count_op(EMU_IR_SETCC), 0u);
+        for (uint32_t i = 0; i < g_b.count; i++) {
+            const emu_ir_insn_t *const in = &g_b.insn[i];
+
+            if (!in->dead && in->op == (uint8_t)EMU_IR_EXIT_IF) {
+                CHECK_EQ(in->aux, eq ? (uint8_t)EMU_IR_C_GEU : (uint8_t)EMU_IR_C_LTU);
+                CHECK_EQ(in->a, a);
+                CHECK_EQ(in->b, b);
+            }
+        }
+    }
+}
+
 
 #if defined(EMU_HOST_JIT_X86_64)
 #include "emu/emu_x86_64.h"
@@ -4254,6 +4374,9 @@ void test_ir(void)
     test_fma_interp_declines();
     test_dead_flags_removed();
     test_flags_kept_when_read();
+    test_cond_forwarded();
+    test_cond_not_forwarded();
+    test_branch_on_setcc_folded();
     test_flags_live_out();
     test_redundant_get_elided();
     test_dead_put_removed();

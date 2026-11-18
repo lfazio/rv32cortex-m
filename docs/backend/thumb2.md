@@ -1028,6 +1028,61 @@ On the N6's M55 the two together, against the same commit before:
 RV32 CoreMark 13.74 to 12.71 (-7.5%, -7.9% at the other layout), G4MH
 25.26 to 19.67 (-22.1%, -22.5%), retired counts and CRCs equal.
 
+### Then the flags
+
+Three changes for what the flag ISAs still paid, two in the shared IR
+and one in a frontend, each measured as the four frontends' CoreMark on
+the F746 against the tree above, both layouts, retired counts and CRCs
+equal:
+
+- **A condition read straight from the subtract that set it**
+  (`pass_cond_forward`): G4MH's `cmp r6, 0; bz` was SETF, then GETCOND
+  loading the PSW back and extracting Z, then a compare of that with
+  zero. A GETCOND after a FS_SUB SETF, nothing between that may write
+  the flag word, is the compare of the subtract's operands -- only for
+  the ten compare conditions, and only where the target maps every flag
+  the condition reads (an unmapped V reads 0, and LT is then S alone).
+  The SETF still runs: the flags are the guest's.
+- **A branch on a compare's 0/1 is a branch on the compare**
+  (`pass_fuse`): `EXIT_IF(x != 0)` where x is a single-use SETCC becomes
+  `EXIT_IF` on the SETCC's condition, `== 0` on its inverse.
+- **PowerPC's CR field from two compares** -- `2 << (lt + ne)`, less
+  implying not equal, where it was three compares each shifted to its
+  bit -- **and a branch on a field a compare just set compares the
+  compare's operands** (`crbit_cmp`), unless a PUT of the CR or a helper
+  came between.
+
+| | above | flags | |
+|---|---|---|---|
+| RV32 | 9.49 | 9.49 | 0.0% |
+| ARMv7-M | 11.45 | 11.47 | +0.2% (noise: the other layout 0.0%) |
+| PowerPC | 13.68 | 13.28 | -2.9% |
+| G4MH | 15.40 | 14.41 | -6.4% |
+
+G4MH's run forwarded 110 conditions (`cond` in `-- ir --`). Neither RV32
+nor ARMv7-M emits SETF or GETCOND -- ARMv7-M's flags are guest
+registers and its branches compare them already -- so their rows are
+the check that nothing else moved.
+
+### And the spills
+
+The allocator leaves a value read only by the next instruction to r0,
+where the reload elision carries it for nothing -- and where that next
+instruction did not take it from r0, it went to the frame and straight
+back: a store's value, a load's address, a shift's count, a divide's or
+a multiply-high's operands. `use_reg_fwd` takes each of them from r0
+where nothing in the instruction has written r0 yet, and `takes_from_r0`
+is the table the skipped store follows, line for line. And a register
+shift masks its count with `AND #31`, one instruction where it was
+`MOVW` and `AND`.
+
+| | flags | spills | |
+|---|---|---|---|
+| RV32 | 9.49 | 9.23 | -2.7% |
+| ARMv7-M | 11.47 | 11.31 | -1.4% |
+| PowerPC | 13.28 | 12.46 | -6.2% |
+| G4MH | 14.41 | 14.30 | -0.8% |
+
 ### A loop's guest registers in host ones: measured, not kept
 
 Not the whole-block register cache above, which lost 15.5%: a block

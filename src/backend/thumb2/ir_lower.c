@@ -223,7 +223,7 @@ void st_slot(uint32_t rt, uint16_t n)
  */
 static uint32_t use_reg(uint16_t n, uint32_t scratch);
 static uint32_t def_reg(uint16_t n, uint32_t scratch);
-static uint32_t use_reg_b(uint16_t n, uint32_t scratch);
+static uint32_t use_reg_fwd(uint16_t n, uint32_t scratch);
 
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 void ld_operand(uint32_t rt, uint16_t n)
@@ -267,6 +267,11 @@ void ld_operand(uint32_t rt, uint16_t n)
  */
 static EMU_PER_CORE uint16_t g_kcmp[EMU_IR_MAX_TEMPS];
 static EMU_PER_CORE const emu_ir_block_t *g_kcmp_block;
+
+static bool kcmp_folded(uint16_t t)
+{
+    return t < EMU_IR_MAX_TEMPS && t < g_ntemps && g_kcmp[t] != 0u;
+}
 
 static bool kcmp_reader(const emu_ir_insn_t *in, uint16_t k)
 {
@@ -328,7 +333,7 @@ static void emit_cmp_operand(uint32_t ra, uint16_t bt, uint32_t scratch)
         }
         return;
     }
-    t2_cmp(ra, use_reg_b(bt, scratch));
+    t2_cmp(ra, use_reg_fwd(bt, scratch));
 }
 
 static uint32_t use_reg(uint16_t n, uint32_t scratch)
@@ -350,16 +355,18 @@ static uint32_t def_reg(uint16_t n, uint32_t scratch)
 }
 
 /*
- * A right operand, which may still be in r0 from the instruction
- * before: the left one did not go through r0 (it is allocated, or it
- * went to another register), so nothing has written r0 since. Only
- * where the lowering reads its operands left then right with nothing
- * between them (reads_b_after_a). It was a store and an immediate
- * reload into r1 -- `str r0, [sp, #44]; ldr r1, [sp, #44]` -- all
- * through ARMv7-M CoreMark's hottest loop, where frame traffic was 20%
- * of the time in translated code.
+ * An operand which may still be in r0 from the instruction before:
+ * nothing in this one has written r0 yet (g_r0_first -- the left
+ * operand did not go through it). Only where a lowering reads its
+ * operands before it writes r0 (takes_from_r0 lists them). It was a
+ * store and an immediate reload into r1 -- `str r0, [sp, #44]; ldr r1,
+ * [sp, #44]` -- all through ARMv7-M CoreMark's hottest loop, where
+ * frame traffic was 20% of the time in translated code; then a store's
+ * value, a load's address and a divide's operands, which the allocator
+ * leaves to r0 when the next instruction reads them and which went to
+ * the frame instead.
  */
-static uint32_t use_reg_b(uint16_t n, uint32_t scratch)
+static uint32_t use_reg_fwd(uint16_t n, uint32_t scratch)
 {
     if (g_r0_first && n != EMU_IR_NO_TEMP && n == g_r0_avail && phys(n) < 0) {
         return T2_R0;
@@ -367,18 +374,45 @@ static uint32_t use_reg_b(uint16_t n, uint32_t scratch)
     return use_reg(n, scratch);
 }
 
-/* Ops lowered as use_reg(a, r0 or another), then use_reg_b(b). */
-static bool reads_b_after_a(uint8_t op)
+/*
+ * Whether `in` takes temp `t` from r0 through use_reg_fwd: as the right
+ * operand of an operation whose left one goes elsewhere than r0, or as
+ * any operand of one that loads neither into r0. The table the lowerings
+ * below must agree with, line for line.
+ */
+static bool kcmp_folded(uint16_t t);
+
+static bool takes_from_r0(const emu_ir_insn_t *in, uint16_t t)
 {
-    switch ((emu_ir_op_t)op) {
+    if (in->c == t) {
+        return false;
+    }
+    switch ((emu_ir_op_t)in->op) {
+    case EMU_IR_EXIT_IF:
+        if (kcmp_folded(in->b)) {
+            return false;
+        }
+        /* fall through */
     case EMU_IR_ADD:
     case EMU_IR_SUB:
     case EMU_IR_AND:
     case EMU_IR_OR:
     case EMU_IR_XOR:
     case EMU_IR_MUL:
-    case EMU_IR_EXIT_IF:
-        return true;
+    case EMU_IR_SHL:
+    case EMU_IR_SHR:
+    case EMU_IR_SAR:
+        return in->b == t && in->a != t && phys(in->a) >= 0;
+    case EMU_IR_MULHS:
+    case EMU_IR_MULHU:
+    case EMU_IR_DIVS:
+    case EMU_IR_DIVU:
+    case EMU_IR_REMS:
+    case EMU_IR_REMU:
+    case EMU_IR_STORE:
+        return in->a == t || in->b == t;
+    case EMU_IR_LOAD:
+        return in->a == t;
     default:
         return false;
     }
@@ -3750,7 +3784,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_OR:
     case EMU_IR_XOR: {
         const uint32_t ra = use_reg(in->a, T2_R0);
-        const uint32_t rb = use_reg_b(in->b, T2_R1);
+        const uint32_t rb = use_reg_fwd(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         switch ((emu_ir_op_t)in->op) {
@@ -3778,7 +3812,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_SHR:
     case EMU_IR_SAR: {
         const uint32_t ra = use_reg(in->a, T2_R0);
-        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rb = use_reg_fwd(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         /*
@@ -3791,8 +3825,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * `rb` may be the count's own register, and narrowing it in
          * place would corrupt a value later instructions still read.
          */
-        t2_imm32(T2_R2, 31u);
-        t2_and(T2_R2, rb, T2_R2);
+        t2_and_imm(T2_R2, rb, 31u); /* 31 encodes as itself */
         t2_shift_reg((in->op == (uint8_t)EMU_IR_SHL)   ? T2_LSL
                      : (in->op == (uint8_t)EMU_IR_SHR) ? T2_LSR
                                                        : T2_ASR,
@@ -4355,7 +4388,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     case EMU_IR_MUL: {
         const uint32_t ra = use_reg(in->a, T2_R0);
-        const uint32_t rb = use_reg_b(in->b, T2_R1);
+        const uint32_t rb = use_reg_fwd(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_mul(rd, ra, rb);
@@ -4396,8 +4429,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * allocated register -- r6 and above -- or r0, so the two can
          * never name the same register whatever the allocator did.
          */
-        const uint32_t ra = use_reg(in->a, T2_R2);
-        const uint32_t rb = use_reg(in->b, T2_R3);
+        const uint32_t ra = use_reg_fwd(in->a, T2_R2);
+        const uint32_t rb = use_reg_fwd(in->b, T2_R3);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_mull(in->op == (uint8_t)EMU_IR_MULHS, T2_R1, rd, ra, rb);
@@ -4424,8 +4457,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             (in->op == (uint8_t)EMU_IR_DIVS || in->op == (uint8_t)EMU_IR_REMS);
         const bool rem =
             (in->op == (uint8_t)EMU_IR_REMS || in->op == (uint8_t)EMU_IR_REMU);
-        const uint32_t ra = use_reg(in->a, T2_R2);
-        const uint32_t rb = use_reg(in->b, T2_R3);
+        const uint32_t ra = use_reg_fwd(in->a, T2_R2);
+        const uint32_t rb = use_reg_fwd(in->b, T2_R3);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         if (rem) {
@@ -4465,7 +4498,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (in->c != EMU_IR_NO_TEMP) {
             g_dead_store = EMU_IR_NO_TEMP;
         }
-        const uint32_t ra = use_reg(in->a, T2_R1);
+        const uint32_t ra = use_reg_fwd(in->a, T2_R1);
 
         /*
          * The address has to end up in r1, and `ra` may be an allocated
@@ -4558,11 +4591,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (t->store == NULL || (in->aux & T2_MEM_STORE) != 0u) {
             return false;
         }
-        const uint32_t ra = use_reg(in->a, T2_R1);
+        const uint32_t ra = use_reg_fwd(in->a, T2_R1);
 
-        emit_addr(T2_R1, ra, in->imm);
+        emit_addr(T2_R1, ra, in->imm); /* r1, and r2 past 4 KB: not r0 */
 
-        const uint32_t rv = use_reg(in->b, T2_R3);
+        const uint32_t rv = use_reg_fwd(in->b, T2_R3);
 
         if (rv != T2_R3) {
             t2_mov(T2_R3, rv);
@@ -4969,14 +5002,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
             if (j < b->count && b->insn[j].a == b->insn[i].dst &&
                 reads_a_in_r0(b->insn[j].op)) {
                 g_dead_store = b->insn[i].dst;
-            } else if (j < b->count && b->insn[j].b == b->insn[i].dst &&
-                       b->insn[j].a != b->insn[i].dst &&
-                       b->insn[j].c != b->insn[i].dst &&
-                       reads_b_after_a(b->insn[j].op) &&
-                       phys(b->insn[j].a) >= 0 &&
-                       !(b->insn[j].op == (uint8_t)EMU_IR_EXIT_IF &&
-                         b->insn[j].b < EMU_IR_MAX_TEMPS &&
-                         g_kcmp[b->insn[j].b] != 0u)) {
+            } else if (j < b->count && takes_from_r0(&b->insn[j], b->insn[i].dst)) {
                 g_dead_store = b->insn[i].dst; /* its reader takes r0 */
             }
         }
