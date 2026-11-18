@@ -1110,7 +1110,10 @@ if(EMU_GUEST_ARCH_PPC)
             set_tests_properties(guest-ppc-smp${sfx} PROPERTIES
                 LABELS fast
                 PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=00000029 fails=00000000"
-                FAIL_REGULAR_EXPRESSION "TRAP;FAIL")
+                # crt0's message, not a bare TRAP: EMU_JIT_BYTE_STATS lists
+                # IR operations by name, and HELPER_TRAP failed the test
+                # once it was among the sixteen largest
+                FAIL_REGULAR_EXPRESSION "TRAP ivor=;FAIL")
         endfunction()
         add_ppc_smp_test("")
         add_ppc_smp_test(-serial --serial)
@@ -1133,7 +1136,7 @@ if(EMU_GUEST_ARCH_PPC)
                 set_tests_properties(guest-ppc-smp-vle${_sfx} PROPERTIES
                     LABELS fast
                     PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=00000001 fails=00000000"
-                    FAIL_REGULAR_EXPRESSION "TRAP;FAIL")
+                    FAIL_REGULAR_EXPRESSION "TRAP ivor=;FAIL")
             endif()
         endforeach()
     endif()
@@ -1153,7 +1156,7 @@ if(EMU_GUEST_ARCH_PPC)
                 set_tests_properties(guest-ppc-park${_sfx} PROPERTIES
                     LABELS fast
                     PASS_REGULAR_EXPRESSION "PARK-BEFORE"
-                    FAIL_REGULAR_EXPRESSION "PARK-AFTER;capped=1;TRAP")
+                    FAIL_REGULAR_EXPRESSION "PARK-AFTER;capped=1;TRAP ivor=")
             endif()
         endforeach()
     endif()
