@@ -37,11 +37,13 @@ rv_exc_t rv_hart_vec(rv_hart_t *h, uint32_t insn, uint32_t *tval);
  */
 uint32_t rv_vec_vlmax(uint32_t vtype);
 
-#if RV_EXT_ZVE32F
+#if RV_EXT_F
 /*
  * rv_fpu.c's single precision, an element at a time, for Zve32f: the
  * scalar instructions' NaN, flag and rounding rules, through the same
- * functions. rm is a rounding mode 0-4; flags accrue.
+ * functions. rm is a rounding mode 0-4; flags accrue. With F alone too,
+ * where the JIT's backends redo an operation in it (the target's vfop):
+ * the 16-bit conversions and the estimates are Zve32f's only.
  */
 typedef enum {
     RV_VF_ADD,
@@ -68,6 +70,9 @@ typedef enum {
 
 uint32_t rv_vf32(rv_vf_op_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t rm,
                  uint32_t *flags);
+#endif
+
+#if RV_EXT_ZVE32F
 /* f[r] as a single (the canonical NaN if not NaN-boxed), and its write. */
 uint32_t rv_vf32_reg(const rv_hart_t *h, uint32_t r);
 void rv_vf32_set_reg(rv_hart_t *h, uint32_t r, uint32_t v);

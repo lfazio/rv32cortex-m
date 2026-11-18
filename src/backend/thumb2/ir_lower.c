@@ -1111,6 +1111,67 @@ static bool loop_back(uint32_t target_pc)
 /* ------------------------------------------------------------------ */
 
 /*
+ * VFP detects tininess before rounding and RISC-V after, so a result
+ * that rounds up to +-2^-126 raised UF here and not in the guest. So UF
+ * is not taken from FPSCR at all where the target can redo an operation
+ * (its vfop): the block's harvest masks UFC out (emit_fp_harvest), and
+ * UF is computed instead, where it can arise. VFP raises UF only from a
+ * multiply, a divide or a fused multiply-add -- a tiny sum is exact --
+ * and only with a result of magnitude 2^-126 or less, where RISC-V's UF
+ * lies too. Each of those three compares its result (s3) with 2^-126,
+ * and at or below it calls this, a, b and c in s0-s2 as the hard-float
+ * ABI passes them: the operation redone in the guest's arithmetic, its
+ * UF handed to the guest through the target's fp_flags, the result --
+ * the same either way -- returned for s3. The other flags VFP raises as
+ * RISC-V does, and stay FPSCR's.
+ */
+static uint32_t (*g_uf_vfop)(uint32_t op, uint32_t a, uint32_t b, uint32_t c,
+                             uint32_t rm, uint32_t *flags);
+static void (*g_uf_fp_flags)(emu_cpu_t *cpu, uint32_t flags);
+
+__attribute__((used, noinline)) uint32_t t2_uf_fix(float fa, float fb, float fc,
+                                                   emu_cpu_t *cpu, uint32_t op);
+__attribute__((used, noinline)) uint32_t t2_uf_fix(float fa, float fb, float fc,
+                                                   emu_cpu_t *cpu, uint32_t op)
+{
+    uint32_t a, b, c, fl = 0u;
+
+    memcpy(&a, &fa, 4u);
+    memcpy(&b, &fb, 4u);
+    memcpy(&c, &fc, 4u);
+
+    const uint32_t r = g_uf_vfop(op, a, b, c, EMU_IR_FRM_RNE, &fl);
+
+    if ((fl & EMU_IR_FE_UNDERFLOW) != 0u) {
+        g_uf_fp_flags(cpu, EMU_IR_FE_UNDERFLOW);
+    }
+    return r;
+}
+
+/*
+ * The result in rd (and s3), its operands in s0-s2: the fix-up at or
+ * below 2^-126, which returns the result into rd again.
+ */
+static void emit_uf_check(uint32_t vf_op, uint32_t rd)
+{
+    uint16_t enc;
+
+    t2_shift_imm(T2_LSL, T2_R12, rd, 1u); /* the sign out */
+    (void)t2_expand_imm(0x01000000u, &enc);
+    t2_cmp_imm(T2_R12, enc);
+
+    uint8_t *const ok = t2_bcond_forward(0x8u); /* HI: above 2^-126 */
+
+    t2_mov(T2_R0, T2_CPU);
+    (void)t2_movs_imm8(T2_R1, vf_op);
+    t2_call((const void *)t2_uf_fix);
+    if (rd != T2_R0) {
+        t2_mov(rd, T2_R0);
+    }
+    patch_branch(ok, emu_jit_here(), true);
+}
+
+/*
  * Hand the flags FPSCR has accumulated to the frontend, and optionally
  * clear them so what follows starts from nothing.
  *
@@ -1132,7 +1193,8 @@ static bool loop_back(uint32_t target_pc)
 static void emit_fp_harvest(const emu_ir_target_t *t, bool reclear)
 {
     t2_vmrs(T2_R0);
-    t2_imm32(T2_R1, 0x1Fu);
+    /* without UFC where UF is computed instead (t2_uf_fix) */
+    t2_imm32(T2_R1, (g_uf_vfop != NULL) ? 0x17u : 0x1Fu);
     t2_and(T2_R0, T2_R0, T2_R1);
     t2_rbit(T2_R0, T2_R0);
     t2_shift_imm(T2_LSR, T2_R1, T2_R0, 27u);
@@ -3424,6 +3486,43 @@ static void lower_vfop(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         default: t2_vsqrt(T2_S0, T2_S1); break; /* SQRT */
         }
     }
+    /*
+     * UF, as for the scalar operations (t2_uf_fix): at or below 2^-126 a
+     * multiply, divide or fused multiply-add is redone in the guest's
+     * arithmetic -- a, b and c reloaded into s0-s2, the loop's registers
+     * kept across the call, and the scalar in s3, which it may clobber.
+     */
+    if (g_uf_vfop != NULL && (op == EMU_IR_VF_MUL || op == EMU_IR_VF_DIV ||
+                              op == EMU_IR_VF_RDIV || EMU_IR_VF_IS_FMA(op))) {
+        const uint32_t keep = 0x0Fu | (1u << T2_R12) | T2_LIST_LR;
+        uint16_t e2;
+
+        t2_vmov_core(T2_S0, T2_LR, true);
+        t2_shift_imm(T2_LSL, T2_LR, T2_LR, 1u); /* the sign out */
+        (void)t2_expand_imm(0x01000000u, &e2);
+        t2_cmp_imm(T2_LR, e2);
+
+        uint8_t *const ok = t2_bcond_forward(0x8u); /* HI: above 2^-126 */
+
+        t2_vldr(T2_S0, T2_R0, o2);
+        if (sb == T2_S3) {
+            t2_vmov_core(T2_S3, T2_LR, true);
+            t2_vmov_core(T2_S1, T2_LR, false);
+        } else {
+            t2_vldr(T2_S1, T2_R0, o1);
+        }
+        t2_vldr(T2_S2, T2_R0, od);
+        t2_push(keep);
+        t2_mov(T2_R0, T2_CPU);
+        (void)t2_movs_imm8(T2_R1, op);
+        t2_call((const void *)t2_uf_fix);
+        t2_vmov_core(T2_S0, T2_R0, false);
+        t2_pop(keep);
+        if (sb == T2_S3) {
+            t2_vmov_core(T2_S3, T2_LR, false);
+        }
+        patch_branch(ok, emu_jit_here(), true);
+    }
     t2_vstr(T2_S0, T2_R0, od);
     if (skip != NULL) {
         patch_branch(skip, emu_jit_here(), true);
@@ -3876,10 +3975,20 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                             : (in->op == (uint8_t)EMU_IR_FDIV) ? T2_VDIV
                                                                : T2_VADD;
 
+        const bool fix = g_uf_vfop != NULL && (in->op == (uint8_t)EMU_IR_FMUL ||
+                                                in->op == (uint8_t)EMU_IR_FDIV);
+
         t2_vmov_core(T2_S0, ra, false);
         t2_vmov_core(T2_S1, rb, false);
-        t2_vfp3(hi, sub, T2_S0, T2_S0, T2_S1);
-        t2_vmov_core(T2_S0, rd, true);
+        if (fix) { /* UF as the guest raises it: g_uf_vfop */
+            t2_vfp3(hi, sub, T2_S3, T2_S0, T2_S1);
+            t2_vmov_core(T2_S3, rd, true);
+            emit_uf_check((in->op == (uint8_t)EMU_IR_FMUL) ? EMU_IR_VF_MUL : EMU_IR_VF_DIV,
+                          rd);
+        } else {
+            t2_vfp3(hi, sub, T2_S0, T2_S0, T2_S1);
+            t2_vmov_core(T2_S0, rd, true);
+        }
         st_slot(rd, in->dst);
         break;
     }
@@ -3925,6 +4034,21 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         const uint16_t hi = neg_add ? T2_VFNMS_VFNMA : T2_VFMA_VFMS;
         const bool sub = neg_mul;
 
+        if (g_uf_vfop != NULL) {
+            /* a, b and c kept in s0-s2 for the UF fix-up, the addend
+             * accumulated in s3 */
+            t2_vmov_core(T2_S0, ra, false);
+            t2_vmov_core(T2_S1, rb, false);
+            t2_vmov_core(T2_S2, rc, false);
+            t2_vmov_core(T2_S3, rc, false);
+            t2_vfp3(hi, sub, T2_S3, T2_S0, T2_S1);
+            t2_vmov_core(T2_S3, rd, true);
+            emit_uf_check(neg_mul ? (neg_add ? EMU_IR_VF_NMACC : EMU_IR_VF_NMSAC)
+                                  : (neg_add ? EMU_IR_VF_MSAC : EMU_IR_VF_MACC),
+                          rd);
+            st_slot(rd, in->dst);
+            break;
+        }
         /* The addend is the accumulator, so it goes to the destination
          * register the instruction reads and writes. */
         t2_vmov_core(T2_S0, rc, false);
@@ -4508,6 +4632,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_has_start_pc = true;
     g_pc_off = t->pc_offset;
     g_pc_pending = false;
+    g_uf_vfop = (t->fp_flags != NULL) ? t->vfop : NULL;
+    g_uf_fp_flags = t->fp_flags;
     pool_reset();
 
     /*

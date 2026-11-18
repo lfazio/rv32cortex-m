@@ -10,14 +10,16 @@
  * after: RISC-V raises NX alone, a before-rounding FPU NX and UF. The
  * first is a single already, tiny either way. Each case prints its
  * result and fflags. The host prints RISC-V's answers on both backends
- * (guest-fpedge, which pins them); the F746 prints them interpreted, and
- * under the JIT -- whose Thumb-2 lowering takes VFP's UFC as it comes --
- * flags 3 for the fifth and sixth cases. docs/TODO.md has why that has
- * no cheap fix.
+ * (guest-fpedge, which pins them), and so do the F746 and the N6, both
+ * backends -- since the Thumb-2 lowering stopped taking UF from VFP's
+ * UFC, which raised it for the fifth and sixth cases (flags 3), and
+ * redoes a multiply, divide or fused multiply-add whose result is at or
+ * below 2^-126 in the guest's arithmetic (t2_uf_fix,
+ * docs/backend/thumb2.md).
  *
  * Built with Zve32f (fpedge-v), it asks the vector unit the same, one
  * element at a time: vfmul.vv, vfmacc.vv onto zero and vfdiv.vv, whose
- * Thumb-2 lowering is the same VFP and so the same deviation.
+ * Thumb-2 lowering is the same VFP and takes the same fix.
  */
 
 #include <stdint.h>

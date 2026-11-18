@@ -286,7 +286,7 @@ static uint32_t rv_vreg_offset(uint32_t n)
 }
 #endif
 
-#if RV_EXT_ZVE32F
+#if RV_EXT_F
 /*
  * EMU_IR_VFOP's element, rv_vf32's arithmetic -- the vector unit's own,
  * held to Spike -- in the IR's operations: the reversed forms swap
@@ -864,9 +864,11 @@ const emu_ir_target_t rv_ir_target = {
 #if RV_EXT_ZVE32X
     .vreg_offset = rv_vreg_offset,
     .vsat_offset = (uint32_t)offsetof(rv_hart_t, vxsat),
-#if RV_EXT_ZVE32F
-    .vfop = rv_ir_vfop,
 #endif
+#if RV_EXT_F
+    /* Zve32f's element; with F alone, a backend's way to redo an
+     * operation in the guest's arithmetic (Thumb-2's UF, ir_lower.c) */
+    .vfop = rv_ir_vfop,
 #endif
     /*
      * No condition flags at all. flags_offset is unused while every

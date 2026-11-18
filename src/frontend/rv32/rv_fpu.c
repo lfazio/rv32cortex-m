@@ -1375,6 +1375,8 @@ static uint32_t f_to_int16(uint32_t a, bool is_signed, uint32_t rm,
     return v & 0xFFFFu;
 }
 
+#endif /* RV_EXT_ZVE32F */
+
 uint32_t rv_vf32(rv_vf_op_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t rm,
                  uint32_t *flags)
 {
@@ -1417,13 +1419,17 @@ uint32_t rv_vf32(rv_vf_op_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t rm,
     case RV_VF_FROM_U32:
         f_begin(rm);
         return f_end(ui32_to_f32(a), flags);
+#if RV_EXT_ZVE32F
     case RV_VF_TO_I16: return f_to_int16(a, true, rm, flags);
     case RV_VF_TO_U16: return f_to_int16(a, false, rm, flags);
     case RV_VF_REC7: return f_rec7(a, rm, flags);
-    default: return f_rsqrt7(a, flags); /* RV_VF_RSQRT7 */
+    case RV_VF_RSQRT7: return f_rsqrt7(a, flags);
+#endif
+    default: return 0u; /* the vector unit's own, without it */
     }
 }
 
+#if RV_EXT_ZVE32F
 uint32_t rv_vf32_reg(const rv_hart_t *h, uint32_t r)
 {
     return fr32(h, r);

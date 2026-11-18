@@ -299,8 +299,8 @@ FMA: NEG_ADD picks `VFNMS`/`VFNMA`, NEG_MUL is `sub`, the addend in s0
 to 33.26 host cycles a guest instruction, the same at a second layout
 ([frontend/rv32-vector.md](../frontend/rv32-vector.md#single-precision-under-the-jit)).
 The corpus replay finds the product's sign inverted, a reversed
-subtract and the mask's sense; the M7's tininess before rounding is the
-scalar FP's difference, shared ([TODO](../TODO.md)).
+subtract and the mask's sense. Underflow is computed as for the scalar
+operations (below).
 
 ### Vector loads and stores
 
@@ -461,6 +461,41 @@ pending. No input looped back into a block that reads the pc before
 writing it, or wrote r15 while a pc was pending; frontends do neither,
 and the IR allows both. Two inputs written for them
 (`tests/fuzz/regressions/ir/lazy-pc-*`) find each.
+
+## Underflow, as RISC-V raises it
+
+VFP detects tininess before rounding and RISC-V after, so a product
+that rounds up to +-2^-126 raised UF under the JIT and not interpreted
+or on the host (`tests/guest/fpedge.c`, flags 3 against 1). Only that
+result can differ, and at it either answer can be right -- 2^-126 -
+2^-150, a tie on the subnormal grid, is tiny after rounding too -- so
+the result alone cannot settle it.
+
+So where the target can redo an operation in the guest's arithmetic
+(its `vfop`, SoftFloat's for RV32, which needs F now and not Zve32f),
+UF is not taken from FPSCR at all: the block's harvest masks UFC out
+(`emit_fp_harvest`), and UF is computed where it can arise. VFP raises
+it only from a multiply, a divide or a fused multiply-add -- a tiny sum
+is exact -- and only with a result of magnitude 2^-126 or less, where
+RISC-V's UF lies too. Each of those three now keeps its operands in
+s0-s2 and its result in s3, compares the result with 2^-126 (shifted
+left one, so the sign drops out, against 0x01000000), and at or below
+it calls `t2_uf_fix` with a, b and c where the hard-float ABI passes
+them: the operation redone, its UF handed to the guest through the
+target's `fp_flags`, the result -- the same either way -- returned. The
+vector element loop does the same, keeping its registers and the
+scalar in s3 across the call. Targets whose guest detects tininess
+before rounding (ARMv7-M, G4MH) set no `vfop` and keep FPSCR's UFC.
+
+The first version read FPSCR before each of the three and rebuilt it
+on the slow path: RV32 Whetstone on the F746 26.05 and 26.15 host
+cycles an instruction to 27.14 and 26.90. Without that read, and with
+the check on the result's core register: **26.67 and 26.72, 2.4% and
+2.2%** -- the price of the exact flag; the module output and the
+retired count unchanged. vfbench 34.45 to 36.16 (5.0%), the check in
+its element loop. fpedge and fpedge-v print the host's flags on the
+F746 and the N6 under the JIT; fptest's five kernels and vecfp are the
+host's; the corpus replay clean.
 
 ## Calling convention
 

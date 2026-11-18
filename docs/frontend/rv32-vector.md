@@ -289,10 +289,12 @@ it has no instructions for (`emu_ir_vfop_call`).
   fifteen operations, the fused ones by `VFMA`, `VFMS`, `VFNMA` and
   `VFNMS` as the scalar FMA picks them; another mode is the helper's.
   An inactive element is skipped, so it raises nothing. VFP detects
-  tininess before rounding, and the vector operations share the scalar
-  ones' difference ([TODO](../TODO.md)): `fpedge-v`'s `vfmul.vv` and
-  `vfmacc.vv` on a product just below 2^-126 raise UF on the F746 under
-  the JIT, NX alone interpreted and on the host.
+  tininess before rounding, so UF is computed instead, as for the
+  scalar operations ([backend/thumb2.md](../backend/thumb2.md#underflow-as-risc-v-raises-it)):
+  `fpedge-v`'s `vfmul.vv` and `vfmacc.vv` on a product just below
+  2^-126 raise NX alone on the F746 under the JIT, as interpreted and
+  on the host. It costs vfbench 5.0% (34.45 to 36.16): the check is in
+  the element loop.
 
 `tests/guest/vfbench.c` -- saxpy, a dot product, arithmetic, a
 normalisation by square root and divide, a clamp, Horner's rule by
