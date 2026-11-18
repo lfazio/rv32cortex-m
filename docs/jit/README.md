@@ -239,8 +239,8 @@ disp32[reg1] and DISPOSE's return; PowerPC's `bclr` and `bcctr`;
 ARMv7-M's interworking BX, POP and LDR pc, and TBB/TBH), and a backend
 sends a chainable block's marked exit, its frame given back as a chained
 exit's is, to a stub of its own: one per core on x86-64, in the memory
-stubs' page; beside `t2_mem_stub` in ITCM on Thumb-2, reached as r11
-plus a constant. The stub hashes the target into a 64-entry table
+stubs' page; beside `t2_mem_stub` in ITCM on Thumb-2, reached through
+a literal (r11 plus a constant until r11 took the RAM window's address). The stub hashes the target into a 64-entry table
 (multiply, top six bits), compares the entry's pc with the target and
 its context with the core's own -- read from the core's state, as the
 dispatcher reads it, so a block that changed its context on the way out

@@ -460,15 +460,28 @@ compactions, 43.3 s by the host against the firmware's 43.9), 58.86 to
 ### What the hot translated code is
 
 A PC profile puts most of a run in translated code, which has no
-symbols. `-DEMU_JIT_DUMP=ON` prints every resident block after the run
--- its guest pc, host address, length and bytes -- and
-`scripts/board-jit-dump.py CAPTURE --guest GUEST.elf` puts the profile's
-samples in the blocks that hold them, ranks the blocks, and prints the
+symbols. `-DEMU_JIT_DUMP=ON` prints every resident block -- its guest
+pc, host address, length and bytes -- after the run and just before
+every compaction and flush, each snapshot tagged with the profile's
+sample count then, and `scripts/board-jit-dump.py CAPTURE --guest
+GUEST.elf` puts each sample in the snapshot taken after it and the
+block there that holds it, ranks the blocks by guest pc, and prints the
 hottest with the guest's instructions beside the host's, each host
-instruction with the samples taken at it. On the N6, where probe-rs
-cannot read the samples, the firmware prints those too
-(`board-pc-profile.py --capture`). Blocks are where they were at the
-end of the run; the script says when the run compacted.
+instruction with the samples taken at it. `--classes` sorts every
+sample in translated code by what its host instruction does -- guest
+register traffic, frame spills, the RAM guard, constants -- over all
+the blocks, and says how much is in blocks that loop on themselves. On
+the N6, where probe-rs cannot read the samples, the firmware prints
+those too (`board-pc-profile.py --capture`).
+
+**A snapshot printed mid-run is sampled too**: at 921600 baud a 96 KB
+buffer takes seconds to print, and the first snapshots took PowerPC's
+whole 8,000-sample budget -- 0.3% of the samples left in translated
+code. The firmware puts the sample count back after printing one.
+
+The first reading of all four frontends' CoreMark, and the five
+changes it led to (13-20% on the three ISAs with flags), are in
+[backend/thumb2.md](backend/thumb2.md#what-the-dumps-found-and-what-came-of-it).
 
 Its first reading, vecbench's scalar checksum loop on the N6: five
 guest instructions an iteration, about thirty host ones -- six storing

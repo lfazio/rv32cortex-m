@@ -118,6 +118,9 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
 ./scripts/ir-board.sh [CORPUS]  # fuzz-ir's corpus through the Thumb-2
                                 # lowering, on the F746: the only fuzzing
                                 # that backend gets
+./scripts/ir-board-mutant.sh FILE OLD NEW [CORPUS]  # break a line of
+                                # that lowering and see whether the
+                                # replay notices; run it from a worktree
 tests/armv7m-diff/run.py ...    # the ARMv7-M frontend against a real M7
 ```
 
@@ -375,6 +378,9 @@ Each has cost more than one session, and every one recurred.
   (`Zicntr-csrrc` failed past 11,000), and a guest that prints the time
   retires more for a longer number: `guest-coremark-v-both` differed by
   15 under `ctest -j16` until its clock read seconds (`--timer-hz`).
+- **A diagnostic printed during a run is sampled with it**: the JIT
+  dump's snapshots took PowerPC's whole PC profile (0.3% left in
+  translated code); the firmware puts the sample count back now.
 - **Two frontends on one program measure their compilers**: PowerPC
   Quake was 63% compiler-rt float until `-mefpu2`. Profile the guest by
   symbol first.
@@ -624,6 +630,12 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   read `compact` before the time. A fast path costing bytes goes out of
   line before it is gated; a flush that arms something may be worth more
   than the thing.
+- **Sort a profile by what each instruction does, across all blocks,
+  before choosing** (`board-jit-dump.py --classes`): the flag ISAs'
+  arithmetic was 26-43% of their translated time, register traffic in
+  self-loops 3-4% of the run -- and a register given to a cache is the
+  allocator's lost: the loop cache, two registers or one in lr, did not
+  pay (`wip/t2-loop-cache`); r11 holding the RAM's address did, 2-4%.
 - **The register-file round trip is the target, not fusion**:
   `lui`+`addi` is 0.2% of CoreMark pairs, dependent pairs 29.6%. Run the
   pair statistics before writing an encoder; an allocator pays only
@@ -1058,7 +1070,10 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   the scratchpad first.
 - **A mutation driver restores whatever its backup was**: take backups in
   the run, give a restored file a new mtime, rebuild before the
-  baseline, and assert the binary was relinked.
+  baseline, and assert the binary was relinked. And restore before
+  printing: piped into `head -1`, `ir-board-mutant.sh` died of SIGPIPE,
+  an EXIT trap does not run on a signal, and nine mutants stacked --
+  rising verdicts, two pairs identical.
 - **Adding a table entry must not replace its neighbour** (IVPR over
   ESR).
 - **A formatter can break a source whose binary is committed** (CC-RH's

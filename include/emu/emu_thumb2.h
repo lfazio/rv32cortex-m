@@ -32,7 +32,7 @@ extern "C" {
 #define T2_R3 3u
 #define T2_CPU 4u
 #define T2_CNT 5u
-#define T2_STUB 11u /* t2_mem_stub, from the block's second argument */
+#define T2_RAMB 11u /* the guest RAM window's host address, when a block has one */
 #define T2_SP 13u
 #define T2_R12 12u
 
@@ -83,6 +83,8 @@ bool t2_ld_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
 bool t2_st_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
                    uint32_t size);
 void t2_cmp_imm(uint32_t rn, uint16_t imm12);
+/* CMN.W rn, #imm: the flags of rn + imm, a compare with -imm. */
+void t2_cmn_imm(uint32_t rn, uint16_t imm12);
 void t2_mov_imm(uint32_t rd, uint16_t imm12);
 void t2_ldrb_imm(uint32_t rt, uint32_t rn, uint32_t off);
 bool t2_sp_adjust(bool sub, uint32_t bytes);
@@ -108,6 +110,12 @@ void t2_sub_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
 void t2_and_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
 void t2_orr_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
 void t2_eor_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+/* Bitfields: extract width bits at lsb; insert rn's low width bits. */
+void t2_ubfx(uint32_t rd, uint32_t rn, uint32_t lsb, uint32_t width);
+void t2_bfi(uint32_t rd, uint32_t rn, uint32_t lsb, uint32_t width);
+/* AND and ORR with the complement: a mask whose inverse encodes. */
+void t2_bic_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_orn_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
 
 /*
  * ADDW/SUBW: a plain unsigned 0..4095, no rotation. Not the same

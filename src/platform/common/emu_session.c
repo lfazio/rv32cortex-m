@@ -240,8 +240,54 @@ void emu_session_poll_uart(void)
     }
 }
 
+#if EMU_JIT_DUMP
+#if defined(EMU_PC_PROFILE) && EMU_PC_PROFILE
+extern volatile uint32_t g_pc_profile_n; /* the tick's sample count */
+#define JIT_DUMP_SAMPLES() ((unsigned)g_pc_profile_n)
+#define JIT_DUMP_SAMPLES_SET(n) (g_pc_profile_n = (n))
+#else
+#define JIT_DUMP_SAMPLES() 0u
+#define JIT_DUMP_SAMPLES_SET(n) ((void)(n))
+#endif
+/*
+ * Every resident block, for scripts/board-jit-dump.py: at the end of the
+ * run and just before every compaction and flush (emu_jit_dump_hook),
+ * each snapshot tagged with the PC profile's sample count, so that a
+ * sample is put in the code that was there when it was taken. The tick
+ * samples the print too, at 921600 baud seconds of it: those samples
+ * are dropped (the count put back), or a 96 KB buffer's snapshot fills
+ * the profile with the UART. A newline first, for a guest's line cut.
+ */
+static void jit_dump_snapshot(void)
+{
+    const unsigned samples = JIT_DUMP_SAMPLES();
+    uint32_t pc;
+    const uint8_t *code;
+    uint32_t len;
+    uint32_t insns;
+
+    emu_console_printf("\njitdump %u\n", samples);
+    for (uint32_t i = 0; emu_jit_block_info(i, &pc, &code, &len, &insns); i++) {
+        if (code == NULL) {
+            continue;
+        }
+        emu_console_printf("block %08x %08x %u %u\n", (unsigned)pc,
+                           (unsigned)(uintptr_t)code, (unsigned)len, (unsigned)insns);
+        for (uint32_t k = 0; k < len; k++) {
+            emu_console_printf("%02x%s", (unsigned)code[k],
+                               (k % 32u == 31u || k + 1u == len) ? "\n" : "");
+        }
+    }
+    emu_console_printf("jitdump-end\n");
+    JIT_DUMP_SAMPLES_SET(samples);
+}
+#endif
+
 bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
 {
+#if EMU_JIT_DUMP
+    emu_jit_dump_hook = jit_dump_snapshot;
+#endif
     const emu_cpu_ops_t *const ops =
         (cfg->ops != NULL) ? cfg->ops : emu_frontend_default();
 
@@ -403,11 +449,12 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
             emu_console_printf(
                 "\n-- ir --\n"
                 "  blocks   %u optimised\n"
-                "  elided   gets %u  puts %u  setpc %u  flags %u  dead %u"
-                "  retire %u\n"
+                "  elided   gets %u (zero %u)  puts %u  setpc %u  flags %u"
+                "  dead %u  retire %u\n"
                 "  fused    const->imm %u  addr %u  identities %u  mac %u\n"
                 "  tail     %u exits\n",
                 (unsigned)o.blocks, (unsigned)o.gets_removed,
+                (unsigned)o.zero_gets,
                 (unsigned)o.puts_removed, (unsigned)o.setpcs_removed,
                 (unsigned)o.flags_removed,
                 (unsigned)o.dead_removed, (unsigned)o.retires_merged,
@@ -430,28 +477,7 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
     }
 
 #if EMU_JIT_DUMP
-    /* Every resident block, for scripts/board-jit-dump.py. */
-    {
-        uint32_t pc;
-        const uint8_t *code;
-        uint32_t len;
-        uint32_t insns;
-
-        emu_console_printf("jitdump\n");
-        for (uint32_t i = 0; emu_jit_block_info(i, &pc, &code, &len, &insns); i++) {
-            if (code == NULL) {
-                continue;
-            }
-            emu_console_printf("block %08x %08x %u %u\n", (unsigned)pc,
-                               (unsigned)(uintptr_t)code, (unsigned)len,
-                               (unsigned)insns);
-            for (uint32_t k = 0; k < len; k++) {
-                emu_console_printf("%02x%s", (unsigned)code[k],
-                                   (k % 32u == 31u || k + 1u == len) ? "\n" : "");
-            }
-        }
-        emu_console_printf("jitdump-end\n");
-    }
+    jit_dump_snapshot(); /* and one before every compaction and flush */
 #endif
 
 #if EMU_JIT_BYTE_STATS

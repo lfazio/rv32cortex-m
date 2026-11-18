@@ -13,7 +13,9 @@
  *   sp   the temp frame; every IR value has exactly one home in it
  *   r0-r3, r12   scratch, and the AAPCS argument registers
  *
- *   r11  t2_mem_stub, the slow path every memory access shares
+ *   r11  the guest RAM window's host address, loaded at a block's
+ *        chain entry when it has the window: each inlined access was a
+ *        literal load of it, then the access through it
  *
  * Every temp has a home in the frame, and r6-r10 -- everything AAPCS
  * makes callee-saved that is not already spoken for -- are handed out on
@@ -24,7 +26,8 @@
  * Five registers where x86-64 has four, and they cost less to save: a
  * whole list goes in one PUSH, so the second and later ones are free
  * where on x86-64 each is its own instruction. r11 was the sixth until
- * the memory stub needed a home, and was the cheapest to give up: on
+ * the memory stub needed a home (it holds the RAM's address now), and
+ * was the cheapest to give up: on
  * x86-64 the same allocator measured 3.6% of CoreMark's emitted code for
  * the first register and 0.6% for the fourth, which says the live sets
  * in these blocks are small -- as they would be at 4.12 guest
@@ -220,6 +223,7 @@ void st_slot(uint32_t rt, uint16_t n)
  */
 static uint32_t use_reg(uint16_t n, uint32_t scratch);
 static uint32_t def_reg(uint16_t n, uint32_t scratch);
+static uint32_t use_reg_b(uint16_t n, uint32_t scratch);
 
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 void ld_operand(uint32_t rt, uint16_t n)
@@ -251,6 +255,82 @@ void ld_operand(uint32_t rt, uint16_t n)
     ld_slot(rt, n);
 }
 
+/*
+ * A constant whose one reader is a compare's right operand (EXIT_IF,
+ * SETCC), and that CMP or CMN takes as an immediate: the compare uses
+ * it in place and the CONST is not emitted. Index + 1 of the CONST, 0
+ * for none. Taken from the IR's `uses`, the count the allocator trusts.
+ *
+ * What it replaces: `movw r8, #0` then `cmp r7, r8` for every RISC-V
+ * beqz/bnez -- a register and an instruction for a constant ARM encodes
+ * in the compare -- in the F746's hottest CoreMark block.
+ */
+static EMU_PER_CORE uint16_t g_kcmp[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE const emu_ir_block_t *g_kcmp_block;
+
+static bool kcmp_reader(const emu_ir_insn_t *in, uint16_t k)
+{
+    if (in->b != k || in->a == k || in->c == k) {
+        return false;
+    }
+    return in->op == (uint8_t)EMU_IR_EXIT_IF ||
+           (in->op == (uint8_t)EMU_IR_SETCC && in->aux != (uint8_t)EMU_IR_C_ALWAYS);
+}
+
+static bool kcmp_encodes(uint32_t v)
+{
+    uint16_t enc;
+
+    return t2_expand_imm(v, &enc) || t2_expand_imm(0u - v, &enc);
+}
+
+static void kcmp_scan(const emu_ir_block_t *b)
+{
+    const uint32_t n = (b->next_temp < EMU_IR_MAX_TEMPS) ? b->next_temp : EMU_IR_MAX_TEMPS;
+
+    g_kcmp_block = b;
+    memset(g_kcmp, 0, n * sizeof(g_kcmp[0]));
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (!in->dead && in->op == (uint8_t)EMU_IR_CONST && in->uses == 1u &&
+            in->dst < n && kcmp_encodes(in->imm)) {
+            g_kcmp[in->dst] = (uint16_t)(i + 1u);
+        }
+    }
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+        const uint16_t ops[3] = {in->a, in->b, in->c};
+
+        if (in->dead) {
+            continue;
+        }
+        for (uint32_t k = 0; k < 3u; k++) {
+            if (ops[k] < n && g_kcmp[ops[k]] != 0u && !kcmp_reader(in, ops[k])) {
+                g_kcmp[ops[k]] = 0u;
+            }
+        }
+    }
+}
+
+/* CMP ra, b -- by immediate where kcmp_scan kept b's constant. */
+static void emit_cmp_operand(uint32_t ra, uint16_t bt, uint32_t scratch)
+{
+    if (bt < EMU_IR_MAX_TEMPS && bt < g_ntemps && g_kcmp[bt] != 0u) {
+        const uint32_t v = g_kcmp_block->insn[g_kcmp[bt] - 1u].imm;
+        uint16_t enc;
+
+        if (t2_expand_imm(v, &enc)) {
+            t2_cmp_imm(ra, enc);
+        } else {
+            (void)t2_expand_imm(0u - v, &enc);
+            t2_cmn_imm(ra, enc);
+        }
+        return;
+    }
+    t2_cmp(ra, use_reg_b(bt, scratch));
+}
+
 static uint32_t use_reg(uint16_t n, uint32_t scratch)
 {
     const int p = phys(n);
@@ -267,6 +347,41 @@ static uint32_t def_reg(uint16_t n, uint32_t scratch)
     const int p = phys(n);
 
     return (p >= 0) ? (uint32_t)p : scratch;
+}
+
+/*
+ * A right operand, which may still be in r0 from the instruction
+ * before: the left one did not go through r0 (it is allocated, or it
+ * went to another register), so nothing has written r0 since. Only
+ * where the lowering reads its operands left then right with nothing
+ * between them (reads_b_after_a). It was a store and an immediate
+ * reload into r1 -- `str r0, [sp, #44]; ldr r1, [sp, #44]` -- all
+ * through ARMv7-M CoreMark's hottest loop, where frame traffic was 20%
+ * of the time in translated code.
+ */
+static uint32_t use_reg_b(uint16_t n, uint32_t scratch)
+{
+    if (g_r0_first && n != EMU_IR_NO_TEMP && n == g_r0_avail && phys(n) < 0) {
+        return T2_R0;
+    }
+    return use_reg(n, scratch);
+}
+
+/* Ops lowered as use_reg(a, r0 or another), then use_reg_b(b). */
+static bool reads_b_after_a(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_ADD:
+    case EMU_IR_SUB:
+    case EMU_IR_AND:
+    case EMU_IR_OR:
+    case EMU_IR_XOR:
+    case EMU_IR_MUL:
+    case EMU_IR_EXIT_IF:
+        return true;
+    default:
+        return false;
+    }
 }
 
 /*
@@ -334,9 +449,8 @@ static EMU_PER_CORE bool g_has_rom;
  * r2, an out-pointer into r3, MOVW/MOVT/BLX to the accessor, and a
  * compare for its verdict -- 22 bytes of a load's 54, on the board where
  * those bytes are the guest's RAM. Now an access says what it is in r2
- * and calls this through r11, which every block takes from its second
- * argument (emu_jit_block_arg) in the prologue, before the chain entry,
- * so a chained block has it from its predecessor.
+ * and calls this through a literal into r12, which it clobbers anyway.
+ * r11 held it until the RAM window's address took the register.
  *
  *   in   r1  the guest address
  *        r2  the spec, with T2_MEM_STORE set for a store
@@ -467,8 +581,8 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    .ltorg\n"
         "    .size t2_mem_stub, . - t2_mem_stub\n"
         /*
-         * The computed exits' stub (emu_jit_ibtc), in the same section so
-         * that a block reaches it as r11 plus a constant. Entered with the
+         * The computed exits' stub (emu_jit_ibtc), reached through a
+         * literal into r12. Entered with the
          * target pc in r0, the core in r4, the count in r5 and the block's
          * frame given back, as a chained exit leaves them; r1-r3 and r12
          * are free. The return is any block's: every block pushes r4-r11
@@ -538,12 +652,10 @@ _Static_assert(offsetof(emu_jit_ibtc_state_t, hits) == 4u &&
                "t2_ibtc_stub's offsets into the state");
 
 /*
- * Whether this block's computed jumps may go to t2_ibtc_stub, and r11's
- * distance to it: only where the push list is the one the stub pops and
- * the distance fits ADDW's twelve bits.
+ * Whether this block's computed jumps may go to t2_ibtc_stub: only where
+ * the push list is the one the stub pops.
  */
 static EMU_PER_CORE bool g_ibtc_ok;
-static EMU_PER_CORE uint32_t g_ibtc_delta;
 static EMU_PER_CORE bool g_ibtc_armed;
 
 /*
@@ -942,7 +1054,9 @@ static void emit_mem_stub(uint32_t spec)
     if (!t2_movs_imm8(T2_R2, spec)) {
         t2_imm32(T2_R2, spec);
     }
-    t2_blx(T2_STUB);
+    /* Through r12, which the stub clobbers anyway: r11 is the RAM's */
+    emit_pooled(T2_R12, (uint32_t)(uintptr_t)t2_mem_stub);
+    t2_blx(T2_R12);
     note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
 }
 
@@ -1745,8 +1859,7 @@ static void setf_flag_bit(uint32_t dst, uint32_t word, const emu_ir_target_t *t,
         t2_imm32(dst, 0u);
         return;
     }
-    t2_shift_imm(T2_LSR, dst, word, (uint32_t)__builtin_ctz(t->flag_bit[f]));
-    t2_and_imm(dst, dst, 1u);
+    t2_ubfx(dst, word, (uint32_t)__builtin_ctz(t->flag_bit[f]), 1u);
 }
 
 static bool setf_wants(const emu_ir_insn_t *in, const emu_ir_target_t *t,
@@ -1789,46 +1902,65 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
     t2_mrs_apsr(SETF_PSR);
 
-    t2_imm32(SETF_ACC, 0u);
+    /*
+     * Into the guest's flag word in place, a run of flags at a time:
+     * read-modify-write, because the word holds more than these four
+     * bits -- G4MH's PSW carries the interrupt-disable and privilege
+     * state, and clobbering those is a control-flow bug. A run is flags
+     * adjacent in the APSR and in the same order in the guest's word,
+     * one UBFX and one BFI: G4MH's Z,S sit as the APSR's Z,N and its
+     * OV,CY as V,C, so all four are two runs. Each flag was LSR, AND,
+     * LSL and ORR, then a MOVW+MOVT mask -- 22 instructions where 5 do.
+     */
+    struct {
+        uint8_t psr, dst, inv;
+    } fl[4];
+    uint32_t n = 0u;
 
-    uint32_t clear = 0u;
-
+    t2_ldr_imm(SETF_ACC, T2_CPU, t->flags_offset);
     for (unsigned f = 0; f < 4u; f++) {
         if (!setf_wants(in, t, f)) {
             continue;
         }
-        clear |= t->flag_bit[f];
-
         if (src == EMU_IR_FS_SHIFT && f == 3u) {
             /*
              * A shift's carry is the bit that left, which the frontend
              * computed and handed over in `b`; the APSR knows nothing
              * about it. Only bit 0 is read.
              */
-            t2_and_imm(SETF_A, SETF_B, 1u);
-        } else {
-            t2_shift_imm(T2_LSR, SETF_A, SETF_PSR, k_psr_bit[f]);
-            t2_and_imm(SETF_A, SETF_A, 1u);
-            if (f == 3u && src == EMU_IR_FS_SUB) {
-                t2_eor_imm(SETF_A, SETF_A, 1u); /* borrow, not carry */
-            }
+            t2_bfi(SETF_ACC, SETF_B, (uint32_t)__builtin_ctz(t->flag_bit[f]), 1u);
+            continue;
         }
-        t2_shift_imm(T2_LSL, SETF_A, SETF_A,
-                     (uint32_t)__builtin_ctz(t->flag_bit[f]));
-        t2_orr(SETF_ACC, SETF_ACC, SETF_A);
-    }
+        fl[n].psr = k_psr_bit[f];
+        fl[n].dst = (uint8_t)__builtin_ctz(t->flag_bit[f]);
+        fl[n].inv = (f == 3u && src == EMU_IR_FS_SUB) ? 1u : 0u; /* borrow */
+        for (uint32_t k = n; k > 0u && fl[k - 1u].psr > fl[k].psr; k--) {
+            const uint8_t p = fl[k].psr, d = fl[k].dst, v = fl[k].inv;
 
-    /*
-     * Read-modify-write, because a guest's flag word holds more than
-     * these four bits -- G4MH's PSW carries the interrupt-disable and
-     * privilege state in the same register, and clobbering those would
-     * be a control-flow bug rather than a wrong arithmetic result.
-     */
-    t2_ldr_imm(SETF_A, T2_CPU, t->flags_offset);
-    t2_imm32(SETF_PSR, ~clear);
-    t2_and(SETF_A, SETF_A, SETF_PSR);
-    t2_orr(SETF_A, SETF_A, SETF_ACC);
-    t2_str_imm(SETF_A, T2_CPU, t->flags_offset);
+            fl[k] = fl[k - 1u];
+            fl[k - 1u].psr = p;
+            fl[k - 1u].dst = d;
+            fl[k - 1u].inv = v;
+        }
+        n++;
+    }
+    for (uint32_t i = 0; i < n;) {
+        uint32_t j = i;
+        uint32_t inv = fl[i].inv;
+
+        while (j + 1u < n && fl[j + 1u].psr == fl[j].psr + 1u &&
+               fl[j + 1u].dst == fl[j].dst + 1u) {
+            j++;
+            inv |= (uint32_t)fl[j].inv << (j - i);
+        }
+        t2_ubfx(SETF_A, SETF_PSR, fl[i].psr, j - i + 1u);
+        if (inv != 0u) {
+            t2_eor_imm(SETF_A, SETF_A, (uint16_t)inv); /* < 16: encodes as itself */
+        }
+        t2_bfi(SETF_ACC, SETF_A, fl[i].dst, j - i + 1u);
+        i = j + 1u;
+    }
+    t2_str_imm(SETF_ACC, T2_CPU, t->flags_offset);
 }
 
 /*
@@ -3591,6 +3723,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
 
     case EMU_IR_CONST: {
+        if (in->dst < g_ntemps && in->dst < EMU_IR_MAX_TEMPS && g_kcmp[in->dst] != 0u) {
+            break; /* its compare takes it as an immediate */
+        }
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_imm32(rd, in->imm);
@@ -3615,7 +3750,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_OR:
     case EMU_IR_XOR: {
         const uint32_t ra = use_reg(in->a, T2_R0);
-        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rb = use_reg_b(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         switch ((emu_ir_op_t)in->op) {
@@ -3713,6 +3848,13 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 t2_eor_imm(rd, ra, i12);
                 break;
             }
+        } else if (in->op == (uint8_t)EMU_IR_ANDI && t2_expand_imm(~v, &i12)) {
+            /* 0xFFFFFFF0, a flags word's mask: BIC #15, not MOVW+MOVT+AND */
+            t2_bic_imm(rd, ra, i12);
+        } else if (in->op == (uint8_t)EMU_IR_ORI && t2_expand_imm(~v, &i12)) {
+            t2_orn_imm(rd, ra, i12);
+        } else if (in->op == (uint8_t)EMU_IR_ADDI && t2_expand_imm(0u - v, &i12)) {
+            t2_sub_imm(rd, ra, i12);
         } else {
             /* No immediate form: materialise and use the register one. */
             const uint32_t rt = (rd == T2_R1) ? T2_R2 : T2_R1;
@@ -3873,10 +4015,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
 
         const uint32_t ra = use_reg(in->a, T2_R1);
-        const uint32_t rb = use_reg(in->b, T2_R2);
 
-        t2_imm32(rd, 0u);
-        t2_cmp(ra, rb);
+        t2_imm32(rd, 0u); /* MOVS sets flags: before the compare */
+        g_r0_first = false; /* rd may be r0: nothing to forward now */
+        emit_cmp_operand(ra, in->b, T2_R2);
         t2_emit16(
             (uint16_t)(0xBF00u | (t2_cond(in->aux) << 4) | 0x8u)); /* IT */
         t2_imm32(rd, 1u);
@@ -4099,7 +4241,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         /*
          * A plain jump through a register goes to the stub, which finds
          * most of them a block to jump to (emu_jit_ibtc): the target in
-         * r0, the frame given back, `ADDW r12, r11, #delta ; BX r12`.
+         * r0, the frame given back, `LDR r12, =t2_ibtc_stub ; BX r12`.
          */
         if (in->op == (uint8_t)EMU_IR_EXIT && !emu_ir_exit_is_const(in) &&
             (in->aux & EMU_IR_EXIT_JUMP) != 0u && emu_jit_layout.chainable &&
@@ -4108,7 +4250,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 t2_mov(T2_R0, rp);
             }
             emit_frame_release(g_frame);
-            t2_addw(T2_R12, T2_STUB, (uint16_t)g_ibtc_delta);
+            emit_pooled(T2_R12, (uint32_t)(uintptr_t)t2_ibtc_stub);
             t2_emit16((uint16_t)(0x4700u | (T2_R12 << 3))); /* BX r12 */
             g_r0_holds = EMU_IR_NO_TEMP;
             break;
@@ -4196,9 +4338,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     case EMU_IR_EXIT_IF: {
         const uint32_t ra = use_reg(in->a, T2_R0);
-        const uint32_t rb = use_reg(in->b, T2_R1);
 
-        t2_cmp(ra, rb);
+        emit_cmp_operand(ra, in->b, T2_R1);
         /* Branch *over* the exit on the inverse condition. */
         uint8_t *const skip = t2_bcond_forward(t2_cond(in->aux) ^ 1u);
         if (!loop_back(in->imm)) { /* which stores the pc only to leave */
@@ -4214,7 +4355,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     case EMU_IR_MUL: {
         const uint32_t ra = use_reg(in->a, T2_R0);
-        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rb = use_reg_b(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_mul(rd, ra, rb);
@@ -4346,8 +4487,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
             const uint32_t rt = (pd >= 0) ? (uint32_t)pd : T2_R0;
 
-            emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
-            if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, k, sz, sign)) {
+            if (t2_ld_reg_lsl(rt, T2_RAMB, T2_R2, k, sz, sign)) {
                 if (pd < 0) {
                     st_slot(T2_R0, in->dst);
                 }
@@ -4458,8 +4598,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
             const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
 
-            emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
-            if (t2_st_reg_lsl(T2_R3, T2_R12, T2_R2, k, sz)) {
+            if (t2_st_reg_lsl(T2_R3, T2_RAMB, T2_R2, k, sz)) {
                 sdone = t2_b_forward_n();
             }
             patch_branch_n(slow[0], emu_jit_here(), true);
@@ -4651,6 +4790,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     (void)emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
     g_nsaved = T2_ALLOC_REGS;
+    kcmp_scan(b);
 
     /*
      * Asked once. Everything FPSCR costs -- saving it, setting the rules
@@ -4685,7 +4825,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         return false;
     }
 
-    uint32_t list = (1u << T2_CPU) | (1u << T2_CNT) | (1u << T2_STUB);
+    uint32_t list = (1u << T2_CPU) | (1u << T2_CNT) | (1u << T2_RAMB);
 
     for (uint32_t i = 0; i < g_nsaved; i++) {
         list |= 1u << t2_alloc_regs[i];
@@ -4698,12 +4838,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * first block that can use it exists.
      */
     {
-        const uintptr_t delta =
-            (uintptr_t)t2_ibtc_stub - (uintptr_t)t2_mem_stub;
-
-        g_ibtc_ok = list == 0x0FF0u && delta < 4096u &&
-                    ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
-        g_ibtc_delta = (uint32_t)delta;
+        g_ibtc_ok = list == 0x0FF0u && ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
         if (g_ibtc_ok && !g_ibtc_armed) {
             g_ibtc_armed = true;
             emu_jit_ibtc_set_miss((const void *)t2_ibtc_miss);
@@ -4739,7 +4874,6 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     t2_push(list | T2_LIST_LR);
     t2_mov(T2_CPU, T2_R0);
-    t2_mov(T2_STUB, T2_R1);
     /* MOVS: the flags are dead on entry to a block. */
     if (!t2_movs_imm8(T2_CNT, 0u)) {
         t2_imm32(T2_CNT, 0u);
@@ -4761,6 +4895,22 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         /* SUB.W sp, sp, r12 -- past the 16-bit form's 508 bytes */
         t2_imm32(T2_R12, frame);
         t2_emit32(0xEBADu, (uint16_t)((13u << 8) | T2_R12));
+    }
+    /*
+     * Past the chain entry, so a predecessor -- which may not have the
+     * window, or not this one -- cannot leave r11 wrong; before the
+     * body, so a back edge does not reload it.
+     */
+    if (g_has_fast) {
+        bool used = false;
+
+        for (uint32_t i = 0; i < b->count && !used; i++) {
+            used = !b->insn[i].dead && (b->insn[i].op == (uint8_t)EMU_IR_LOAD ||
+                                        b->insn[i].op == (uint8_t)EMU_IR_STORE);
+        }
+        if (used) {
+            emit_pooled(T2_RAMB, (uint32_t)(uintptr_t)g_fast.host);
+        }
     }
 
     if (g_has_fp) {
@@ -4819,6 +4969,15 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
             if (j < b->count && b->insn[j].a == b->insn[i].dst &&
                 reads_a_in_r0(b->insn[j].op)) {
                 g_dead_store = b->insn[i].dst;
+            } else if (j < b->count && b->insn[j].b == b->insn[i].dst &&
+                       b->insn[j].a != b->insn[i].dst &&
+                       b->insn[j].c != b->insn[i].dst &&
+                       reads_b_after_a(b->insn[j].op) &&
+                       phys(b->insn[j].a) >= 0 &&
+                       !(b->insn[j].op == (uint8_t)EMU_IR_EXIT_IF &&
+                         b->insn[j].b < EMU_IR_MAX_TEMPS &&
+                         g_kcmp[b->insn[j].b] != 0u)) {
+                g_dead_store = b->insn[i].dst; /* its reader takes r0 */
             }
         }
 

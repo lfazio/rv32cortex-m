@@ -107,6 +107,19 @@ measured at.
 
 ## JIT
 
+- [ ] **The flag ISAs' flags on Thumb-2**, what the dumps leave
+      ([backend/thumb2.md](backend/thumb2.md#what-the-dumps-found-and-what-came-of-it)):
+      arithmetic, mostly flags, was 26-43% of the time ARMv7-M, PowerPC
+      and G4MH CoreMark spend in translated code, and frame spills 19-20%
+      on the first two. PowerPC's `cmpwi` computes LT, GT and EQ as three
+      compares and assembles the CR field, then a `bne` right after
+      extracts EQ again -- one `CMP` and two `IT`-predicated moves make
+      the field, and a branch straight after its compare could branch on
+      the host's flags. ARMv7-M stores four words of lazy flag state at
+      every flag-setting instruction, in loops whose next instruction
+      reads them back. Profile again (`board-jit-dump.py --classes`)
+      before choosing: the shares above are from before the five changes
+      that took 13-20% off these three.
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have. It is inlined on Thumb-2 for RV32
       (2.5-7x on driver code,
@@ -212,14 +225,6 @@ From the last measurements in [linux.md](linux.md).
 
 ## RV32
 
-- [ ] **The scalar loop's register traffic on Thumb-2**: vecbench's
-      checksum loop on the N6 (`board-jit-dump.py`) loads every guest
-      register from the cpu at a self-loop's top and stores each after
-      use -- a cache across the back edge would keep them in r6-r10 --
-      and each load's window check reads two literal-pool words that a
-      block could keep in registers. Not the guest-register cache that
-      lost 15.5% (CLAUDE.md), which was across a whole block; this is a
-      loop's.
 - [ ] **A vector instruction after a declined one is the helper's.**
       The translator lowers a vector instruction only in a block that
       set vtype itself; a declined instruction -- a CSR write, which

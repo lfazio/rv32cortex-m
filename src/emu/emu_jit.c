@@ -889,6 +889,8 @@ static void neg_invalidate(void)
     }
 }
 
+void (*emu_jit_dump_hook)(void);
+
 void emu_jit_flush(void)
 {
 #if EMU_SMP
@@ -896,6 +898,9 @@ void emu_jit_flush(void)
         return; /* this core has translated nothing to discard */
     }
 #endif
+    if (emu_jit_dump_hook != NULL && g_block_count != 0u) {
+        emu_jit_dump_hook();
+    }
     for (uint32_t i = 0; i < EMU_JIT_HASH_SIZE; i++) {
         g_hash[i] = -1;
     }
@@ -1229,6 +1234,10 @@ static void compact(const emu_jit_ops_t *ops)
 #ifdef EMU_JIT_PROFILE
     const uint32_t t0 = prof_now();
 #endif
+
+    if (emu_jit_dump_hook != NULL) {
+        emu_jit_dump_hook();
+    }
 
     if (g_chain_heat) {
         chain_heat();

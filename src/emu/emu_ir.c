@@ -869,7 +869,20 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
 
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_GET:
-            if (in->imm < IR_MAX_GUEST_REGS && !reg_is_zero(t, in->imm)) {
+            if (reg_is_zero(t, in->imm)) {
+                /*
+                 * A constant, so pass_fuse can see it: left a GET, the
+                 * zero was materialised in a register and RV32's c.mv
+                 * (`add rd, x0, rs2`) and every beqz/bnez computed with
+                 * it -- `movw r8, #0` then `cmp r7, r8` in the F746's
+                 * hottest CoreMark block.
+                 */
+                in->op = (uint8_t)EMU_IR_CONST;
+                in->imm = 0u;
+                st->zero_gets++;
+                break;
+            }
+            if (in->imm < IR_MAX_GUEST_REGS) {
                 if (cur[in->imm] != EMU_IR_NO_TEMP) {
                     /* Already in a temp: reuse it instead of reloading. */
                     in->op = (uint8_t)EMU_IR_MOV;
@@ -1969,6 +1982,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.single_use += stats->single_use;
     g_opt_totals.flags_removed += stats->flags_removed;
     g_opt_totals.gets_removed += stats->gets_removed;
+    g_opt_totals.zero_gets += stats->zero_gets;
     g_opt_totals.puts_removed += stats->puts_removed;
     g_opt_totals.setpcs_removed += stats->setpcs_removed;
     g_opt_totals.folded += stats->folded;

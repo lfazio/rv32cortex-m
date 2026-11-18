@@ -765,6 +765,14 @@ void emu_jit_get_stats(emu_jit_stats_t *out);
 bool emu_jit_block_info(uint32_t i, uint32_t *guest_pc, const uint8_t **code,
                         uint32_t *len, uint32_t *insns);
 
+/*
+ * Called, when set, just before a compaction or a flush discards blocks:
+ * EMU_JIT_DUMP's snapshot of what was resident, since a dump at the end
+ * of a run sees only what the last compaction left (PowerPC CoreMark:
+ * 17 blocks of 345 translated).
+ */
+extern void (*emu_jit_dump_hook)(void);
+
 /* For a backend, while translating: a constant exit found no chain slot. */
 void emu_jit_note_no_chain_slot(void);
 

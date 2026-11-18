@@ -79,7 +79,7 @@ restore() {
     fi
     rm -f "$backup"
 }
-trap restore EXIT INT TERM
+trap restore EXIT INT TERM HUP PIPE # a reader's SIGPIPE skips EXIT
 
 python3 - "$FILE" "$OLD" "$NEW" <<'PY'
 import sys

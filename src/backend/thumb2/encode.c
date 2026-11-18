@@ -326,6 +326,26 @@ void t2_orr_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
 {
     t2_dp_imm(0xF040u, rd, rn, imm12);
 }
+/* UBFX rd, rn, #lsb, #width and BFI rd, rn, #lsb, #width (T1 each). */
+void t2_ubfx(uint32_t rd, uint32_t rn, uint32_t lsb, uint32_t width)
+{
+    t2_emit32((uint16_t)(0xF3C0u | rn),
+              (uint16_t)(((lsb >> 2) << 12) | (rd << 8) | ((lsb & 3u) << 6) | (width - 1u)));
+}
+void t2_bfi(uint32_t rd, uint32_t rn, uint32_t lsb, uint32_t width)
+{
+    t2_emit32((uint16_t)(0xF360u | rn),
+              (uint16_t)(((lsb >> 2) << 12) | (rd << 8) | ((lsb & 3u) << 6) |
+                         (lsb + width - 1u)));
+}
+void t2_bic_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF020u, rd, rn, imm12);
+}
+void t2_orn_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF060u, rd, rn, imm12);
+}
 void t2_eor_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
 {
     t2_dp_imm(0xF080u, rd, rn, imm12);
@@ -455,6 +475,11 @@ void t2_mov_imm(uint32_t rd, uint16_t imm12)
 void t2_cmp_imm(uint32_t rn, uint16_t imm12)
 {
     t2_dp_imm(0xF1B0u, 15u, rn, imm12);
+}
+
+void t2_cmn_imm(uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF110u, 15u, rn, imm12);
 }
 
 /*

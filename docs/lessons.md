@@ -5188,6 +5188,54 @@ session, and every one of them recurred:
   mutant reading the addend from vs2 passed. Run for all fifteen, it
   fails at once.
 
+- **A diagnostic printed during a run is sampled with the run.** The
+  JIT dump's snapshots, printed before each compaction so that a sample
+  could be put in the code it was taken in, took seconds each at 921600
+  baud, and the tick went on sampling: PowerPC's 8,000 samples came back
+  0.3% in translated code, G4MH's 0.0%, most of them the UART's wait.
+  The figures looked like a finding -- a JIT that hardly runs its own
+  code. The firmware puts the sample count back after a snapshot now.
+  **Before reading a profile, ask what else the core was doing while it
+  was taken -- the instrument's own printing first.**
+
+- **Sort the profile by what each instruction does before choosing
+  what to build.** The proposal was a loop-scoped register cache and
+  the RAM window's address in a register, from one vecbench loop. The
+  same dump over all four frontends' CoreMark, every sample put in a
+  kind -- guest register traffic, spills, guard, constants, arithmetic
+  -- put register traffic in self-looping blocks at 3-4% of the run and
+  the flag ISAs' arithmetic, mostly building flags, at 26-43% of the
+  time in translated code. Five small changes it pointed at took 4-20%;
+  the cache, built anyway and measured two ways, was a loss on PowerPC
+  and at most 1.3% elsewhere, and is not kept. **One hot block shows
+  what is possible; the share by kind across all of them says what is
+  worth it.**
+
+- **A register given to a cache is taken from the allocator.** The
+  loop cache in the top two of the five allocator registers broke even
+  on RV32 and cost ARMv7-M 3.6% and PowerPC 2.5%, whose blocks already
+  spill (20% of their translated time in frame traffic). Given lr
+  instead, which the allocator never has, it cost the temps nothing and
+  still lost on PowerPC: its cached loops run few iterations an entry,
+  and pay a load before and a store after for little between. r11 went
+  the other way: given back to the allocator it was worth 0-2%, holding
+  the RAM window's address 2.2-3.8%. **Price a register by the best
+  other use of it, measured.**
+
+- **A driver killed by its reader never runs its EXIT trap.** The first
+  `ir-board-mutant.sh` printed its verdict, then a second line, and
+  restored the source from an `EXIT` trap. Its caller read the verdict
+  with `| head -1`, which closed the pipe; the driver died of SIGPIPE at
+  the second line, and a shell does not run an EXIT trap on a death by
+  an untrapped signal. Nine mutants of the Thumb-2 lowering stacked in
+  one file over ninety minutes of board time, and the verdicts read
+  well: 1,201 inputs different, then 1,220, 1,336, 1,336, 1,346... Two
+  pairs identical was the tell -- the existing rule, identical counters
+  mean the code never ran -- and a diff of the worktree showed all nine
+  edits. The driver restores before it prints now, and traps HUP and
+  PIPE as well. **Do the irreversible-if-skipped step before anything
+  that can fail on the way out.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

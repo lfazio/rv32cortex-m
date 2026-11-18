@@ -68,6 +68,14 @@ ldr.w   r5, [r12, r2, lsl #2]
 ldrh.w  r5, [r12, r2, lsl #1]
 str.w   r3, [r12, r2, lsl #2]
 cmp.w   r2, #41984
+cmn.w   r9, #1
+cmn.w   r12, #0x00FF00FF
+bic.w   r0, r9, #15
+orn     r12, r3, #0xFF000000
+ubfx    r9, r12, #30, #2
+ubfx    r0, r12, #0, #1
+bfi     r3, r0, #2, #2
+bfi     r10, r1, #31, #1
 sub     sp, #40
 add     sp, #40
 add     r3, sp, #1020
@@ -309,7 +317,19 @@ int main(void)
 
         (void)t2_expand_imm(0xA400u, &enc);
         t2_cmp_imm(2u, enc);
+        (void)t2_expand_imm(1u, &enc);
+        t2_cmn_imm(9u, enc); /* a compare with -1 */
+        (void)t2_expand_imm(0x00FF00FFu, &enc);
+        t2_cmn_imm(12u, enc);
+        (void)t2_expand_imm(15u, &enc);
+        t2_bic_imm(0u, 9u, enc);
+        (void)t2_expand_imm(0xFF000000u, &enc);
+        t2_orn_imm(12u, 3u, enc);
     }
+    t2_ubfx(9u, 12u, 30u, 2u);
+    t2_ubfx(0u, 12u, 0u, 1u);
+    t2_bfi(3u, 0u, 2u, 2u);
+    t2_bfi(10u, 1u, 31u, 1u);
     (void)t2_sp_adjust(true, 40u);
     (void)t2_sp_adjust(false, 40u);
     (void)t2_add_sp_imm(3u, 1020u);

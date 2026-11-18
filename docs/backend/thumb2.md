@@ -61,7 +61,8 @@ the run's own report.
 |---|---|
 | `r4` | the `emu_cpu_t` pointer, callee-saved so it survives a helper |
 | `r5` | the retired count the block returns |
-| `r11` | `t2_mem_stub`, the slow path every load and store shares -- and, `ADDW r12, r11, #delta` away in the same ITCM section, `t2_ibtc_stub`, where a marked computed exit goes ([jit/README.md](../jit/README.md#computed-jumps-the-stub-emu_jit_ibtc)); it returns with `pop {r4-r11, pc}`, which is why every block's save set is the same, and `emu_ir_lower` checks it before sending an exit there |
+| `r11` | the guest-RAM window's host address, loaded at the chain entry of a block with an inlined access ([below](#the-ram-windows-address-in-r11)) |
+| (literals) | `t2_mem_stub`, the slow path every load and store shares, and `t2_ibtc_stub`, where a marked computed exit goes ([jit/README.md](../jit/README.md#computed-jumps-the-stub-emu_jit_ibtc)), each `LDR r12, =stub` then `BLX`/`BX r12`; the IBTC stub returns with `pop {r4-r11, pc}`, which is why every block's save set is the same, and `emu_ir_lower` checks it before sending an exit there |
 | `sp` | the temp frame: every IR value has a home in it |
 | `r0`–`r3`, `r12` | scratch, and the AAPCS argument registers |
 | `r6`–`r10` | handed out by `emu_ir_regalloc`, on top of the frame |
@@ -768,11 +769,13 @@ section, reached by `BLX r11`: an access puts its spec in r2 (bit 7 for
 a store), calls, and takes the exit on `NE`; the stub returns a load's
 value in r0, which is where the inlined path leaves it too, so the
 dead-store rule now holds across a load as it does for anything else.
-r11 comes from the block's second argument (`emu_jit_block_arg`) in a
+r11 came from the block's second argument (`emu_jit_block_arg`) in a
 `MOV` before the chain entry -- two bytes a block, inherited by a
-chained one -- and is the allocator's sixth register given up; on
+chained one -- and was the allocator's sixth register given up; on
 x86-64 the fourth was already worth only 0.6%, and the 32 KB figures
-below include the loss.
+below include the loss. Since 2026-11-18 the call is `LDR r12, =stub`
+and `BLX r12`, and r11 holds the RAM window's address
+([below](#the-ram-windows-address-in-r11)).
 
 x650 against a worktree at the commit before, under two function
 layouts, because 7% is inside what layout alone does on this part:
@@ -939,6 +942,125 @@ twice the evictions, twice the pcs given up on -- is open
 
 The scan adds a field to each block entry, which the 72-byte assertion
 allows in a stats build only: the build measures bytes, not time.
+
+## What the dumps found, and what came of it
+
+`-DEMU_JIT_DUMP=ON` and `scripts/board-jit-dump.py --classes`
+([../performance.md](../performance.md#what-the-hot-translated-code-is))
+sorted every sample CoreMark spent in translated code on the F746 by
+what the host instruction was doing. Four frontends, 2026-11-18, as a
+share of the time in translated code:
+
+| | RV32 | ARMv7-M | PowerPC | G4MH |
+|---|---|---|---|---|
+| in translated code, of the run | 65% | 72% | 78% | 66% |
+| guest register loads and stores | 18% | 16% | 10% | 8% |
+| frame loads and stores (spills) | 9% | 20% | 19% | 3% |
+| the RAM window's guard | 12% | 8% | 6% | 6% |
+| constants (`MOVW`/`MOVT`) | 11% | 11% | 8% | 14% |
+| everything else, mostly arithmetic | 14% | 26% | 38% | 43% |
+
+and the code behind the shares, read block by block:
+
+- **A zero register was a register.** RV32's `c.mv` is `add rd, x0,
+  rs2` and its `bnez` compares with x0; the GET of x0 was lowered to
+  `MOVW rd, #0`, so `x + 0` was an add and every branch on zero a
+  compare of two registers. `pass_reg_traffic` makes it a `CONST` now
+  (`zero` in the `-- ir --` line), which `pass_fuse` folds.
+- **A compare with a constant took a register for it** -- spilled to the
+  frame and reloaded, in ARMv7-M's loop. A `CONST` whose one reader is
+  an `EXIT_IF`'s or `SETCC`'s right operand, and that `CMP` or `CMN`
+  encodes, is not emitted; the compare takes it (`kcmp_scan`).
+- **A value in r0 reached only a left operand.** `str r0, [sp, #44]`
+  then `ldr r1, [sp, #44]` ran all through ARMv7-M's and PowerPC's hot
+  loops: the reload elision handed r0 to the next instruction's left
+  operand only. `use_reg_b` hands it to the right one where the left did
+  not go through r0, and the store is skipped where that reader is the
+  only one (`reads_b_after_a`).
+- **A mask whose complement encodes was materialised**: `0xFFFFFFF0`,
+  every flag word's and PowerPC CR field's, was `MOVW`+`MOVT`+`AND`; it
+  is `BIC #15` now, as `ORN` and `SUB` take an `ORI`'s and an `ADDI`'s.
+- **G4MH's flags were built a bit at a time**: four flags, each `LSR`,
+  `AND`, `LSL`, `ORR`, then the mask -- 22 instructions. A run of flags
+  adjacent in the APSR and in the same order in the guest's word is one
+  `UBFX` and one `BFI` straight into the loaded word: Z,S sit as the
+  APSR's Z,N and OV,CY as V,C, so two runs, five instructions with the
+  borrow's `EOR`. A condition is read with one `UBFX`.
+
+CoreMark under the JIT on the F746, host cycles per guest instruction,
+against the commit before (d488572), both layouts, retired counts and
+CRCs equal:
+
+| | before | after | |
+|---|---|---|---|
+| RV32 | 10.26 | 9.86 | -3.9% |
+| ARMv7-M | 13.40 | 11.82 | -11.8% |
+| PowerPC | 17.69 | 14.11 | -20.2% |
+| G4MH | 18.74 | 15.74 | -16.0% |
+
+What is left is mostly the flag ISAs' flags: PowerPC's `cmpwi` still
+computes LT, GT and EQ as three compares and assembles the CR field
+before a `bne` takes it apart again, and ARMv7-M stores four words of
+lazy flag state at every flag-setting instruction ([TODO.md](../TODO.md)).
+
+### The RAM window's address in r11
+
+Every inlined access loaded the window's host address from the literal
+pool -- `LDR ip, [pc, #...]` -- and then accessed through it. It lives in
+r11 now, loaded once at the chain entry of a block with an inlined
+`LOAD` or `STORE`: past the entry a predecessor jumps to, so whatever it
+left in r11 does not matter, and before the body, so a back edge does
+not reload it. r11 held `t2_mem_stub` before; the stub and the IBTC's
+are reached through a literal into r12, on the slow path and at a
+computed exit, where the add from r11 was.
+
+r11 could instead go back to the allocator, its sixth register. Both
+were measured against the tree above:
+
+| | above | r11 the RAM's | r11 allocated |
+|---|---|---|---|
+| RV32 | 9.86 | 9.49 (-3.8%) | 9.69 (-1.7%) |
+| ARMv7-M | 11.82 | 11.45 (-3.1%) | 11.59 (-2.0%) |
+| PowerPC | 14.11 | 13.68 (-3.1%) | 13.81 (-2.1%) |
+| G4MH | 15.74 | 15.40 (-2.2%) | 15.76 (+0.1%) |
+
+On the N6's M55 the two together, against the same commit before:
+RV32 CoreMark 13.74 to 12.71 (-7.5%, -7.9% at the other layout), G4MH
+25.26 to 19.67 (-22.1%, -22.5%), retired counts and CRCs equal.
+
+### A loop's guest registers in host ones: measured, not kept
+
+Not the whole-block register cache above, which lost 15.5%: a block
+that branches back to its own start keeps its most used guest registers
+in host registers for the loop -- loaded once before the body, read and
+written as registers, written back at every exit, before a memory
+access's slow path (whose accessor may enter an exception, which reads
+them) and nowhere on a trap's way out, where the exception entry may
+have written one itself (ARMv7-M's sp and lr). Blocks that call a
+helper or touch the FP unit were left alone. The dumps had put its
+ceiling low: only 14-33% of the time in translated code is in blocks
+that loop on themselves, and guest register traffic there was 3-4% of
+CoreMark's run.
+
+Correct by the board's replay of the fuzz-ir corpus and by every
+CoreMark's retired count and CRC, and on every frontend reached
+(`loops N blocks` in the `-- ir --` report: 42 ARMv7-M blocks, 25 RV32,
+14 PowerPC, 2 G4MH). Against the tree with r11 the RAM's:
+
+| | r11 the RAM's | two cached, from the allocator | one cached, in lr |
+|---|---|---|---|
+| RV32 | 9.49 | 9.49 (0.0%) | 9.36 (-1.3%) |
+| ARMv7-M | 11.45 | 11.87 (+3.6%) | 11.41 (-0.4%) |
+| PowerPC | 13.68 | 14.03 (+2.5%) | 13.94 (+1.9%) |
+| G4MH | 15.40 | 15.46 (+0.4%) | 15.44 (+0.3%) |
+
+Two registers taken from the five the allocator has cost more spills
+than they saved loads. One in lr costs the temps nothing -- lr is free
+in a block's body except in the vector and FP lowerings, which such a
+block does not have, and is reloaded after a slow path's call -- and
+is still a loss on PowerPC, whose cached loops run few iterations an
+entry and pay the load before and the store after for little between.
+Kept on `wip/t2-loop-cache`.
 
 ## The guest-RAM window
 

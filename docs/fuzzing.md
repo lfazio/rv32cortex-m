@@ -533,6 +533,19 @@ the generator's byte layout and checked with `FUZZ_SHOW=1`,
 `regressions/ir/lazy-pc-loop-back` and `lazy-pc-put-r15` each find
 their mutant on the board.
 
+**Mutants of the lowering, one at a time** (`scripts/ir-board-mutant.sh
+FILE OLD NEW`, from a worktree): ten of the changes the dumps led to
+(2026-11-18) -- G4MH's flags without the borrow (149 inputs different)
+or with runs merged across the guest's order (1,106), CMN taken as CMP
+(21), r0 forwarded after it was overwritten (141) or its store skipped
+when the left operand used it (108), BIC's mask as AND's (11), SETCC
+forwarding r0 after zeroing it (25), ORN's as ORR's (30), a load through
+the wrong base register (a fault) -- and one not found: an ADDI by a
+negative constant beyond ADDW's 4,095 lowered as SUB of the negation,
+which no corpus input holds. The driver's first version stacked nine
+mutants in one file (docs/lessons.md); it restores before it prints
+now.
+
 
 ## Translation and protection: RV32
 
