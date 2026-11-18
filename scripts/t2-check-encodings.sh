@@ -222,6 +222,17 @@ vminv.s8  r0, q0
 vminv.u32 r2, q0
 vmaxv.s32 r0, q3
 vmaxv.u16 r0, q0
+vldrb.s16 q0, [r1, #8]
+vldrb.u16 q1, [r2, #0]
+vldrb.s16 q1, [r7, #120]
+vldrh.s32 q0, [r1, #8]
+vldrh.u32 q3, [r2, #120]
+vstrh.32  q2, [r1, #120]
+vstrb.16  q1, [r7, #120]
+vrshl.s32 q0, q0, q1
+vrshl.u16 q2, q3, q1
+vcmp.i32  ne, q0, q1
+vcmp.i16  ne, q2, q3
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -496,6 +507,17 @@ int main(void)
     t2_vredv(T2_MVE_VMINV_HI, T2_MVE_VMINV_LO, 2u, true, 2u, 0u);
     t2_vredv(T2_MVE_VMAXV_HI, T2_MVE_VMAXV_LO, 2u, false, 0u, 3u);
     t2_vredv(T2_MVE_VMAXV_HI, T2_MVE_VMAXV_LO, 1u, true, 0u, 0u);
+    t2_vldr_widen(0u, true, 0u, 1u, 8u);
+    t2_vldr_widen(0u, false, 1u, 2u, 0u);
+    t2_vldr_widen(0u, true, 1u, 7u, 120u);
+    t2_vldr_widen(1u, true, 0u, 1u, 8u);
+    t2_vldr_widen(1u, false, 3u, 2u, 120u);
+    t2_vstr_narrow(1u, 2u, 1u, 120u);
+    t2_vstr_narrow(0u, 1u, 7u, 120u);
+    t2_mve3(T2_MVE_VRSHL_HI | T2_MVE_SZ(2), T2_MVE_VRSHL_LO, 0u, 1u, 0u);
+    t2_mve3(T2_MVE_VRSHL_HI | T2_MVE_U | T2_MVE_SZ(1), T2_MVE_VRSHL_LO, 2u, 1u, 3u);
+    t2_vcmp_ne(2u, 0u, 1u);
+    t2_vcmp_ne(1u, 2u, 3u);
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);
     }

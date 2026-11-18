@@ -683,7 +683,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   boundary values tested.** A register that does not fit the 16-bit form
   (`CMP r8` became `CMP r0`), a hand-built ModRM (`r12` became `esp`),
   `imm5 == 0` (LSR/ASR #0 mean #32, ROR #0 is RRX), a VFP register's low
-  bit (`t2_vfp3` put D in `sub`; odd registers in every field now). Register parameters go
+  bit (`t2_vfp3` put D in `sub`; odd registers in every field now). And
+  an encoder that refuses a register emits nothing: never `(void)` its
+  answer (`t2_movs_imm8(T2_LR, 0)` left lr, and vxsat, as they were). Register parameters go
   through `encode.c`/`emit_cmp_hi`.
 - **`MOVS` writes N and Z**: set the false value before the compare.
 - **Branch range is a silent cliff**: pick the encoding by reach

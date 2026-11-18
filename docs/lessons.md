@@ -5159,6 +5159,17 @@ session, and every one of them recurred:
   a mutant that changes the lines it should, each line its own
   checksum.**
 
+- **An encoder that refuses says so in a return value, and `(void)`
+  makes the refusal silent.** `t2_movs_imm8` encodes MOVS's 16-bit form,
+  which has no lr; it returns false for one and emits nothing. The MVE
+  narrowing clip zeroed its saturation accumulator, lr, through it and
+  cast the answer away, so lr kept whatever it held and vxsat was set by
+  it. The N6's first run of `vecops` differed in exactly the e16 lines
+  under rnu and rdn -- the 8-bit ones passed -- and the code read right.
+  This file's third register that does not fit a form (`CMP r8` was the
+  first). **Never discard an encoder's "could not": use the form that
+  takes every register, or check.**
+
 - **A reference checked only where the lowering runs is checked only
   there.** `test_lower_vfop` compared the interpreter's reference with
   a reading of its own only for the operations x86-64 lowers in SSE,

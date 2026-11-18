@@ -264,6 +264,9 @@ void t2_vsqrt(uint32_t sd, uint32_t sm);
 #define T2_MVE_VRHADD_LO 0x0140u
 #define T2_MVE_VHADD_HI 0xEF00u
 #define T2_MVE_VHADD_LO 0x0040u
+/* VRSHL.S/U: VSHL's operands (t2_mve3(hi, lo, qd, qshift, qval)), rounding */
+#define T2_MVE_VRSHL_HI 0xEF00u
+#define T2_MVE_VRSHL_LO 0x0540u
 /* the across-vector reductions, for t2_vredv */
 #define T2_MVE_VADDVA_HI 0xEEF1u
 #define T2_MVE_VADDVA_LO 0x0F20u
@@ -285,6 +288,9 @@ void t2_vdup(uint32_t sew, uint32_t qd, uint32_t rt);
 void t2_usat(uint32_t rd, uint32_t sat, uint32_t rn);
 void t2_vctp(uint32_t sew, uint32_t rn);
 void t2_vpst(void);
+void t2_vldr_widen(uint32_t sew, bool sign, uint32_t qd, uint32_t rn, uint32_t off);
+void t2_vstr_narrow(uint32_t sew, uint32_t qd, uint32_t rn, uint32_t off);
+void t2_vcmp_ne(uint32_t sew, uint32_t qn, uint32_t qm);
 void t2_vredv(uint16_t hi, uint16_t lo, uint32_t sew, bool u, uint32_t rda,
               uint32_t qm);
 void t2_vmsr_p0(uint32_t rt);

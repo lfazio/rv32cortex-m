@@ -379,11 +379,48 @@ signed widening sum made unsigned the 24 at e8 and e16, and the
 reversed subtract, the tail window, a right shift not negated, the
 store copy's register and the signed minimum each all 36. The N6 then
 translated 3,529 blocks and interpreted 5.1M of 95.5M instructions.
+**When vl fills the group there is no tail to keep**, which is every
+trip of a strip-mined loop but its last: one compare sets Z, and each
+register's blend -- vd's old value, the window's mask and three logic
+operations, five instructions of nine -- is branched over on it, MVE's
+operations writing no flags. vecbench 20.41 to 19.83 at both layouts.
+Deciding "full" four bytes early is found, in the 12 lines whose vl
+falls one 32-bit element short.
+
+**The widening multiply-adds and the narrowing shifts and clips** go
+through the register file's memory, which MVE's widening loads and
+narrowing stores read and write element for element in order:
+`VLDRB.<S|U>16` and `VLDRH.<S|U>32` take 8 bytes of a source group to a
+register of the wide width, and `VSTRB.16`/`VSTRH.32` store a wide
+register's low halves -- where `VMULLB`/`VMULLT` and the narrowing
+shifts work on even and odd lanes, not RISC-V's order. A widening
+multiply-add is then `VMUL` and `VADD` at the wide width a register of
+vd at a time, with the tail kept as above; a narrowing one shifts a
+register of vs2 at the wide width (`VSHL` by the negated count, or
+`VRSHL`, which rounds half up, for a clip under rnu), clamps a clip
+with `VMIN`/`VMAX`, finds its saturated active lanes by comparing with
+the unclamped value (`VCMP` into P0, ANDed with `VCTP`'s), and stores
+the active elements by a predicated narrowing store. From and to 8 and
+16 bits, every form; the clips under rnu and rdn, the DSP path keeping
+rne and rod where it has them. vecbench 19.83 to 18.72 and 18.69; dot
+13.5M cycles to 11.5M, clip 16.9M to 13.9M. Since the first MVE
+lowering, 25.02 to 18.72: 25% fewer cycles.
+
+The first board run of it differed in the e16 lines under rnu and rdn
+alone: `t2_movs_imm8(T2_LR, 0)` -- the accumulator of saturated lanes,
+zeroed -- emitted nothing, since MOVS's 16-bit form has no lr and the
+encoder says so by returning false, which `(void)` threw away. lr kept
+what it held, and vxsat read it as set. The 8-bit lines passed, so this
+is the file's own trap a third time: an encoder whose refusal is not an
+error. Four mutants of the new paths are each found: saturation never
+recorded, the signed clip's maximum one low, `vwmaccsu`'s vs1 unsigned,
+the count masked to the narrow width.
+
 Not yet in MVE: the masked single-width operations (`VPSEL` on the same
-P0), widening and narrowing, and the vector FP -- which MVE computes
-flushing subnormals to zero whatever FPSCR says (`vfmul` of
-0x3F7FFFFF and 0x00800000 gave 0 and UF), and which was at most 5.6%
-of vfbench even without the guard that would need ([TODO](../TODO.md)).
+P0), and the vector FP -- which MVE computes flushing subnormals to
+zero whatever FPSCR says (`vfmul` of 0x3F7FFFFF and 0x00800000 gave 0
+and UF), and which was at most 5.6% of vfbench even without the guard
+that would need ([TODO](../TODO.md)).
 
 ## Calling convention
 

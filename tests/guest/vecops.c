@@ -8,8 +8,10 @@
  * 41 operations -- vadd, vsub, vrsub, vand, vor, vxor, vminu, vmin,
  * vmaxu, vmax, vmul, vsll, vsrl, vsra, vmv, vaaddu, vaadd and the four
  * multiply-adds, .vv and .vx -- then the eight single-width reductions
- * plain and under v0, the two widening sums at e8 and e16, and masked
- * forms and vmerge, v0 random bytes each case: at e8, e16 and e32 and m1, m2 and m8,
+ * plain and under v0, the two widening sums at e8 and e16, masked forms
+ * and vmerge, v0 random bytes each case, and at e8 and e16 under m1 and
+ * m2 the widening multiply-adds and the narrowing shifts and clips, with
+ * vxsat folded after each case: at e8, e16 and e32 and m1, m2 and m8,
  * under each vxrm, with vl 0, 1, past a register's middle, one short of
  * the group, the group, and an AVL past it; the scalars at their edges
  * (0, -1, the sign bits, shift counts past the width). Tail undisturbed:
@@ -179,6 +181,27 @@ static uint8_t g_d0[128] __attribute__((aligned(16)));
     X(vt, "vwredsum.vs v24, v8, v16, v0.t")
 #define NOPS_W 4u
 
+/* Widening and narrowing, where both groups exist: e8 and e16 at m1, m2. */
+#define OPS_WN(X, vt)                                                          \
+    X(vt, "vwmaccu.vv v24, v16, v8")                                           \
+    X(vt, "vwmaccu.vx v24, %[s], v8")                                          \
+    X(vt, "vwmacc.vv v24, v16, v8")                                            \
+    X(vt, "vwmacc.vx v24, %[s], v8")                                           \
+    X(vt, "vwmaccsu.vv v24, v16, v8")                                          \
+    X(vt, "vwmaccsu.vx v24, %[s], v8")                                         \
+    X(vt, "vwmaccus.vx v24, %[s], v8")                                         \
+    X(vt, "vwmacc.vv v24, v16, v8, v0.t")                                      \
+    X(vt, "vnsrl.wv v24, v8, v16")                                             \
+    X(vt, "vnsrl.wx v24, v8, %[s]")                                            \
+    X(vt, "vnsra.wv v24, v8, v16")                                             \
+    X(vt, "vnsra.wx v24, v8, %[s]")                                            \
+    X(vt, "vnclipu.wv v24, v8, v16")                                           \
+    X(vt, "vnclipu.wx v24, v8, %[s]")                                          \
+    X(vt, "vnclip.wv v24, v8, v16")                                            \
+    X(vt, "vnclip.wx v24, v8, %[s]")                                           \
+    X(vt, "vnclip.wx v24, v8, %[s], v0.t")
+#define NOPS_WN 17u
+
 /* Past EMU_JIT_HOT_THRESHOLD (8): every case translated at least once. */
 #define REPS 10u
 
@@ -204,11 +227,21 @@ static uint8_t g_d0[128] __attribute__((aligned(16)));
         OPS_W(CASE, vt)                                                        \
     }
 
-FN_W(op_e8m1, "e8, m1, tu, mu")
-FN_W(op_e8m2, "e8, m2, tu, mu")
+#define FN_WN(name, vt)                                                        \
+    static void name(unsigned op, size_t avl, uint32_t sc)                     \
+    {                                                                          \
+        unsigned k = 0;                                                        \
+                                                                               \
+        OPS(CASE, vt)                                                          \
+        OPS_W(CASE, vt)                                                        \
+        OPS_WN(CASE, vt)                                                       \
+    }
+
+FN_WN(op_e8m1, "e8, m1, tu, mu")
+FN_WN(op_e8m2, "e8, m2, tu, mu")
 FN_W(op_e8m8, "e8, m8, tu, mu")
-FN_W(op_e16m1, "e16, m1, tu, mu")
-FN_W(op_e16m2, "e16, m2, tu, mu")
+FN_WN(op_e16m1, "e16, m1, tu, mu")
+FN_WN(op_e16m2, "e16, m2, tu, mu")
 FN_W(op_e16m8, "e16, m8, tu, mu")
 FN(op_e32m1, "e32, m1, tu, mu")
 FN(op_e32m2, "e32, m2, tu, mu")
@@ -220,9 +253,12 @@ static const struct {
     uint32_t lanes;
     unsigned nops;
 } k_fns[] = {
-    {op_e8m1, "e8m1", 16u, NOPS + NOPS_W},   {op_e8m2, "e8m2", 32u, NOPS + NOPS_W},
-    {op_e8m8, "e8m8", 128u, NOPS + NOPS_W},  {op_e16m1, "e16m1", 8u, NOPS + NOPS_W},
-    {op_e16m2, "e16m2", 16u, NOPS + NOPS_W}, {op_e16m8, "e16m8", 64u, NOPS + NOPS_W},
+    {op_e8m1, "e8m1", 16u, NOPS + NOPS_W + NOPS_WN},
+    {op_e8m2, "e8m2", 32u, NOPS + NOPS_W + NOPS_WN},
+    {op_e8m8, "e8m8", 128u, NOPS + NOPS_W},
+    {op_e16m1, "e16m1", 8u, NOPS + NOPS_W + NOPS_WN},
+    {op_e16m2, "e16m2", 16u, NOPS + NOPS_W + NOPS_WN},
+    {op_e16m8, "e16m8", 64u, NOPS + NOPS_W},
     {op_e32m1, "e32m1", 4u, NOPS},           {op_e32m2, "e32m2", 8u, NOPS},
     {op_e32m8, "e32m8", 32u, NOPS},
 };
@@ -282,6 +318,9 @@ int main(void)
                                                  ((uint32_t)g_d[i + 3u] << 24));
                         }
                     }
+                    /* the clips' saturation, after the case's blocks */
+                    line = mix(line, csr_read("vxsat"));
+                    __asm__ volatile("csrw vxsat, zero");
                 }
             }
             puts_(k_fns[f].name);

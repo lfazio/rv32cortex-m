@@ -269,12 +269,11 @@ From the last measurements in [linux.md](linux.md).
       [backend/thumb2.md](backend/thumb2.md#helium-mve-on-the-n6)), and
       the reductions; next there, by vecbench's kernels measured alone
       ([frontend/rv32-vector.md](frontend/rv32-vector.md#on-the-n6-by-kernel)):
-      the narrowing clip (13.7M cycles of 94M) and the widening
-      multiply-add (most of dot's 10.3M), through MVE's widening loads
-      and narrowing stores on the register file (`VLDRH.S32`,
-      `VSTRH.32`); the tail blend skipped when vl fills the group (five
-      instructions of nine a register); the masked single-width
-      operations (`VPSEL` on `mve_active`'s P0). Discarded: the vector
+      the masked single-width operations (`VPSEL` on `mve_active`'s
+      P0), and the same skip of the tail blend when vl fills the group
+      on the F746's DSP path, which MVE's took (vecbench 20.41 to
+      19.83). Done there: the widening multiply-adds and narrowing
+      shifts and clips (vecbench 19.83 to 18.72). Discarded: the vector
       FP in MVE, which flushes subnormals whatever FPSCR says and was
       at most 5.6% of vfbench. Not yet: a loop over an m4 or m8 group's
       words on Thumb-2 -- vecbench runs the same at a 32 KB buffer as at

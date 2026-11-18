@@ -894,6 +894,42 @@ void t2_vdup(uint32_t sew, uint32_t qd, uint32_t rt)
               (uint16_t)((rt << 12) | 0x0B10u | ((sew == 1u) ? 0x20u : 0u)));
 }
 
+/*
+ * The widening loads and narrowing stores, element for element in
+ * order: VLDRB.<S|U>16 (8 bytes to 8 halfwords) and VLDRH.<S|U>32 (4
+ * halfwords to 4 words) for a source element width of 8 or 16; VSTRB.16
+ * and VSTRH.32 the other way. Rn r0-r7 only -- a three-bit field -- and
+ * off non-negative: bytes for the byte forms, below 128; even, below
+ * 256, for the halfword ones.
+ */
+void t2_vldr_widen(uint32_t sew, bool sign, uint32_t qd, uint32_t rn, uint32_t off)
+{
+    const uint16_t u = sign ? 0u : 0x1000u;
+
+    if (sew == 0u) {
+        t2_emit32((uint16_t)(0xED90u | u | rn), (uint16_t)((qd << 13) | 0x0E80u | (off & 0x7Fu)));
+    } else {
+        t2_emit32((uint16_t)(0xED98u | u | rn),
+                  (uint16_t)((qd << 13) | 0x0F00u | ((off >> 1) & 0x7Fu)));
+    }
+}
+
+void t2_vstr_narrow(uint32_t sew, uint32_t qd, uint32_t rn, uint32_t off)
+{
+    if (sew == 0u) {
+        t2_emit32((uint16_t)(0xED80u | rn), (uint16_t)((qd << 13) | 0x0E80u | (off & 0x7Fu)));
+    } else {
+        t2_emit32((uint16_t)(0xED88u | rn),
+                  (uint16_t)((qd << 13) | 0x0F00u | ((off >> 1) & 0x7Fu)));
+    }
+}
+
+/* VCMP.I<size> NE, Qn, Qm: P0's bytes set where the lanes differ. */
+void t2_vcmp_ne(uint32_t sew, uint32_t qn, uint32_t qm)
+{
+    t2_emit32((uint16_t)(0xFE01u | (sew << 4) | (qn << 1)), (uint16_t)(0x0F80u | (qm << 1)));
+}
+
 /* VPST: the next instruction predicated on P0. */
 void t2_vpst(void)
 {
