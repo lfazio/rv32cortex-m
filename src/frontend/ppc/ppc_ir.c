@@ -581,7 +581,13 @@ static void put_crf(B *b, uint32_t f, uint16_t v4)
  */
 static uint16_t cmp4(B *b, uint16_t x, uint16_t y, bool sgn)
 {
-    const uint16_t lt = CC(b, sgn ? EMU_IR_C_LT : EMU_IR_C_LTU, x, y);
+    const uint8_t c = sgn ? (uint8_t)EMU_IR_C_LT : (uint8_t)EMU_IR_C_LTU;
+
+    if (emu_ir_can_lower(EMU_IR_CMP3, c)) {
+        /* one compare and two predicated moves on the hosts that have it */
+        return OP(b, EMU_IR_OR, emu_ir_emit(b, EMU_IR_CMP3, c, x, y, 0u, 0u), so01(b));
+    }
+    const uint16_t lt = CC(b, (emu_ir_cond_t)c, x, y);
     const uint16_t ne = CC(b, EMU_IR_C_NE, x, y);
 
     return OP(b, EMU_IR_OR, OP(b, EMU_IR_SHL, K(b, 2u), OP(b, EMU_IR_ADD, lt, ne)),

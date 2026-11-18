@@ -853,6 +853,14 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
             r = eval_value_cond(a, bv, in->aux) ? 1u : 0u;
             break;
 
+        case EMU_IR_CMP3:
+            r = eval_value_cond(a, bv, (in->aux == (uint8_t)EMU_IR_C_LTU) ? EMU_IR_C_LTU
+                                                                          : EMU_IR_C_LT)
+                    ? 8u
+                : (a == bv) ? 2u
+                            : 4u;
+            break;
+
         case EMU_IR_GETCOND:
             r = eval_cond(cpu, t, in->aux) ? 1u : 0u;
             break;

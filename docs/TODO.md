@@ -110,9 +110,8 @@ measured at.
 - [ ] **The flag ISAs' flags on Thumb-2**, what is left
       ([backend/thumb2.md](backend/thumb2.md#then-the-flags)): G4MH's
       branches compare a subtract's operands now and PowerPC's a
-      compare's, and PowerPC's CR field is two compares -- still built
-      in IR, where a three-way compare op would be one `CMP` and two
-      `IT`-predicated moves. ARMv7-M stores four words of flag state at
+      compare's, and PowerPC's CR field is one three-way compare
+      (`EMU_IR_CMP3`). ARMv7-M stores four words of flag state at
       every flag-setting instruction (N and Z as the result, C, V), in
       loops whose next instruction reads only one of them. Profiled again
       after the changes that took 16-30% off these three (ARMv7-M 13.40

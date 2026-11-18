@@ -77,6 +77,7 @@ static const char *const k_names[EMU_IR_OP_COUNT] = {
     [EMU_IR_SETF] = "SETF",
     [EMU_IR_GETCOND] = "GETCOND",
     [EMU_IR_SETCC] = "SETCC",
+    [EMU_IR_CMP3] = "CMP3",
     [EMU_IR_SELECT] = "SELECT",
     [EMU_IR_FGET] = "FGET",
     [EMU_IR_FPUT] = "FPUT",

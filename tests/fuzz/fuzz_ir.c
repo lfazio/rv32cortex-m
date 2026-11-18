@@ -780,8 +780,19 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
     }
     case 5: { /* compare to a value */
         const uint16_t a = val(in), b = val(in);
+        const uint8_t c = value_cond(in);
 
-        d = E(EMU_IR_SETCC, value_cond(in), a, b, 0u, 0u);
+        /*
+         * VC's draws make a three-way compare instead, signed or not by
+         * b's parity: no byte more, so a saved input decodes as it did
+         * up to here.
+         */
+        if (c == (uint8_t)EMU_IR_C_VC &&
+            lowerable(EMU_IR_CMP3, (b & 1u) ? EMU_IR_C_LTU : EMU_IR_C_LT)) {
+            d = E(EMU_IR_CMP3, (b & 1u) ? EMU_IR_C_LTU : EMU_IR_C_LT, a, b, 0u, 0u);
+        } else {
+            d = E(EMU_IR_SETCC, c, a, b, 0u, 0u);
+        }
         break;
     }
     case 6: { /* divide, with the divisor the contract asks for */

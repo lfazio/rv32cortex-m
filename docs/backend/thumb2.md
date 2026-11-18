@@ -1083,6 +1083,16 @@ shift masks its count with `AND #31`, one instruction where it was
 | PowerPC | 13.28 | 12.46 | -6.2% |
 | G4MH | 14.41 | 14.30 | -0.8% |
 
+### PowerPC's CR field in one operation
+
+`EMU_IR_CMP3`, a three-way compare -- 8, 4 or 2 for less, greater,
+equal, signed or not -- is PowerPC's CR field less SO: on Thumb-2 `MOV
+#2`, the `CMP`, then `IT LT; MOV #8` and `IT GT; MOV #4` (a MOV in an IT
+block leaves the flags for the second), on x86-64 two `CMOV`s after one
+`CMP`. It was two compares, an add and a register shift. PowerPC
+CoreMark on the F746 12.47 to 11.36 (**-8.9%**) at both layouts, the
+other three frontends -- which do not use it -- within 0.2%.
+
 ### The profile again, after all of it
 
 The same dumps of the four CoreMarks with 59b72b2, as a share of the time

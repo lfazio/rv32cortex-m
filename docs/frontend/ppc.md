@@ -1237,7 +1237,9 @@ instruction on x86-64, a quarter to a half of it memory accesses and
 much of the rest condition-register arithmetic.
 
 **A compare and its branch** (2026-11-18): a CR field is
-`2 << (lt + ne)` -- two compares where it was three -- and a `bc` on LT,
+one three-way compare, `EMU_IR_CMP3`, where the host lowers it (both
+do; `2 << (lt + ne)` otherwise, two compares where it was three, 8.9%
+more on the F746) -- and a `bc` on LT,
 GT or EQ of a field a compare set, with no CR write or helper since,
 compares the compare's operands rather than extracting the bit
 (`put_cmp`, `crbit_cmp`; a seed, `cr-written-before-branch.S`, puts a

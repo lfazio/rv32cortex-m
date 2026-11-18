@@ -1500,6 +1500,9 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_REMU:
         return true;
 
+    case EMU_IR_CMP3:
+        return aux == (uint8_t)EMU_IR_C_LT || aux == (uint8_t)EMU_IR_C_LTU;
+
     case EMU_IR_CLMUL:
         return aux <= 2u && (host_crypto() & HOST_PCLMUL) != 0u;
     case EMU_IR_AESSB:
@@ -3175,6 +3178,30 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         emit_getcond(in, t);
         st_slot(T0, in->dst);
         break;
+
+    case EMU_IR_CMP3: {
+        /*
+         * cmp; 2; cmovl 8; cmovg 4 -- MOV leaves the flags, so both
+         * conditional moves read the one compare. CMOVcc is 0F 40+cc,
+         * cc the low nibble of the Jcc's second byte (X86_CC_*).
+         */
+        const bool u = in->aux == (uint8_t)EMU_IR_C_LTU;
+
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        x86_alu_rr(X86_CMP, T0, T1);
+        x86_mov_imm32(T0, 2u);
+        x86_mov_imm32(T1, 8u);
+        emu_jit_emit8(0x0F);
+        emu_jit_emit8((uint8_t)(0x40u | ((u ? X86_CC_B : X86_CC_L) & 0x0Fu)));
+        emu_jit_emit8(0xC1); /* cmovl/b eax, ecx */
+        x86_mov_imm32(T1, 4u);
+        emu_jit_emit8(0x0F);
+        emu_jit_emit8((uint8_t)(0x40u | ((u ? X86_CC_A : X86_CC_G) & 0x0Fu)));
+        emu_jit_emit8(0xC1); /* cmovg/a eax, ecx */
+        st_slot(T0, in->dst);
+        break;
+    }
 
     case EMU_IR_SETCC: {
         static const uint8_t k_cc[] = {

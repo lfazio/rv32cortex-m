@@ -856,6 +856,14 @@ typedef enum emu_ir_op {
      * fused forms and every mode but RNE).
      */
     EMU_IR_VFOP,
+    /*
+     * A three-way compare: dst = 8 if a < b, 4 if a > b, 2 if equal --
+     * signed for aux EMU_IR_C_LT, unsigned for EMU_IR_C_LTU. PowerPC's
+     * CR field less SO, in one operation: two compares, an add and a
+     * shift in IR (`2 << (lt + ne)`), one compare and two predicated
+     * moves on a host. Pure. A backend says so (emu_ir_can_lower).
+     */
+    EMU_IR_CMP3,
 
     EMU_IR_OP_COUNT
 } emu_ir_op_t;

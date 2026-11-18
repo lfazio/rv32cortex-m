@@ -791,7 +791,7 @@ static void test_only_pure_ops_are_removable(void)
         EMU_IR_BEXT,    EMU_IR_BSET,    EMU_IR_BCLR,    EMU_IR_BINV,
         EMU_IR_SEXT8,   EMU_IR_SEXT16,  EMU_IR_ZEXT8,   EMU_IR_ZEXT16,
         EMU_IR_GETCOND, EMU_IR_SETCC,   EMU_IR_SELECT,  EMU_IR_FGET,
-        EMU_IR_FSGNJ,   EMU_IR_FCLASS};
+        EMU_IR_FSGNJ,   EMU_IR_FCLASS,  EMU_IR_CMP3};
     unsigned removed = 0;
 
     for (unsigned op = (unsigned)EMU_IR_NOP + 1u; op < (unsigned)EMU_IR_OP_COUNT;
@@ -1401,6 +1401,53 @@ static void test_lower_add(void)
         return;
     }
     CHECK_EQ(cpu.r[3], 42u);
+}
+
+/*
+ * EMU_IR_CMP3, compiled and interpreted, against values written here:
+ * the signed and unsigned orders disagree exactly where a sign bit is
+ * set, so the pairs are those (INT_MIN against 1, -1 against 0) beside
+ * equal ones and plain ones.
+ */
+static void test_lower_cmp3(void)
+{
+    static const struct {
+        uint32_t a, b;
+        uint32_t sgn, uns; /* 8 less, 4 greater, 2 equal */
+    } k[] = {
+        {1u, 2u, 8u, 8u},           {2u, 1u, 4u, 4u},
+        {7u, 7u, 2u, 2u},           {0x80000000u, 1u, 8u, 4u},
+        {0xFFFFFFFFu, 0u, 8u, 4u},  {0u, 0xFFFFFFFFu, 4u, 8u},
+        {0x7FFFFFFFu, 0x80000000u, 4u, 8u}, {0xFFFFFFFFu, 0xFFFFFFFFu, 2u, 2u},
+    };
+
+    if (!emu_ir_can_lower(EMU_IR_CMP3, EMU_IR_C_LT)) {
+        return; /* a host without it: the PowerPC frontend does not ask */
+    }
+    for (uint32_t u = 0; u < 2u; u++) {
+        for (uint32_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+            fake_cpu_t cpu, ref;
+
+            emu_ir_reset(&g_b);
+            const uint16_t a = emu_ir_get(&g_b, 1u);
+            const uint16_t b = emu_ir_get(&g_b, 2u);
+
+            emu_ir_put(&g_b, 3u,
+                       emu_ir_emit(&g_b, EMU_IR_CMP3, u ? EMU_IR_C_LTU : EMU_IR_C_LT, a, b,
+                                   0u, 0u));
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[1] = k[i].a;
+            cpu.r[2] = k[i].b;
+            ref = cpu;
+            CHECK(emu_ir_interp(&g_b, (emu_cpu_t *)&ref, &g_fake_target, NULL));
+            CHECK_EQ(ref.r[3], u ? k[i].uns : k[i].sgn);
+            if (!lower_and_run(&cpu)) {
+                CHECK(false);
+                return;
+            }
+            CHECK_EQ(cpu.r[3], u ? k[i].uns : k[i].sgn);
+        }
+    }
 }
 
 /*
@@ -4550,6 +4597,7 @@ void test_ir(void)
     test_fp_box_reference();
 #if defined(EMU_HOST_JIT_X86_64)
     test_lower_add();
+    test_lower_cmp3();
     test_unkept_counted();
     test_lower_crypto_ops();
 #if EMU_IR_VECTOR

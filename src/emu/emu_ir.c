@@ -545,7 +545,7 @@ const char *emu_ir_op_name(uint8_t op)
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
         N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM),
-        N(VRED),      N(VMEMS),     N(VFOP)};
+        N(VRED),      N(VMEMS),     N(VFOP),      N(CMP3)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }
@@ -1338,6 +1338,7 @@ static bool op_is_pure(uint8_t op)
     case EMU_IR_ZEXT16:
     case EMU_IR_GETCOND:
     case EMU_IR_SETCC:
+    case EMU_IR_CMP3:
     case EMU_IR_SELECT:
     case EMU_IR_FGET:
     case EMU_IR_FSGNJ: /* moves bits; raises nothing */
