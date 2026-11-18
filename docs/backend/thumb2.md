@@ -385,7 +385,11 @@ register's blend -- vd's old value, the window's mask and three logic
 operations, five instructions of nine -- is branched over on it, MVE's
 operations writing no flags. vecbench 20.41 to 19.83 at both layouts.
 Deciding "full" four bytes early is found, in the 12 lines whose vl
-falls one 32-bit element short.
+falls one 32-bit element short. The same skip on the F746's DSP path --
+a compare a word against lr, since its operations write the flags --
+gained nothing (17.99 to 17.98 and 17.99) for 2.5 KB more code: two
+loads from DTCM and three ALU operations cost the M7 what a compare and
+a taken branch do. Not kept.
 
 **The widening multiply-adds and the narrowing shifts and clips** go
 through the register file's memory, which MVE's widening loads and
