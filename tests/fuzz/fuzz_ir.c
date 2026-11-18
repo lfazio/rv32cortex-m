@@ -1343,28 +1343,7 @@ static uint8_t *g_code;
 
 static const char *op_name(uint8_t op)
 {
-#define N(x) [EMU_IR_##x] = #x
-    static const char *const k[EMU_IR_OP_COUNT] = {
-        N(NOP),     N(GET),       N(PUT),       N(CONST),     N(MOV),
-        N(ADD),     N(SUB),       N(AND),       N(OR),        N(XOR),
-        N(SHL),     N(SHR),       N(SAR),       N(ROTL),      N(MUL),
-        N(MULHS),   N(MULHU),     N(DIVS),      N(DIVU),      N(REMS),
-        N(REMU),    N(MAC),       N(ADDI),      N(ANDI),      N(ORI),
-        N(XORI),    N(SHLI),      N(SHRI),      N(SARI),      N(ROTLI),
-        N(NEG),     N(NOT),       N(BSWAP32),   N(BSWAP16),   N(HSWAP),
-        N(CLZ),     N(CTZ),       N(POPCNT),    N(CLMUL),     N(AESSB),     N(SM4SB),
-        N(BEXT),    N(BSET),
-        N(BCLR),    N(BINV),      N(BITOP_SET), N(BITOP_CLR), N(BITOP_INV),
-        N(BITOP_TST), N(SEXT8),   N(SEXT16),    N(ZEXT8),     N(ZEXT16),
-        N(LOAD),    N(STORE),     N(SETF),      N(GETCOND),   N(SETCC),
-        N(SELECT),  N(FGET),      N(FPUT),      N(FADD),      N(FSUB),
-        N(FMUL),    N(FDIV),      N(FSQRT),     N(FMA),       N(FMIN),
-        N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
-        N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
-        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM),
-        N(VRED),      N(VMEMS),     N(VFOP)};
-#undef N
-    return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
+    return emu_ir_op_name(op);
 }
 
 static void dump(const char *what, const emu_ir_block_t *b)
@@ -1471,6 +1450,16 @@ static void print_stats(void)
             (unsigned)o.identities, (unsigned)o.macs,
             (unsigned)o.retires_merged, (unsigned)o.zero_gets,
             (unsigned)o.conds_forwarded, (unsigned)o.branch_folded);
+    {
+        uint32_t loops = 0u, kernels = 0u;
+
+        for (uint32_t k = 0; k < EMU_IR_LOOP_KINDS; k++) {
+            loops += o.loop_shape[k];
+            kernels += (k < EMU_IR_LOOP_AFFINE) ? o.loop_shape[k] : 0u;
+        }
+        fprintf(stderr, "fuzz-ir: loops analysed %u, a kernel's shape %u\n",
+                (unsigned)loops, (unsigned)kernels);
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);

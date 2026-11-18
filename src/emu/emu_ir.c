@@ -362,6 +362,13 @@ void emu_ir_reset(emu_ir_block_t *b)
     b->next_temp = 0u;
     b->guest_insns = 0u;
     b->overflow = false;
+    /*
+     * The last block's start is not this one's: left, a unit test that
+     * set it made the next test's exit to that address a back edge, and
+     * a block that retired nothing looped past the cap for ever. Every
+     * frontend sets it after the reset.
+     */
+    b->start_pc = 0u;
     /* A frontend that says nothing gets the helpers, which always work. */
     b->has_fast = false;
     b->has_dtlb = false;
@@ -514,6 +521,33 @@ bool emu_ir_rom_window(const emu_bus_t *bus, uint32_t base,
         *out = g_rom_win;
     }
     return g_rom_ok;
+}
+
+/* For diagnostics: fuzz-ir's dumps, the loop census. */
+const char *emu_ir_op_name(uint8_t op)
+{
+#define N(x) [EMU_IR_##x] = #x
+    static const char *const k[EMU_IR_OP_COUNT] = {
+        N(NOP),     N(GET),       N(PUT),       N(CONST),     N(MOV),
+        N(ADD),     N(SUB),       N(AND),       N(OR),        N(XOR),
+        N(SHL),     N(SHR),       N(SAR),       N(ROTL),      N(MUL),
+        N(MULHS),   N(MULHU),     N(DIVS),      N(DIVU),      N(REMS),
+        N(REMU),    N(MAC),       N(ADDI),      N(ANDI),      N(ORI),
+        N(XORI),    N(SHLI),      N(SHRI),      N(SARI),      N(ROTLI),
+        N(NEG),     N(NOT),       N(BSWAP32),   N(BSWAP16),   N(HSWAP),
+        N(CLZ),     N(CTZ),       N(POPCNT),    N(CLMUL),     N(AESSB),     N(SM4SB),
+        N(BEXT),    N(BSET),
+        N(BCLR),    N(BINV),      N(BITOP_SET), N(BITOP_CLR), N(BITOP_INV),
+        N(BITOP_TST), N(SEXT8),   N(SEXT16),    N(ZEXT8),     N(ZEXT16),
+        N(LOAD),    N(STORE),     N(SETF),      N(GETCOND),   N(SETCC),
+        N(SELECT),  N(FGET),      N(FPUT),      N(FADD),      N(FSUB),
+        N(FMUL),    N(FDIV),      N(FSQRT),     N(FMA),       N(FMIN),
+        N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
+        N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
+        N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM),
+        N(VRED),      N(VMEMS),     N(VFOP)};
+#undef N
+    return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }
 
 uint16_t emu_ir_temp(emu_ir_block_t *b)
@@ -2093,6 +2127,448 @@ uint32_t emu_ir_unkept(uint8_t *op, uint8_t *aux)
     return n;
 }
 
+/* ------------------------------------------------------------------ */
+/* Analysis: what a loop is (docs/jit/autovectorisation.md, P1)        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A temp's value as the loop sees it. Each block iteration starts with
+ * the guest registers as the last one left them: a register the body
+ * writes after reading is carried, and its read is "r at the start of
+ * the iteration". Every other temp is built from those, constants and
+ * registers the body never writes (invariant), and loads (a value of
+ * this iteration).
+ */
+enum {
+    LK_INV = 1, /* invariant: constants and registers the body does not write */
+    LK_AFF,     /* carried register r plus the constant `off` */
+    LK_AFFX,    /* carried register r plus an invariant, not a constant */
+    LK_VAR,     /* this iteration's, from loads; no carried register in it */
+    LK_DEP,     /* depends on a carried register other than affinely */
+};
+
+typedef struct {
+    uint8_t kind;
+    uint8_t reg;
+    uint32_t off; /* wrapping, as the guest's addresses do (fuzz-ir: INT_MIN) */
+} lk_t;
+
+static EMU_PER_CORE lk_t g_lk[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE uint16_t g_lk_def[EMU_IR_MAX_TEMPS];
+
+static lk_t lk_of(uint16_t t)
+{
+    const lk_t inv = {LK_INV, 0u, 0};
+
+    return (t < EMU_IR_MAX_TEMPS && g_lk[t].kind != 0u) ? g_lk[t] : inv;
+}
+
+static bool lk_const(const emu_ir_block_t *b, uint16_t t, uint32_t *v)
+{
+    if (t >= EMU_IR_MAX_TEMPS || g_lk_def[t] == EMU_IR_NO_TEMP ||
+        b->insn[g_lk_def[t]].op != (uint8_t)EMU_IR_CONST) {
+        return false;
+    }
+    *v = b->insn[g_lk_def[t]].imm;
+    return true;
+}
+
+/* The kind of a value built from two by anything but an affine step. */
+static lk_t lk_mix(lk_t x, lk_t y)
+{
+    lk_t r = {LK_INV, 0u, 0};
+
+    if (x.kind >= LK_AFF && x.kind != LK_VAR) {
+        r.kind = LK_DEP;
+        r.reg = x.reg;
+    } else if (y.kind >= LK_AFF && y.kind != LK_VAR) {
+        r.kind = LK_DEP;
+        r.reg = y.reg;
+    } else if (x.kind == LK_VAR || y.kind == LK_VAR) {
+        r.kind = LK_VAR;
+    }
+    return r;
+}
+
+static const emu_ir_insn_t *lk_def_insn(const emu_ir_block_t *b, uint16_t t)
+{
+    return (t < EMU_IR_MAX_TEMPS && g_lk_def[t] != EMU_IR_NO_TEMP) ? &b->insn[g_lk_def[t]]
+                                                                    : NULL;
+}
+
+/*
+ * Whether t is a 16-bit element read as signed: a signed halfword load
+ * (RV32's lh), a halfword sign-extended (ARMv7-M's SMLABB takes the
+ * bottom half of what `ldrh` loaded), or one byte-swapped first
+ * (PowerPC's lha, big-endian).
+ */
+static bool lk_elem16(const emu_ir_block_t *b, uint16_t t)
+{
+    const emu_ir_insn_t *in = lk_def_insn(b, t);
+
+    if (in != NULL && in->op == (uint8_t)EMU_IR_SEXT16) {
+        in = lk_def_insn(b, in->a);
+        if (in != NULL && in->op == (uint8_t)EMU_IR_BSWAP16) {
+            in = lk_def_insn(b, in->a);
+        }
+        return in != NULL && in->op == (uint8_t)EMU_IR_LOAD && EMU_IR_MEM_SIZE(in->aux) == 2u;
+    }
+    return in != NULL && in->op == (uint8_t)EMU_IR_LOAD && EMU_IR_MEM_SIZE(in->aux) == 2u &&
+           (in->aux & EMU_IR_MEM_SIGNED) != 0u;
+}
+
+/* Whether temp t's value is built only from one MUL of two 16-bit signed
+ * elements, through pure single-input operations and constants. */
+static bool lk_from_product(const emu_ir_block_t *b, uint16_t t, uint32_t depth,
+                            bool *mapped)
+{
+    if (t >= EMU_IR_MAX_TEMPS || g_lk_def[t] == EMU_IR_NO_TEMP || depth > 12u) {
+        return false;
+    }
+    const emu_ir_insn_t *const in = &b->insn[g_lk_def[t]];
+
+    if (in->op == (uint8_t)EMU_IR_MUL) {
+        if (lk_elem16(b, in->a) && lk_elem16(b, in->b)) {
+            return true;
+        }
+        /* a product of two mapped products: bitextract's (p >> 5 & 127) * (p >> 2 & 15);
+         * the two loads the caller counts make them the same product */
+        *mapped = true;
+        return lk_from_product(b, in->a, depth + 1u, mapped) &&
+               lk_from_product(b, in->b, depth + 1u, mapped);
+    }
+    switch ((emu_ir_op_t)in->op) {
+    /* one input and constants: PowerPC's rlwinm is ROTLI then ANDI */
+    case EMU_IR_ADDI:
+    case EMU_IR_ANDI:
+    case EMU_IR_ORI:
+    case EMU_IR_XORI:
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI:
+    case EMU_IR_ROTLI:
+    case EMU_IR_SEXT8:
+    case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8:
+    case EMU_IR_ZEXT16:
+    case EMU_IR_NOT:
+    case EMU_IR_NEG:
+    case EMU_IR_MOV:
+        *mapped = *mapped || in->op != (uint8_t)EMU_IR_MOV;
+        return lk_from_product(b, in->a, depth + 1u, mapped);
+    default:
+        break;
+    }
+    return false;
+}
+
+bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
+{
+    enum { R = EMU_IR_LOOP_MAX_REGS };
+    uint16_t get[R], put[R];
+    bool put_first[R];
+    uint8_t cls[R]; /* 0 untouched, 1 invariant, 2 per-iteration, 3 induction, 4 sum,
+                     * 5 sticky (ORed into) */
+    uint16_t sum_term[R];
+    uint32_t back = b->count;
+
+    memset(out, 0, sizeof(*out));
+    for (uint32_t i = b->count; i-- > 0;) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (!in->dead && ((in->op == (uint8_t)EMU_IR_EXIT_IF && in->imm == b->start_pc) ||
+                          (in->op == (uint8_t)EMU_IR_EXIT && in->a == EMU_IR_NO_TEMP &&
+                           in->imm == b->start_pc))) {
+            back = i;
+            break;
+        }
+    }
+    if (back == b->count) {
+        return false;
+    }
+    out->back = back;
+
+    for (uint32_t r = 0; r < R; r++) {
+        get[r] = put[r] = EMU_IR_NO_TEMP;
+        put_first[r] = false;
+        cls[r] = 0u;
+        sum_term[r] = EMU_IR_NO_TEMP;
+    }
+    const uint32_t nt = (b->next_temp < EMU_IR_MAX_TEMPS) ? b->next_temp : EMU_IR_MAX_TEMPS;
+
+    for (uint32_t t = 0; t < nt; t++) {
+        g_lk[t].kind = 0u;
+        g_lk_def[t] = EMU_IR_NO_TEMP;
+    }
+
+    /* The body's operations, its registers, and what it may not hold. */
+    bool flags_set = false;
+
+    for (uint32_t i = 0; i <= back; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->dst < nt) {
+            g_lk_def[in->dst] = (uint16_t)i;
+        }
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_HELPER:
+        case EMU_IR_HELPER_TRAP:
+        case EMU_IR_VMEM:
+        case EMU_IR_VMEMS:
+        case EMU_IR_VOP:
+        case EMU_IR_VOPM:
+        case EMU_IR_VRED:
+        case EMU_IR_VFOP:
+        case EMU_IR_BITOP_SET:
+        case EMU_IR_BITOP_CLR:
+        case EMU_IR_BITOP_INV:
+        case EMU_IR_BITOP_TST:
+            out->kind = EMU_IR_LOOP_NO_CALL;
+            return true;
+        case EMU_IR_EXIT:
+        case EMU_IR_EXIT_IF:
+            if (i != back) {
+                out->kind = EMU_IR_LOOP_NO_SIDE;
+                return true;
+            }
+            break;
+        case EMU_IR_SETF:
+            flags_set = true;
+            break;
+        case EMU_IR_GETCOND:
+        case EMU_IR_SELECT:
+            if (!flags_set) {
+                out->kind = EMU_IR_LOOP_NO_FLAGS;
+                return true;
+            }
+            break;
+        case EMU_IR_GET:
+        case EMU_IR_PUT:
+            if (in->imm >= R) {
+                out->kind = EMU_IR_LOOP_NO_CARRIED;
+                return true;
+            }
+            if (in->op == (uint8_t)EMU_IR_GET) {
+                if (get[in->imm] == EMU_IR_NO_TEMP && put[in->imm] == EMU_IR_NO_TEMP) {
+                    get[in->imm] = in->dst;
+                } else {
+                    out->kind = EMU_IR_LOOP_NO_CARRIED; /* reread past a write */
+                    return true;
+                }
+            } else {
+                if (put[in->imm] == EMU_IR_NO_TEMP && get[in->imm] == EMU_IR_NO_TEMP) {
+                    put_first[in->imm] = true;
+                }
+                put[in->imm] = in->a;
+            }
+            break;
+        default:
+            if (in->op >= (uint8_t)EMU_IR_FGET && in->op <= (uint8_t)EMU_IR_FCLASS) {
+                out->kind = EMU_IR_LOOP_NO_FP;
+                return true;
+            }
+            break;
+        }
+    }
+
+    /* Kinds, forward: the temps are in definition order. */
+    for (uint32_t i = 0; i <= back; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead || in->dst >= nt) {
+            continue;
+        }
+        lk_t k = {LK_INV, 0u, 0};
+        const lk_t ka = lk_of(in->a), kb = lk_of(in->b);
+        uint32_t c;
+
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_GET:
+            if (put[in->imm] != EMU_IR_NO_TEMP) {
+                k.kind = LK_AFF;
+                k.reg = (uint8_t)in->imm;
+            }
+            break;
+        case EMU_IR_CONST:
+            break;
+        case EMU_IR_MOV:
+            k = ka;
+            break;
+        case EMU_IR_ADDI:
+            k = ka;
+            if (ka.kind == LK_AFF) {
+                k.off += in->imm;
+            }
+            break;
+        case EMU_IR_ADD:
+        case EMU_IR_SUB: {
+            const bool sub = in->op == (uint8_t)EMU_IR_SUB;
+
+            if ((ka.kind == LK_AFF || ka.kind == LK_AFFX) && kb.kind == LK_INV) {
+                k = ka;
+                if (ka.kind == LK_AFF && lk_const(b, in->b, &c)) {
+                    k.off += sub ? 0u - c : c;
+                } else {
+                    k.kind = LK_AFFX;
+                }
+            } else if (!sub && kb.kind >= LK_AFF && kb.kind <= LK_AFFX && ka.kind == LK_INV) {
+                k = kb;
+                if (kb.kind == LK_AFF && lk_const(b, in->a, &c)) {
+                    k.off += c;
+                } else {
+                    k.kind = LK_AFFX;
+                }
+            } else {
+                k = lk_mix(ka, kb);
+            }
+            break;
+        }
+        case EMU_IR_LOAD:
+            k.kind = LK_VAR;
+            break;
+        default:
+            k = lk_mix(ka, lk_mix(kb, lk_of(in->c)));
+            break;
+        }
+        g_lk[in->dst] = k;
+    }
+
+    /* Each register the body writes: per-iteration, an induction, or a sum. */
+    for (uint32_t r = 0; r < R; r++) {
+        if (put[r] == EMU_IR_NO_TEMP) {
+            cls[r] = (get[r] != EMU_IR_NO_TEMP) ? 1u : 0u;
+            continue;
+        }
+        if (put_first[r]) {
+            cls[r] = 2u;
+            continue;
+        }
+        const lk_t kv = lk_of(put[r]);
+
+        if (put[r] == get[r]) {
+            cls[r] = 1u;
+        } else if ((kv.kind == LK_AFF && kv.reg == r && kv.off != 0u) ||
+                   (kv.kind == LK_AFFX && kv.reg == r)) {
+            cls[r] = 3u;
+            out->inductions++;
+        } else {
+            const emu_ir_insn_t *const d =
+                (put[r] < nt && g_lk_def[put[r]] != EMU_IR_NO_TEMP) ? &b->insn[g_lk_def[put[r]]]
+                                                                     : NULL;
+            const bool sum_op =
+                d != NULL && (d->op == (uint8_t)EMU_IR_ADD || d->op == (uint8_t)EMU_IR_OR);
+            const uint16_t other = !sum_op             ? EMU_IR_NO_TEMP
+                                   : (d->a == get[r]) ? d->b
+                                   : (d->b == get[r]) ? d->a
+                                                      : EMU_IR_NO_TEMP;
+
+            const lk_t ko = (other == EMU_IR_NO_TEMP) ? lk_of(0u) : lk_of(other);
+            /* a sticky bit may come from a sum: ARMv7-M's Q from SMLABB's add */
+            const bool from_sum = d != NULL && d->op == (uint8_t)EMU_IR_OR &&
+                                  ko.kind == LK_DEP && cls[ko.reg] == 4u;
+
+            if (other == EMU_IR_NO_TEMP ||
+                (ko.kind >= LK_AFF && ko.kind != LK_VAR && !from_sum)) {
+                out->kind = EMU_IR_LOOP_NO_CARRIED;
+                return true;
+            }
+            if (d->op == (uint8_t)EMU_IR_OR) {
+                /* a sticky bit -- ARMv7-M's Q, which SMLABB sets -- ORed in */
+                cls[r] = 5u;
+                out->sticky++;
+                continue;
+            }
+            cls[r] = 4u;
+            sum_term[r] = other;
+            out->sums++;
+        }
+    }
+
+    /* Every access at an induction register plus a constant or the stride. */
+    uint16_t load_t = EMU_IR_NO_TEMP;
+    const emu_ir_insn_t *store = NULL;
+
+    for (uint32_t i = 0; i <= back; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead || (in->op != (uint8_t)EMU_IR_LOAD && in->op != (uint8_t)EMU_IR_STORE)) {
+            continue;
+        }
+        const lk_t ka = lk_of(in->a);
+
+        if ((ka.kind != LK_AFF && ka.kind != LK_AFFX) || cls[ka.reg] != 3u ||
+            in->c != EMU_IR_NO_TEMP) {
+            out->kind = EMU_IR_LOOP_NO_ADDR;
+            return true;
+        }
+        if (in->op == (uint8_t)EMU_IR_LOAD) {
+            out->loads++;
+            load_t = in->dst;
+        } else {
+            out->stores++;
+            store = in;
+        }
+    }
+
+    /* The back edge: on a count, or on a value loaded this iteration. */
+    const emu_ir_insn_t *const be = &b->insn[back];
+    bool counted = be->op == (uint8_t)EMU_IR_EXIT;
+    bool on_data = false;
+    uint16_t data_t = EMU_IR_NO_TEMP;
+
+    if (be->op == (uint8_t)EMU_IR_EXIT_IF) {
+        uint16_t x = be->a, y = be->b;
+        uint32_t z;
+
+        /* ARMv7-M's `cmp; bne`: (p - q) != 0 is p != q */
+        if ((be->aux == (uint8_t)EMU_IR_C_NE || be->aux == (uint8_t)EMU_IR_C_EQ) &&
+            lk_const(b, y, &z) && z == 0 && x < nt && g_lk_def[x] != EMU_IR_NO_TEMP &&
+            b->insn[g_lk_def[x]].op == (uint8_t)EMU_IR_SUB) {
+            y = b->insn[g_lk_def[x]].b;
+            x = b->insn[g_lk_def[x]].a;
+        }
+        const lk_t kx = lk_of(x), ky = lk_of(y);
+        const bool ix = (kx.kind == LK_AFF || kx.kind == LK_AFFX) && cls[kx.reg] == 3u;
+        const bool iy = (ky.kind == LK_AFF || ky.kind == LK_AFFX) && cls[ky.reg] == 3u;
+
+        counted = (ix && ky.kind == LK_INV) || (iy && kx.kind == LK_INV);
+        on_data = (kx.kind == LK_VAR && ky.kind == LK_INV) ||
+                  (ky.kind == LK_VAR && kx.kind == LK_INV);
+        data_t = (kx.kind == LK_VAR) ? x : y;
+    }
+    if (!counted && !on_data) {
+        out->kind = EMU_IR_LOOP_NO_EXIT;
+        return true;
+    }
+
+    /* The kernels. */
+    out->kind = EMU_IR_LOOP_AFFINE;
+    if (counted && out->sums == 1u && out->stores == 0u && out->loads == 2u) {
+        for (uint32_t r = 0; r < R; r++) {
+            bool mapped = false;
+
+            if (cls[r] == 4u && lk_from_product(b, sum_term[r], 0u, &mapped)) {
+                out->kind = mapped ? EMU_IR_LOOP_DOT16_F : EMU_IR_LOOP_DOT16;
+            }
+        }
+    } else if (on_data && out->sums == 0u && out->loads == 1u && out->stores == 1u &&
+               be->aux == (uint8_t)EMU_IR_C_NE && store->b == load_t && data_t == load_t &&
+               EMU_IR_MEM_SIZE(store->aux) == 1u &&
+               EMU_IR_MEM_SIZE(b->insn[g_lk_def[load_t]].aux) == 1u) {
+        out->kind = EMU_IR_LOOP_COPY_NUL;
+    } else if (counted && out->sums == 0u && out->loads == 1u && out->stores == 1u &&
+               store->b == load_t) {
+        out->kind = EMU_IR_LOOP_COPY;
+    } else if (counted && out->sums == 0u && out->loads == 0u && out->stores == 1u &&
+               lk_of(store->b).kind == LK_INV) {
+        out->kind = EMU_IR_LOOP_FILL;
+    }
+    return true;
+}
+
 void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
                      uint8_t live_out, emu_ir_opt_stats_t *stats)
 {
@@ -2128,6 +2604,15 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_merge_retire(b, stats);
     pass_tail_exit(b, stats);
     pass_count_uses(b, stats);
+#if EMU_IR_LOOP_SHAPE
+    {
+        emu_ir_loop_t lp;
+
+        if (emu_ir_loop_shape(b, &lp)) {
+            stats->loop_shape[lp.kind]++;
+        }
+    }
+#endif
 
     emu_lock(&g_opt_lock);
     g_opt_totals.blocks++;
@@ -2136,6 +2621,9 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.gets_removed += stats->gets_removed;
     g_opt_totals.zero_gets += stats->zero_gets;
     g_opt_totals.conds_forwarded += stats->conds_forwarded;
+    for (uint32_t k = 0; k < EMU_IR_LOOP_KINDS; k++) {
+        g_opt_totals.loop_shape[k] += stats->loop_shape[k];
+    }
     g_opt_totals.branch_folded += stats->branch_folded;
     g_opt_totals.puts_removed += stats->puts_removed;
     g_opt_totals.setpcs_removed += stats->setpcs_removed;

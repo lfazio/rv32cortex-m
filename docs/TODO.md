@@ -114,18 +114,24 @@ measured at.
       in IR, where a three-way compare op would be one `CMP` and two
       `IT`-predicated moves. ARMv7-M stores four words of flag state at
       every flag-setting instruction (N and Z as the result, C, V), in
-      loops whose next instruction reads only one of them. Profile again
-      (`board-jit-dump.py --classes`) before choosing: the shares that
-      led here are from before the changes that took 16-30% off these
-      three (ARMv7-M 13.40 to 11.31, PowerPC 17.69 to 12.46, G4MH 18.74
-      to 14.30).
+      loops whose next instruction reads only one of them. Profiled again
+      after the changes that took 16-30% off these three (ARMv7-M 13.40
+      to 11.31, PowerPC 17.69 to 12.46, G4MH 18.74 to 14.30): ARMv7-M's
+      stores to the cpu are 17.2% of its translated time, PowerPC's
+      arithmetic 38%, G4MH's 28.5%
+      ([backend/thumb2.md](backend/thumb2.md#the-profile-again-after-all-of-it)).
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have. It is inlined on Thumb-2 for RV32
       (2.5-7x on driver code,
       [performance.md](performance.md#driver-performance-the-passthrough-window)),
       ARMv7-M (5.5-13x) and G4MH (2.5-4.2x,
       [frontend/g4mh.md](frontend/g4mh.md#the-peripheral-window)).
-- [ ] **Autovectorisation of the IR pipeline.**
+- [ ] **Autovectorisation of the IR pipeline**: the plan is
+      [jit/autovectorisation.md](jit/autovectorisation.md) -- kernels for
+      the loop shapes a census finds (RV32 CoreMark's 16-bit dot
+      products and maps, 12% of its run on the F746), the scalar block
+      kept as remainder and fallback, and a census first that decides
+      whether anything is built.
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure.** Linking a later block's exit made all four CoreMarks
       3.6-8.0% faster at their default buffers, but without the stop

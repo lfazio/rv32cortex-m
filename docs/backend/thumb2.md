@@ -1083,6 +1083,25 @@ shift masks its count with `AND #31`, one instruction where it was
 | PowerPC | 13.28 | 12.46 | -6.2% |
 | G4MH | 14.41 | 14.30 | -0.8% |
 
+### The profile again, after all of it
+
+The same dumps of the four CoreMarks with 59b72b2, as a share of the time
+in translated code (the first reading in brackets):
+
+| | RV32 | ARMv7-M | PowerPC | G4MH |
+|---|---|---|---|---|
+| guest register loads and stores | 22.8% (18) | 23.9% (16) | 11.1% (10) | 20.2% (8) |
+| frame loads and stores | **1.0%** (9) | **5.0%** (20) | **4.9%** (19) | 1.0% (3) |
+| the RAM window's guard | 8.5% (12) | 7.2% (8) | 6.1% (6) | 1.6% (6) |
+| constants | 8.9% (11) | 9.7% (11) | 10.0% (8) | 5.2% (14) |
+| arithmetic | 14.6% (14) | 27.2% (26) | 38.0% (38) | 28.5% (43) |
+
+The spills are most of what went; the rest is shares rising as the
+whole shrank. What it points at next: ARMv7-M's stores to the cpu --
+17.2% of its time, four flag words at every flag-setting instruction --
+and PowerPC's arithmetic, its CR field still built in IR
+([../TODO.md](../TODO.md)).
+
 ### A loop's guest registers in host ones: measured, not kept
 
 Not the whole-block register cache above, which lost 15.5%: a block

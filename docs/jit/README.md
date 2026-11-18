@@ -1,6 +1,6 @@
 # The JIT
 
-Four documents:
+Five documents:
 
 - this one — the shared framework, the block model, and what the two
   emitters have in common
@@ -11,6 +11,8 @@ Four documents:
   workload can see it
 - [floating-point.md](floating-point.md) — what goes to the host FPU,
   what goes to SoftFloat, and the NaN and flag rules that decide which
+- [autovectorisation.md](autovectorisation.md) — a plan, not built: guest
+  scalar loops run on the host's SIMD, and the census that decides it
 
 Emitter-specific notes live beside the code they describe:
 [backend/thumb2.md](../backend/thumb2.md) and

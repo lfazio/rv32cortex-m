@@ -26,7 +26,7 @@ that took most of its samples has it.
 
 --classes sorts every sample in translated code by what the host
 instruction it marks is doing, by the Thumb-2 backend's conventions (r4
-the cpu, r5 the retired count, r11 the memory slow path, sp the frame):
+the cpu, r5 the retired count, r11 the RAM window's address, sp the frame):
 guest register loads and stores, frame traffic, the RAM window's guard,
 the access itself, the retired count, constants, compares and branches,
 calls, and the rest. A sample marks the instruction about to run, so a
@@ -116,7 +116,9 @@ CLASSES = [
     ("frame load/store", r"^(?:ldr|str)[bhd]?(?:\.w)?\s+.*\[sp"),
     ("frame push/pop/adjust", r"^(?:push|pop|stmdb|ldmia)(?:\.w)?\s+.*sp|^(?:add|sub)(?:\.w)?\s+sp, #"),
     ("ram guard", r"ror #2$|^movw\s+ip, #|^cmp(?:\.w)?\s+\w+, ip$|^ldr(?:\.w)?\s+ip, \[pc"),
-    ("guest access", r"^(?:ldr|str)[bhs]*(?:\.w)?\s+\w+, \[ip, \w+"),
+    # through r11 (objdump's fp) since the window's address lives there,
+    # through ip before
+    ("guest access", r"^(?:ldr|str)[bhs]*(?:\.w)?\s+\w+, \[(?:ip|fp), \w+"),
     ("other memory", r"^(?:ldr|str|ldm|stm|vldr|vstr)"),
     ("retired count", r"^adds?(?:\.w)?\s+r5, r5"),
     ("call", r"^blx?\b"),

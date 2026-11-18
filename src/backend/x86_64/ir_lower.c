@@ -802,6 +802,17 @@ static bool chain_exit(uint32_t target_pc)
  * count. Returns false if the target is not this block's start, in which
  * case the caller emits an ordinary exit.
  */
+#if defined(EMU_JIT_LOOP_CENSUS) && EMU_JIT_LOOP_CENSUS
+/* `inc qword [counter]` through rax, which is free between instructions. */
+static void census_inc(uint64_t *counter)
+{
+    x86_mov_imm64(T0, (uint64_t)(uintptr_t)counter);
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0xFF);
+    emu_jit_emit8(0x00); /* inc qword [rax] */
+}
+#endif
+
 static bool loop_back(uint32_t target_pc)
 {
     if (!g_has_start_pc || g_body == NULL || target_pc != g_start_pc) {
@@ -815,6 +826,18 @@ static bool loop_back(uint32_t target_pc)
      * a register because it is the return value.
      */
     x86_cmp_imm32(X86_CNT, EMU_JIT_LOOP_CAP);
+#if defined(EMU_JIT_LOOP_CENSUS) && EMU_JIT_LOOP_CENSUS
+    if (emu_ir_census_cur != NULL) {
+        uint8_t *const below = x86_jcc32(X86_CC_B);
+
+        census_inc(&emu_ir_census_cur->caps);
+        note_exit(x86_jmp32());
+        x86_patch_rel32(below, emu_jit_here());
+        census_inc(&emu_ir_census_cur->iters);
+        x86_patch_rel32(x86_jmp32(), g_body);
+        return true;
+    }
+#endif
     note_exit(x86_jcc32(X86_CC_AE));
     x86_patch_rel32(x86_jmp32(), g_body);
     return true;
@@ -3968,6 +3991,11 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * block's entry, because the frame is already established and
      * re-running the prologue would push it a second time.
      */
+#if defined(EMU_JIT_LOOP_CENSUS) && EMU_JIT_LOOP_CENSUS
+    if (emu_ir_census_cur != NULL) {
+        census_inc(&emu_ir_census_cur->entries); /* past the chain entry */
+    }
+#endif
     g_body = emu_jit_here();
 
     for (uint32_t i = 0; i < b->count; i++) {

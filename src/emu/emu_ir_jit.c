@@ -211,6 +211,151 @@ static bool emu_ir_jit_static_buffer(void)
  * with no flags pays nothing for this either way: it emits no
  * EMU_IR_SETF, so the pass finds nothing.
  */
+#if defined(EMU_JIT_LOOP_CENSUS) && EMU_JIT_LOOP_CENSUS
+#include <stdio.h>
+#include <stdlib.h>
+
+#define CENSUS_MAX 16384u
+static emu_ir_census_t g_census[CENSUS_MAX];
+static uint32_t g_ncensus;
+emu_ir_census_t *emu_ir_census_cur;
+
+static const char *census_shape_name(uint8_t k)
+{
+    static const char *const n[EMU_IR_LOOP_KINDS] = {
+        "dot16", "dot16-f", "copy-nul", "copy", "fill", "affine", "no-call",
+        "no-fp", "no-side", "no-carried", "no-addr", "no-exit", "no-flags",
+    };
+
+    return (k < EMU_IR_LOOP_KINDS) ? n[k] : "-";
+}
+
+static void census_report(void)
+{
+    for (uint32_t i = 0; i < g_ncensus; i++) {
+        const emu_ir_census_t *const r = &g_census[i];
+
+        if (r->entries == 0u) {
+            continue;
+        }
+        fprintf(stderr,
+                "census pc=%08x insns=%u entries=%llu iters=%llu caps=%llu "
+                "loads=%u stores=%u muls=%u calls=%u ops=%u shape=%s\n",
+                (unsigned)r->pc, (unsigned)r->insns, (unsigned long long)r->entries,
+                (unsigned long long)r->iters, (unsigned long long)r->caps,
+                (unsigned)r->loads, (unsigned)r->stores, (unsigned)r->muls,
+                (unsigned)r->calls, (unsigned)r->ops, census_shape_name(r->shape));
+    }
+}
+
+void emu_ir_census_begin(const emu_ir_block_t *b)
+{
+    bool loops = false;
+    uint32_t to_back = 0u; /* instructions up to the last back edge */
+    emu_ir_census_t r;
+
+    emu_ir_census_cur = NULL;
+    memset(&r, 0, sizeof(r));
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        r.ops++;
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_EXIT:
+            if (in->a == EMU_IR_NO_TEMP && in->imm == b->start_pc) {
+                loops = true;
+                to_back = r.insns;
+            }
+            break;
+        case EMU_IR_EXIT_IF:
+            if (in->imm == b->start_pc) {
+                loops = true;
+                to_back = r.insns;
+            }
+            break;
+        case EMU_IR_RETIRE:
+            r.insns += (in->imm == 0u) ? 1u : in->imm;
+            break;
+        case EMU_IR_LOAD:
+            r.loads++;
+            break;
+        case EMU_IR_STORE:
+            r.stores++;
+            break;
+        case EMU_IR_MUL:
+        case EMU_IR_MAC:
+        case EMU_IR_MULHS:
+        case EMU_IR_MULHU:
+            r.muls++;
+            break;
+        case EMU_IR_HELPER:
+        case EMU_IR_HELPER_TRAP:
+        case EMU_IR_VMEM:
+        case EMU_IR_VMEMS:
+            r.calls++;
+            break;
+        default:
+            break;
+        }
+    }
+    if (!loops || g_ncensus >= CENSUS_MAX) {
+        return;
+    }
+    if (g_ncensus == 0u) {
+        atexit(census_report);
+    }
+    r.pc = b->start_pc;
+    /*
+     * An iteration is the instructions up to the back edge: RV32's and
+     * PowerPC's blocks carry on past a conditional branch, and the code
+     * after the loop is in the block too. The RETIRE before an exit
+     * carries every count above it (pass_merge_retire).
+     */
+    r.insns = to_back;
+    r.shape = EMU_IR_LOOP_KINDS;
+#if EMU_IR_LOOP_SHAPE
+    {
+        emu_ir_loop_t lp;
+
+        if (emu_ir_loop_shape(b, &lp)) {
+            r.shape = (uint8_t)lp.kind;
+        }
+    }
+#endif
+    if (getenv("EMU_CENSUS_IR") != NULL) {
+        /* The block as the backend sees it, for the shape of a kernel */
+        fprintf(stderr, "census-ir pc=%08x\n", (unsigned)b->start_pc);
+        for (uint32_t i = 0; i < b->count; i++) {
+            const emu_ir_insn_t *const in = &b->insn[i];
+
+            if (in->dead) {
+                continue;
+            }
+            fprintf(stderr, "  %3u %-11s aux %02x ", (unsigned)i, emu_ir_op_name(in->op),
+                    in->aux);
+            if (in->dst != EMU_IR_NO_TEMP) {
+                fprintf(stderr, "t%-3u = ", (unsigned)in->dst);
+            } else {
+                fprintf(stderr, "       ");
+            }
+            for (unsigned k = 0; k < 3u; k++) {
+                const uint16_t o = (k == 0u) ? in->a : (k == 1u) ? in->b : in->c;
+
+                if (o != EMU_IR_NO_TEMP) {
+                    fprintf(stderr, "t%u ", (unsigned)o);
+                }
+            }
+            fprintf(stderr, "imm %x\n", (unsigned)in->imm);
+        }
+    }
+    g_census[g_ncensus] = r;
+    emu_ir_census_cur = &g_census[g_ncensus++];
+}
+#endif
+
 static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
                              const emu_ir_frontend_t *fe)
 {
@@ -238,6 +383,9 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
 #endif
 
     emu_ir_optimise(&g_ir, fe->target, EMU_IR_F_ALL, NULL);
+#if defined(EMU_JIT_LOOP_CENSUS) && EMU_JIT_LOOP_CENSUS
+    emu_ir_census_begin(&g_ir);
+#endif
 
 #if EMU_JIT_BYTE_STATS
     uint8_t *const start = emu_jit_here();

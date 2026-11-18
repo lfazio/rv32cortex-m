@@ -94,6 +94,12 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
+./scripts/board-jit-dump.py CAPTURE --classes  # with -DEMU_JIT_DUMP=ON:
+                                # the time in translated code by block,
+                                # and by what each host instruction does
+./scripts/loop-census.py RUNNER GUEST.elf...  # a -DEMU_JIT_LOOP_CENSUS=ON
+                                # runner: the loops worth a kernel, their
+                                # trip counts and shapes
 ./scripts/fuzz.sh SECS [ISA|rv32-vec|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|elf|upload|gdb|virtio|telnet|all]
                                 # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; `ir`: random
@@ -951,7 +957,10 @@ sixteen defects the first time anything fuzzed them.
 - **A hook the contract calls optional is optional at every caller**
   (`set_time` called unconditionally broke ARMv7-M on the board).
 - **A struct the callee fills in part is uninitialised in the rest**:
-  `emu_core_status` clears it once for all frontends.
+  `emu_core_status` clears it once for all frontends -- and a reset
+  that leaves a field keeps the last user's: `emu_ir_reset` kept
+  `start_pc`, and a unit test's 0x1000 made the next test's exit a back
+  edge that retired nothing and looped for ever.
 - **A halt can arrive from outside the execute switch**: test the state
   at the top of the loop.
 - **Moving a value from link time to run time moves its readers into an

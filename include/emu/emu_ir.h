@@ -1356,6 +1356,75 @@ void emu_ir_bitop(emu_ir_block_t *b, emu_ir_op_t op, uint16_t addr,
                   uint16_t bit, uint32_t disp, uint8_t width);
 
 /* ------------------------------------------------------------------ */
+/* The loop census (-DEMU_JIT_LOOP_CENSUS=ON, x86-64 hosts)            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * What a block that branches back to its own start does and how often:
+ * the measurement docs/jit/autovectorisation.md's P0 asks for before any
+ * kernel is built. A record per translation of such a block; the x86-64
+ * lowering counts its entries (from the dispatcher, a chain, or after
+ * the loop cap sent it out), the back edges taken, and the cap's exits,
+ * so a loop's own trip count is (entries + iters) / (entries - caps).
+ * Printed at exit, one `census` line a record, for
+ * scripts/loop-census.py.
+ */
+/*
+ * What a block that loops on itself is, for the kernels of
+ * docs/jit/autovectorisation.md: one of these, a kernel or a refusal.
+ */
+typedef enum emu_ir_loop_kind {
+    EMU_IR_LOOP_DOT16 = 0,  /* sum += a[i] * b[i * s], 16-bit signed */
+    EMU_IR_LOOP_DOT16_F,    /* sum += f(a[i] * b[i * s]): the product mapped */
+    EMU_IR_LOOP_COPY_NUL,   /* *d++ = c = *s++ while c, bytes */
+    EMU_IR_LOOP_COPY,       /* *d++ = *s++, n times */
+    EMU_IR_LOOP_FILL,       /* *d++ = v, n times */
+    EMU_IR_LOOP_AFFINE,     /* recognised throughout, no kernel's shape */
+    EMU_IR_LOOP_NO_CALL,    /* a helper or a vector operation in the body */
+    EMU_IR_LOOP_NO_FP,      /* floating point in the body */
+    EMU_IR_LOOP_NO_SIDE,    /* an exit before the back edge */
+    EMU_IR_LOOP_NO_CARRIED, /* a register carried neither as an induction nor a sum */
+    EMU_IR_LOOP_NO_ADDR,    /* an access not at an induction register plus a constant */
+    EMU_IR_LOOP_NO_EXIT,    /* a back edge on neither a count nor a loaded value */
+    EMU_IR_LOOP_NO_FLAGS,   /* the flag word read before the body sets it */
+    EMU_IR_LOOP_KINDS
+} emu_ir_loop_kind_t;
+
+/* Guest register file indices the analysis tracks: GET/PUT's imm below this. */
+#define EMU_IR_LOOP_MAX_REGS 64u
+
+/* The analysis, for a block whose back edge is to its own start. */
+typedef struct emu_ir_loop {
+    emu_ir_loop_kind_t kind;
+    uint32_t back;  /* the back edge's index in the block */
+    uint8_t loads, stores, inductions, sums;
+    uint8_t sticky; /* registers ORed into each iteration: a sticky flag */
+} emu_ir_loop_t;
+
+/*
+ * Whether `b` loops on itself and, if it does, what it is. Reads the
+ * block as the passes left it; changes nothing.
+ */
+bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out);
+
+/* An operation's name, "?" for none: for diagnostics. */
+const char *emu_ir_op_name(uint8_t op);
+
+#if defined(EMU_JIT_LOOP_CENSUS) && EMU_JIT_LOOP_CENSUS
+typedef struct emu_ir_census {
+    uint32_t pc;
+    uint32_t insns;   /* guest instructions an iteration, from the RETIREs */
+    uint16_t loads, stores, muls, calls, ops;
+    uint8_t shape; /* emu_ir_loop_kind_t, EMU_IR_LOOP_KINDS for none */
+    uint64_t entries, iters, caps;
+} emu_ir_census_t;
+
+/* The record for the block being lowered, or NULL: emu_ir_census_begin. */
+extern emu_ir_census_t *emu_ir_census_cur;
+void emu_ir_census_begin(const emu_ir_block_t *b);
+#endif
+
+/* ------------------------------------------------------------------ */
 /* Optimisation                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -1366,6 +1435,12 @@ typedef struct emu_ir_opt_stats {
     uint32_t zero_gets; /* reads of a zero register made constants */
     uint32_t conds_forwarded; /* GETCONDs made compares of a SUB's operands */
     uint32_t branch_folded; /* EXIT_IFs on a SETCC's 0/1 made compares */
+    /*
+     * Blocks that loop on themselves, by what emu_ir_loop_shape found
+     * (EMU_IR_LOOP_*): a kernel, or why not. Counted, nothing changed:
+     * docs/jit/autovectorisation.md, P1.
+     */
+    uint32_t loop_shape[16];
     uint32_t puts_removed; /* guest register stores made redundant  */
     uint32_t setpcs_removed; /* pc writes overwritten unobserved     */
     uint32_t folded; /* constants absorbed into an immediate  */

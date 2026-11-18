@@ -507,6 +507,13 @@ option(EMU_JIT_BYTE_STATS "Count emitted bytes per IR operation" OFF)
 # code and the PC profile's samples: what the translated code a profile
 # finds hot actually is, on a board no host can emit its code for.
 option(EMU_JIT_DUMP "Print the translated blocks after the run" OFF)
+option(EMU_JIT_LOOP_CENSUS "Count the self-looping blocks' entries and iterations (x86-64 host)" OFF)
+if(EMU_PLATFORM STREQUAL "host")
+    set(_loop_shape_default ON)
+else()
+    set(_loop_shape_default OFF) # its tables are BSS the boards do not spend yet
+endif()
+option(EMU_IR_LOOP_SHAPE "Classify self-looping blocks for the autovectoriser (counted only)" ${_loop_shape_default})
 
 # Histogram adjacent executed instruction pairs, to decide which are worth
 # fusing in the translator. Measurement scaffolding, off by default.
@@ -883,6 +890,8 @@ target_compile_definitions(emucore PUBLIC
     EMU_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
     EMU_JIT_BYTE_STATS=$<BOOL:${EMU_JIT_BYTE_STATS}>
     EMU_JIT_DUMP=$<BOOL:${EMU_JIT_DUMP}>
+    EMU_JIT_LOOP_CENSUS=$<BOOL:${EMU_JIT_LOOP_CENSUS}>
+    EMU_IR_LOOP_SHAPE=$<BOOL:${EMU_IR_LOOP_SHAPE}>
     #
     # The IR backend's static code cache.
     #

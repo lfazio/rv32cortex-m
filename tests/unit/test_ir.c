@@ -1160,6 +1160,149 @@ static void test_cond_not_forwarded(void)
 }
 
 /*
+ * emu_ir_loop_shape (docs/jit/autovectorisation.md, P1): RV32's
+ * matrix_mul_matrix as the passes leave it -- two halfword loads at two
+ * induction registers, one stepping by 2 and one by an invariant
+ * stride, their product summed, the back edge on the first against an
+ * invariant end -- and the same block broken one way at a time, each
+ * break its own refusal. `brk` selects the break.
+ */
+enum {
+    LB_NONE, LB_STORE, LB_ADDR, LB_EXIT, LB_CARRIED, LB_CALL, LB_SIDE,
+    LB_UNSIGNED, LB_NOLOOP,
+};
+
+static void loop_dot_block(uint32_t brk)
+{
+    emu_ir_block_t *b = &g_b;
+
+    emu_ir_reset(b);
+    b->start_pc = 0x1000u;
+
+    const uint16_t a = emu_ir_get(b, 15u);
+    const uint16_t x = emu_ir_emit(b, EMU_IR_LOAD,
+                                   EMU_IR_MEM_AUX(2u, brk != LB_UNSIGNED), a,
+                                   EMU_IR_NO_TEMP, 0u, 0u);
+    const uint16_t p = emu_ir_get(b, 12u);
+    const uint16_t pa = (brk == LB_ADDR) ? x : p; /* a load's address loaded */
+    const uint16_t y =
+        emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(2u, true), pa, EMU_IR_NO_TEMP, 0u, 0u);
+    const uint16_t a2 = emu_ir_emit(b, EMU_IR_ADDI, 0u, a, EMU_IR_NO_TEMP, 2u, 0u);
+
+    emu_ir_put(b, 15u, a2);
+    const uint16_t s = emu_ir_get(b, 10u);
+    const uint16_t s2 = emu_ir_emit(b, EMU_IR_SHLI, 0u, s, EMU_IR_NO_TEMP, 1u, 0u);
+
+    emu_ir_put(b, 12u, emu_ir_alu(b, EMU_IR_ADD, s2, p));
+    const uint16_t m = emu_ir_alu(b, EMU_IR_MUL, x, y);
+    const uint16_t acc = emu_ir_get(b, 16u);
+
+    emu_ir_put(b, 16u, emu_ir_alu(b, EMU_IR_ADD, acc, m));
+    if (brk == LB_STORE) {
+        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, false), a, m, 0x40u, 0u);
+    }
+    if (brk == LB_CARRIED) {
+        const uint16_t c = emu_ir_get(b, 20u);
+
+        emu_ir_put(b, 20u, emu_ir_alu(b, EMU_IR_MUL, c, c)); /* r *= r: no step */
+    }
+    if (brk == LB_CALL) {
+        (void)emu_ir_emit(b, EMU_IR_HELPER, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+    }
+    if (brk == LB_SIDE) {
+        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_EQ, m, emu_ir_const(b, 0u), 0x2000u, 0u);
+    }
+    const uint16_t end = emu_ir_get(b, 6u);
+
+    (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 6u, 0u);
+    (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, (brk == LB_EXIT) ? acc : end, a2,
+                      (brk == LB_NOLOOP) ? 0x3000u : 0x1000u, 0u);
+    (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0x1020u, 0u);
+}
+
+static void test_loop_shape(void)
+{
+    static const struct {
+        uint32_t brk;
+        emu_ir_loop_kind_t want;
+    } k[] = {
+        {LB_NONE, EMU_IR_LOOP_DOT16},          {LB_STORE, EMU_IR_LOOP_AFFINE},
+        {LB_ADDR, EMU_IR_LOOP_NO_ADDR},         {LB_EXIT, EMU_IR_LOOP_NO_EXIT},
+        {LB_CARRIED, EMU_IR_LOOP_NO_CARRIED},   {LB_CALL, EMU_IR_LOOP_NO_CALL},
+        {LB_SIDE, EMU_IR_LOOP_NO_SIDE},         {LB_UNSIGNED, EMU_IR_LOOP_AFFINE},
+    };
+    emu_ir_loop_t lp;
+
+    for (uint32_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        loop_dot_block(k[i].brk);
+        CHECK(emu_ir_loop_shape(&g_b, &lp));
+        CHECK_EQ(lp.kind, k[i].want);
+    }
+    loop_dot_block(LB_NONE);
+    (void)emu_ir_loop_shape(&g_b, &lp);
+    CHECK_EQ(lp.inductions, 2u);
+    CHECK_EQ(lp.sums, 1u);
+    CHECK_EQ(lp.loads, 2u);
+
+    loop_dot_block(LB_NOLOOP); /* no back edge to its start: not a loop */
+    CHECK(!emu_ir_loop_shape(&g_b, &lp));
+}
+
+/*
+ * The byte loops: strcpy's copy to the NUL, memcpy's copy and memset's
+ * fill, and a copy-to-NUL whose back edge is on EQ, which is not one.
+ */
+static void loop_bytes_block(uint32_t kind, bool eq)
+{
+    emu_ir_block_t *b = &g_b;
+
+    emu_ir_reset(b);
+    b->start_pc = 0x1000u;
+
+    const uint16_t d = emu_ir_get(b, 15u);
+    const uint16_t d2 = emu_ir_emit(b, EMU_IR_ADDI, 0u, d, EMU_IR_NO_TEMP, 1u, 0u);
+    uint16_t v;
+
+    emu_ir_put(b, 15u, d2);
+    if (kind == 2u) {
+        v = emu_ir_get(b, 11u); /* memset's value: not written */
+    } else {
+        const uint16_t s = emu_ir_get(b, 12u);
+
+        v = emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(1u, false), s, EMU_IR_NO_TEMP, 0u, 0u);
+        emu_ir_put(b, 12u, emu_ir_emit(b, EMU_IR_ADDI, 0u, s, EMU_IR_NO_TEMP, 1u, 0u));
+    }
+    (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(1u, false), d2, v, 0xFFFFFFFFu, 0u);
+    (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 4u, 0u);
+    if (kind == 0u) {
+        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, eq ? EMU_IR_C_EQ : EMU_IR_C_NE, v,
+                          emu_ir_const(b, 0u), 0x1000u, 0u);
+    } else {
+        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, emu_ir_get(b, 13u), d2, 0x1000u,
+                          0u);
+    }
+    (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0x1010u, 0u);
+}
+
+static void test_loop_shape_bytes(void)
+{
+    emu_ir_loop_t lp;
+
+    loop_bytes_block(0u, false);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_COPY_NUL);
+    loop_bytes_block(0u, true);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_AFFINE);
+    loop_bytes_block(1u, false);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_COPY);
+    loop_bytes_block(2u, false);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_FILL);
+}
+
+/*
  * pass_fuse: EXIT_IF on a SETCC's 0/1 against zero is the compare, NE
  * taking the condition and EQ its inverse; the SETCC goes.
  */
@@ -4377,6 +4520,8 @@ void test_ir(void)
     test_cond_forwarded();
     test_cond_not_forwarded();
     test_branch_on_setcc_folded();
+    test_loop_shape();
+    test_loop_shape_bytes();
     test_flags_live_out();
     test_redundant_get_elided();
     test_dead_put_removed();

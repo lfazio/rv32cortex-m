@@ -5236,6 +5236,18 @@ session, and every one of them recurred:
   PIPE as well. **Do the irreversible-if-skipped step before anything
   that can fail on the way out.**
 
+- **A reset that leaves a field hands the next user the last one's.**
+  `emu_ir_reset` cleared a block's count, temps and windows and left its
+  `start_pc`. Every frontend sets it after the reset, so nothing showed
+  until a unit test of the loop recogniser set it to 0x1000: the next
+  test that lowered and ran a block ending in an exit to 0x1000 got a
+  back edge, its block retired nothing, and the loop cap -- which counts
+  retired instructions -- never tripped. The unit tests hung inside
+  generated code, where a debugger shows no frame; bisecting the
+  worktrees named the change, and the test's own setting named the
+  field. `emu_ir_reset` clears it now. **A reset clears every field a
+  user may set, or says which it keeps.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
