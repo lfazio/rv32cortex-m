@@ -46,6 +46,7 @@ typedef struct ppc_ir_stats {
     uint64_t native;
     uint64_t helper;
     uint64_t declined;
+    uint64_t efs2; /* pairs of FP instructions in one call (ppc_ir_efs2) */
     uint32_t helper_by_sem[PPC_S_COUNT];
     uint32_t declined_by_sem[PPC_S_COUNT];
 } ppc_ir_stats_t;

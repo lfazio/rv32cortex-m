@@ -574,6 +574,8 @@ static void ppc_report(emu_print_fn out, void *ctx)
     put_dec(out, ctx, s->helper);
     out(ctx, "  declined ");
     put_dec(out, ctx, s->declined);
+    out(ctx, "  fp pairs ");
+    put_dec(out, ctx, s->efs2);
     out(ctx, "\n");
     put_top(out, ctx, "  helper  ", s->helper_by_sem);
     put_top(out, ctx, "  declined", s->declined_by_sem);

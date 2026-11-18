@@ -108,6 +108,7 @@
 #define R_XER 33u
 #define R_LR 34u
 #define R_CTR 35u
+#define R_EFS2 36u /* ppc_cpu_t::efs2_short, for ppc_ir_efs2's block */
 
 #define NOT EMU_IR_NO_TEMP
 
@@ -309,10 +310,70 @@ PPC_IR_EFS_FAST(ppc_ir_efsmul, ppc_fpu_mul_fast, ppc_fpu_mul)
 PPC_IR_EFS_FAST(ppc_ir_efsdiv, ppc_fpu_div_fast, ppc_fpu_div)
 #undef PPC_IR_EFS_FAST
 
+/*
+ * Two of the four in a row, one call: of Whetstone's 1.25 million
+ * fast-path FP instructions at least 346,000 are followed straight by
+ * another (-DEMU_PAIR_STATS=ON), and the call, about 22 cycles on the
+ * F746, was what was left (docs/frontend/ppc.md). Each is packed as
+ * EFS2_PACK: which of the four, rd, ra and rb; the operands are read
+ * from the register file, which a helper sees whole. The first takes its
+ * fast case or the general path, raising its interrupt as the single
+ * helper does -- non-zero is a trap -- and the second only its fast
+ * case: where that declines, nothing of it is written, efs2_short is
+ * set, and the block leaves at it after retiring the first. The block
+ * there begins with it, so takes its general path. Leaving at the
+ * first instead would come back to this block, the first again.
+ */
+#define EFS2_PACK(k, d) ((k) | ((uint32_t)(d)->rd << 2) | ((uint32_t)(d)->ra << 7) | \
+                         ((uint32_t)(d)->rb << 12))
+
+static EMU_ALWAYS_INLINE bool efs2_one(ppc_cpu_t *c, uint32_t p)
+{
+    const uint32_t a = c->r[(p >> 7) & 31u];
+    const uint32_t b = c->r[(p >> 12) & 31u];
+    uint32_t *const d = &c->r[(p >> 2) & 31u];
+
+    switch (p & 3u) {
+    case 0u: return ppc_fpu_add_fast(c, a, b, d);
+    case 1u: return ppc_fpu_sub_fast(c, a, b, d);
+    case 2u: return ppc_fpu_mul_fast(c, a, b, d);
+    default: return ppc_fpu_div_fast(c, a, b, d);
+    }
+}
+
+EMU_HOT_TEXT static uint32_t ppc_ir_efs2(emu_cpu_t *cpu, uint32_t p1, uint32_t p2,
+                                         uint32_t aux)
+{
+    ppc_cpu_t *const c = (ppc_cpu_t *)cpu;
+
+    c->efs2_short = 0u;
+    if (EMU_UNLIKELY(!efs2_one(c, p1))) {
+        const uint32_t a = c->r[(p1 >> 7) & 31u];
+        const uint32_t b = c->r[(p1 >> 12) & 31u];
+        uint32_t *const d = &c->r[(p1 >> 2) & 31u];
+        uint32_t e;
+
+        switch (p1 & 3u) {
+        case 0u: e = ppc_fpu_add(c, a, b, d); break;
+        case 1u: e = ppc_fpu_sub(c, a, b, d); break;
+        case 2u: e = ppc_fpu_mul(c, a, b, d); break;
+        default: e = ppc_fpu_div(c, a, b, d); break;
+        }
+        if (e != PPC_EXC_NONE) {
+            return efs_raise(c, e, aux);
+        }
+    }
+    if (EMU_UNLIKELY(!efs2_one(c, p2))) {
+        c->efs2_short = 1u;
+    }
+    return 0u;
+}
+
 static const void *const ppc_ir_helpers[] = {
     (const void *)ppc_ir_step,   (const void *)ppc_ir_efs,
     (const void *)ppc_ir_efsadd, (const void *)ppc_ir_efssub,
     (const void *)ppc_ir_efsmul, (const void *)ppc_ir_efsdiv,
+    (const void *)ppc_ir_efs2,
 };
 #define PPC_HELPER_STEP 0u
 #define PPC_HELPER_EFS 1u
@@ -320,6 +381,7 @@ static const void *const ppc_ir_helpers[] = {
 #define PPC_HELPER_EFSSUB 3u
 #define PPC_HELPER_EFSMUL 4u
 #define PPC_HELPER_EFSDIV 5u
+#define PPC_HELPER_EFS2 6u
 
 static uint32_t ppc_reg_offset(uint32_t n)
 {
@@ -333,6 +395,8 @@ static uint32_t ppc_reg_offset(uint32_t n)
         return (uint32_t)offsetof(ppc_cpu_t, xer);
     case R_LR:
         return (uint32_t)offsetof(ppc_cpu_t, lr);
+    case R_EFS2:
+        return (uint32_t)offsetof(ppc_cpu_t, efs2_short);
     default:
         return (uint32_t)offsetof(ppc_cpu_t, ctr);
     }
@@ -1403,6 +1467,58 @@ static void lower_helper(T *t)
                       PPC_HELPER_STEP, 0u);
 }
 
+static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len);
+
+/* Which of efs2's four, or -1. */
+static int efs2_kind(const I *d)
+{
+    switch (d->sem) {
+    case PPC_S_EFSADD: return 0;
+    case PPC_S_EFSSUB: return 1;
+    case PPC_S_EFSMUL: return 2;
+    case PPC_S_EFSDIV: return 3;
+    default: return -1;
+    }
+}
+
+/*
+ * One of the four followed by another: one ppc_ir_efs2 call for both,
+ * which traps as the first's single helper would; the first retired;
+ * then the block left at the second where its general path is wanted
+ * (efs2_short), before it is retired -- a block is charged what its
+ * interpreter would have charged.
+ * False, emitting nothing, unless the next is one of the four and not
+ * where a resident block begins; t->next is then past the second.
+ */
+static bool lower_efs2(T *t, const I *d1)
+{
+    B *const b = t->b;
+    const uint32_t pc2 = t->next;
+    uint32_t insn2;
+    uint32_t len2;
+    I d2;
+
+    if (emu_jit_entry_known(pc2) || !fetch(t->c, pc2, &insn2, &len2)) {
+        return false;
+    }
+    ppc_decode(insn2, len2, t->c->vle, &d2);
+    if (efs2_kind(&d2) < 0 || must_decline(&d2)) {
+        return false;
+    }
+
+    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP,
+                      (uint8_t)(EFS_AUX_SET | ((d1->len == 2u) ? EFS_AUX_LEN2 : 0u)),
+                      K(b, EFS2_PACK((uint32_t)efs2_kind(d1), d1)),
+                      K(b, EFS2_PACK((uint32_t)efs2_kind(&d2), &d2)), PPC_HELPER_EFS2, 0u);
+    (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, NOT, NOT, 0u, 0u);
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, NOT, NOT, pc2, 0u);
+    (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, G(b, R_EFS2), K(b, 0u), pc2, 0u);
+    t->next = pc2 + len2;
+    t->counted = false; /* the second's RETIRE is the loop's */
+    g_stats.efs2++;
+    return true;
+}
+
 /* The fields ppc_ir_efs unpacks, in one constant. */
 _Static_assert(PPC_S_COUNT <= 256u, "efs_op packs the semantics in eight bits");
 
@@ -1578,7 +1694,12 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                 b->next_temp = mark_temp;
                 t.ends = false;
                 t.counted = false;
-                if (is_efs(&d)) {
+                if (efs2_kind(&d) >= 0 && count + 1u < PPC_MAX_BLOCK_INSNS &&
+                    lower_efs2(&t, &d)) {
+                    /* two retired: the loop adds the first's length */
+                    cur += t.next - (cur + len);
+                    count++;
+                } else if (is_efs(&d)) {
                     lower_efs(&t, &d);
                 } else {
                     lower_helper(&t);

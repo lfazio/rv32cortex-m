@@ -44,6 +44,12 @@ typedef struct ppc_cpu {
      * keeps its operands in the GPRs, so this is the whole of its state.
      */
     uint32_t spefscr;
+    /*
+     * Set by a translated block's call for two FP instructions
+     * (ppc_ir_efs2) when the second wants the general path: it was not
+     * executed, and the block leaves at it.
+     */
+    uint32_t efs2_short;
 
     /*
      * The reservation, as HID1[ATS] describes it: a flag and no
