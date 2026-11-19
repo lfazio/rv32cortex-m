@@ -83,6 +83,8 @@ bool t2_ld_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
 bool t2_st_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
                    uint32_t size);
 void t2_cmp_imm(uint32_t rn, uint16_t imm12);
+/* STRD rt, rt2, [rn, #off]: off a multiple of 4 to 1020; false if not. */
+bool t2_strd_imm(uint32_t rt, uint32_t rt2, uint32_t rn, uint32_t off);
 /* CMN.W rn, #imm: the flags of rn + imm, a compare with -imm. */
 void t2_cmn_imm(uint32_t rn, uint16_t imm12);
 void t2_mov_imm(uint32_t rd, uint16_t imm12);

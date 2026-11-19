@@ -72,6 +72,9 @@ cmn.w   r9, #1
 cmn.w   r12, #0x00FF00FF
 bic.w   r0, r9, #15
 orn     r12, r3, #0xFF000000
+strd    r0, r0, [r4, #636]
+strd    r10, r7, [r4, #644]
+strd    r12, r3, [r4]
 ubfx    r9, r12, #30, #2
 ubfx    r0, r12, #0, #1
 bfi     r3, r0, #2, #2
@@ -326,6 +329,9 @@ int main(void)
         (void)t2_expand_imm(0xFF000000u, &enc);
         t2_orn_imm(12u, 3u, enc);
     }
+    (void)t2_strd_imm(0u, 0u, 4u, 636u);
+    (void)t2_strd_imm(10u, 7u, 4u, 644u);
+    (void)t2_strd_imm(12u, 3u, 4u, 0u);
     t2_ubfx(9u, 12u, 30u, 2u);
     t2_ubfx(0u, 12u, 0u, 1u);
     t2_bfi(3u, 0u, 2u, 2u);

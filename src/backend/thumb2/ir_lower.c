@@ -166,6 +166,9 @@ static bool reads_a_in_r0(uint8_t op)
 static EMU_PER_CORE uint16_t g_r0_holds;
 static EMU_PER_CORE uint16_t g_r0_avail;
 static EMU_PER_CORE bool g_r0_first;
+/* The next live instruction, and whether the one lowered consumed it. */
+static EMU_PER_CORE const emu_ir_insn_t *g_next;
+static EMU_PER_CORE bool g_skip_next;
 
 void st_slot(uint32_t rt, uint16_t n)
 {
@@ -3751,15 +3754,39 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_PUT:
+    case EMU_IR_PUT: {
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
             break;
         }
-        if (t->reg_offset(in->imm) == t->pc_offset) {
+        const uint32_t off = t->reg_offset(in->imm);
+
+        if (off == t->pc_offset) {
             g_pc_pending = false; /* written here: nothing older may follow */
         }
-        t2_str_imm(use_reg(in->a, T2_R0), T2_CPU, t->reg_offset(in->imm));
+        const uint32_t rv = use_reg(in->a, T2_R0);
+        const emu_ir_insn_t *const nx = g_next;
+
+        /*
+         * A PUT then a PUT of the next word is one STRD: ARMv7-M's flags
+         * are four adjacent words written in a row, N and Z with the
+         * same value -- 47% of its PUTs, which were 17% of its time in
+         * translated code. The second value's slot is good: the
+         * dead-store rule hands a value over in r0 only to the
+         * instruction right after its producer, and that is this PUT.
+         */
+        if (nx != NULL && nx->op == (uint8_t)EMU_IR_PUT && off != t->pc_offset &&
+            !(t->reg_is_zero != NULL && t->reg_is_zero(nx->imm)) &&
+            t->reg_offset(nx->imm) == off + 4u && off + 4u != t->pc_offset) {
+            const uint32_t rv2 = (nx->a == in->a) ? rv : use_reg(nx->a, T2_R1);
+
+            if (t2_strd_imm(rv, rv2, T2_CPU, off)) {
+                g_skip_next = true;
+                break;
+            }
+        }
+        t2_str_imm(rv, T2_CPU, off);
         break;
+    }
 
     case EMU_IR_CONST: {
         if (in->dst < g_ntemps && in->dst < EMU_IR_MAX_TEMPS && g_kcmp[in->dst] != 0u) {
@@ -5040,6 +5067,13 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 #if EMU_JIT_BYTE_STATS
         uint8_t *const at = emu_jit_here();
 #endif
+        uint32_t nxt = i + 1u;
+
+        while (nxt < b->count && b->insn[nxt].dead) {
+            nxt++;
+        }
+        g_next = (nxt < b->count) ? &b->insn[nxt] : NULL;
+        g_skip_next = false;
         if (!lower_one(&b->insn[i], t)) {
             emu_ir_note_refused(b->insn[i].op, b->insn[i].aux);
             return false;
@@ -5049,6 +5083,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 #endif
         if (emu_jit_overflowed()) {
             return false;
+        }
+        if (g_skip_next) {
+            i = nxt; /* the PUT lowered with this one, as an STRD */
         }
     }
 

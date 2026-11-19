@@ -149,6 +149,21 @@ void t2_str_imm(uint32_t rt, uint32_t rn, uint32_t off)
               (uint16_t)((rt << 12) | (off & 0xFFFu)));
 }
 
+/*
+ * STRD rt, rt2, [rn, #off] (T1, offset form): two words in one
+ * instruction. off a multiple of 4 up to 1020; rt == rt2 is a store's
+ * right (only LDRD forbids it), and false where it will not encode.
+ */
+bool t2_strd_imm(uint32_t rt, uint32_t rt2, uint32_t rn, uint32_t off)
+{
+    if ((off & 3u) != 0u || off > 1020u || rt == 13u || rt == 15u || rt2 == 13u ||
+        rt2 == 15u) {
+        return false;
+    }
+    t2_emit32((uint16_t)(0xE9C0u | rn), (uint16_t)((rt << 12) | (rt2 << 8) | (off >> 2)));
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /* Data processing                                                     */
 /* ------------------------------------------------------------------ */
