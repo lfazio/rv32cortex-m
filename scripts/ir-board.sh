@@ -64,14 +64,14 @@ echo "ir-board: $n inputs from $CORPUS, from #$FIRST"
 # -O2 as the firmware's backend is built; the core's own sources, the
 # Thumb-2 backend and the IR interpreter, nothing of a platform.
 arm-none-eabi-gcc -mcpu=cortex-m7 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard \
-    -O2 -g -std=gnu11 -DEMU_IR_BOARD -DEMU_IR_VECTOR=1 \
+    -O2 -g -std=gnu11 -DEMU_IR_BOARD -DEMU_IR_VECTOR=1 -DEMU_IR_LOOP_SHAPE=1 \
     -ffunction-sections -fdata-sections \
     -Wall -Wextra -I"$ROOT/include" -I"$OUT" \
     --specs=picolibc.specs -nostartfiles \
     -T "$ROOT/tests/ir-board/board.ld" -Wl,--gc-sections \
     "$ROOT/tests/ir-board/start.S" "$ROOT/tests/ir-board/corpus.S" \
     "$ROOT/tests/ir-board/main.c" "$ROOT/tests/fuzz/fuzz_ir.c" \
-    "$ROOT/src/emu/emu_ir.c" "$ROOT/src/emu/emu_ir_jit.c" \
+    "$ROOT/src/emu/emu_ir.c" "$ROOT/src/emu/emu_ir_jit.c" "$ROOT/src/emu/emu_ir_kernel.c" \
     "$ROOT/src/emu/emu_jit.c" "$ROOT/src/emu/emu_crypto.c" \
     "$ROOT/src/emu/emu_lock.c" "$ROOT/src/backend/common/interp.c" \
     "$ROOT/src/backend/thumb2/encode.c" "$ROOT/src/backend/thumb2/ir_lower.c" \

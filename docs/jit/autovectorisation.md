@@ -1,7 +1,10 @@
 # Autovectorising the JIT: a plan
 
-**Status: a plan, 2026-11-18; P0, the census, done and its gate met;
-P1, recognition, done.** Nothing transforms a loop yet. Every phase ends
+**Status, 2026-11-19: P0 (the census) and P1 (recognition) done; P2 and
+P3 built -- four kernels -- and measured: strcpy's copy to the NUL kept,
+Dhrystone 19-20% faster for RV32 on the F746 and 19% on the N6, 15% for
+ARMv7-M; the dot product, the copy and the fill not paying on the F746,
+off by default.** Every phase ends
 in a measurement that decides whether the next one starts, because this
 is the kind of feature that reads as obviously worth it and then is not
 (the loop register cache, [../backend/thumb2.md](../backend/thumb2.md#a-loops-guest-registers-in-host-ones-measured-not-kept),
@@ -191,9 +194,9 @@ not load yet, DOOM and a Linux boot. **Gate**: kernels reaching at least
 entry -- met by three.
 
 **P1 -- recognition only. Done**: `emu_ir_loop_shape`, run at the end
-of `emu_ir_optimise` on hosts (`-DEMU_IR_LOOP_SHAPE`, off on the boards,
-whose BSS it would cost before it is worth anything there), changing
-nothing. Every temp of the body gets a kind -- invariant, a carried
+of `emu_ir_optimise` (`-DEMU_IR_LOOP_SHAPE`; off on the boards until P3
+gave it something to do there, on everywhere since), changing
+nothing by itself. Every temp of the body gets a kind -- invariant, a carried
 register plus a constant or plus an invariant, this iteration's, or
 carried other than affinely -- every register the body writes is
 per-iteration, an induction, a sum or a sticky bit ORed in, and a loop
@@ -220,19 +223,74 @@ sanitizers -- which found a negation of INT_MIN in it, the offsets
 unsigned now. None of fuzz-ir's random loops has a kernel's shape:
 P2's generator has to build them.
 
-**P2 -- the 16-bit dot product.** `EMU_IR_VLOOP` with one kernel, its
-reference in `emu_ir_interp`, lowered on x86-64 (`PMADDWD`), Thumb-2
-(`SMLAD` over two halfwords loaded as a word where the stride is 2, and
-packed with `PKHBT` from two `LDRH` where it is not) and Helium
-(`VLDRH.S32` and `VMLADAVA`). CoreMark's `matrix_mul_vect` and
-`matrix_mul_matrix`. **Gate**: RV32 CoreMark faster on the F746 at two
-layouts, no other row slower, and the buffer's compactions at 32 KB no
-higher.
+**P2 -- the 16-bit dot product. Built, measured, off by default.**
+Not as planned: no backend emits the kernel. `EMU_IR_KERNEL` is a call,
+ahead of the block's body so a back edge does not repeat it, to one C
+function, `emu_ir_kernel_run` (src/emu/emu_ir_kernel.c), which reads the
+descriptor the pass made (`emu_ir_kernel_add`: registers resolved to
+offsets, the block's RAM window, a small table shared by equal loops),
+checks, runs, writes the registers back and returns the instructions it
+retired. GCC makes it SMLAD on the M7 and plain C on x86-64; the IR
+interpreter calls the same function, so fuzz-ir compares the kernel with
+the scalar loop as built. Two rules make that comparison exact:
 
-**P3 -- maps, copies, fills.** 16- and 32-bit maps by a constant and by
-a second array (`matrix_add_const`, `matrix_test`), and the byte and
-word copy and fill loops of the guests' C libraries. Each kernel is
-its own measurement.
+- **It runs only what the scalar loop would have run this entry**, less
+  the last: the iterations before the loop cap's back edge leaves
+  (`retired + j * insns >= cap`), which bounds an interrupt's wait as
+  before and leaves the block in the very state it would have left.
+- **The iteration it leaves must complete**: its elements are checked
+  in the window too. fuzz-ir found this one -- an array ending one
+  element short of the window: the scalar iteration trapped before
+  writing the register each iteration writes, which the kernel had not
+  written either (`regressions/ir/kernel-last-iteration-traps`).
+
+On the F746 (RV32 CoreMark x120, 62,270 calls running 325,673
+iterations) it was **2.2% slower** -- 9.42 against 9.22 -- and a firmware
+whose kernel returned at once measured the same 9.42: the call, about
+100 cycles a block entry, cost what six iterations of a 16-bit dot
+product save. In flash, before `EMU_HOT_TEXT`, it was 9.56. And the
+first board run lost every kernel block to the interpreter (RV32 78%
+slower, "declined 2") because the Thumb-2 backend's `bisect_allows`, a
+third list of what it lowers, did not name the operation while its
+capability list said yes (docs/lessons.md).
+
+**P3 -- copies and fills. strcpy's kept.** The byte loops get the same
+call: copy to the NUL (strcpy), copy and fill counted (memcpy, memset),
+a byte at a time in the scalar loop's order -- so a destination over its
+source reads what it wrote -- with memcpy and memset where the two cannot
+meet; the source may be the image (Dhrystone copies string literals),
+and the RAM window's store guard is the inlined stores' (RV32's
+reservation, ARMv7-M's `smc_watch`). Measured each on its own, F746:
+
+| | without | with | |
+|---|---|---|---|
+| RV32 Dhrystone (strcpy) | 13.34 | 10.75 | **-19.4%** (576,193 iterations in 39,737 calls) |
+| RV32 crypto (memcpy, memset) | 20.49 | 20.58 | +0.4% |
+
+So `emu_ir_kernel_kinds` gives a kernel to the copy to the NUL alone;
+fuzz-ir turns every kind on, so the dot product, the copy and the fill
+stay tested. The maps (`matrix_add_const`) were not built: they share
+the dot product's trip counts.
+
+As committed -- copy to the NUL on, a table of 16 (`EMU_IR_KERNELS`;
+at 64 it and the recogniser's arrays were 10 KB of `.bss`, a third of
+the F446's guest RAM), on everywhere but the F446 -- against 330775a:
+
+| | layout | without | with | |
+|---|---|---|---|---|
+| RV32 Dhrystone, F746 | pad 0 / 64 | 13.34 / 13.30 | 10.70 / 10.77 | **-19.8% / -19.0%** |
+| ARMv7-M Dhrystone, F746 | pad 0 / 64 | 18.30 / 18.28 | 15.53 / 15.55 | **-15.1% / -14.9%** (556,047 iterations) |
+| RV32 Dhrystone, N6 | | 18.17 | 14.73 | **-18.9%** |
+| CoreMark, F746: RV32, ARMv7-M, PowerPC, G4MH | pad 0 | 9.22, 11.29, 11.36, 14.35 | 9.02, 11.28, 11.44, 14.40 | -2.2%, -0.1%, +0.7%, +0.4% |
+
+No CoreMark makes a kernel, so its rows are layout: PowerPC's, the
+largest, did not move with the flash pad, nor with four ITCM pads or
+four guest-RAM pads on the old tree (11.36-11.40), and moving the old
+tree's `.bss` by the 10 KB the first tables added made it 11.67, by
+4 KB 11.41. The fuzz-ir corpus replayed on the F746 (16,171 inputs, no
+difference), isatest, and CoreMark x2000 at 32 KB (55 s across three
+wraps of the cycle counter, its CRC valid, 516 compactions) with the
+old tree's translations, compactions and interpreted count exactly.
 
 **P4 -- the other frontends.** ARMv7-M's matrix loops are the same
 kernels with the guest's own `smlabb` (one product an instruction, where

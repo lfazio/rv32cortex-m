@@ -488,6 +488,12 @@ static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
             *retired += (in->imm != 0u) ? in->imm : 1u;
             continue;
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+        case EMU_IR_KERNEL:
+            *retired += emu_ir_kernel_run(cpu, in->imm, *retired);
+            continue;
+#endif
+
         case EMU_IR_GET:
             r = (t->reg_is_zero != NULL && t->reg_is_zero(in->imm))
                     ? 0u

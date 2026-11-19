@@ -113,7 +113,9 @@ measured at.
       compare's, and PowerPC's CR field is one three-way compare
       (`EMU_IR_CMP3`). ARMv7-M stores four words of flag state at
       every flag-setting instruction (N and Z as the result, C, V), in
-      loops whose next instruction reads only one of them. Profiled again
+      loops whose next instruction reads only one of them; pairing them
+      into STRDs made its code 2.9% smaller and CoreMark 0.97% slower
+      (`wip/t2-strd-flag-stores`): fewer stores, not wider ones. Profiled again
       after the changes that took 16-30% off these three (ARMv7-M 13.40
       to 11.31, PowerPC 17.69 to 12.46, G4MH 18.74 to 14.30): ARMv7-M's
       stores to the cpu are 17.2% of its translated time, PowerPC's
@@ -125,12 +127,25 @@ measured at.
       [performance.md](performance.md#driver-performance-the-passthrough-window)),
       ARMv7-M (5.5-13x) and G4MH (2.5-4.2x,
       [frontend/g4mh.md](frontend/g4mh.md#the-peripheral-window)).
-- [ ] **Autovectorisation of the IR pipeline**: the plan is
-      [jit/autovectorisation.md](jit/autovectorisation.md) -- kernels for
-      the loop shapes a census finds (RV32 CoreMark's 16-bit dot
-      products and maps, 12% of its run on the F746), the scalar block
-      kept as remainder and fallback, and a census first that decides
-      whether anything is built.
+- [ ] **Autovectorisation, what is left**
+      ([jit/autovectorisation.md](jit/autovectorisation.md)): strcpy's
+      kernel is on (Dhrystone on the F746 19-20% faster for RV32, 15%
+      for ARMv7-M; off on the F446, whose guest RAM it costs); the dot
+      product, the copy and the fill are built and tested and off, the
+      call at each block entry -- about 100 cycles on the M7 -- costing
+      what CoreMark's six iterations an entry save. Emitting the dot
+      product in the block, where it is a few instructions and no call,
+      is what would decide it; Helium's `VMLADAVA` on the N6; ARMv7-M's
+      dot products, whose sticky Q a kernel would have to compute per
+      step.
+- [ ] **Why a longer run is slower at 32 KB.** RV32 CoreMark on the
+      F746 with `-DEMU_JIT_CODE_BYTES=32768`: x650 runs at 16.40 host
+      cycles an instruction, x2000 at 23.87 (330775a; 24.16 with the
+      loop kernels, which make none there). Per million instructions,
+      57 translations against 113, and 3.1% interpreted against 5.0%
+      (thrash 232 against 1,479). A steady state should not depend on
+      the run's length; something accumulates -- the pcs given up on,
+      their retries, or a cyclic set the compactions drift into.
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure.** Linking a later block's exit made all four CoreMarks
       3.6-8.0% faster at their default buffers, but without the stop

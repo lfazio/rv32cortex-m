@@ -1503,6 +1503,11 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_CMP3:
         return aux == (uint8_t)EMU_IR_C_LT || aux == (uint8_t)EMU_IR_C_LTU;
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    case EMU_IR_KERNEL:
+        return true;
+#endif
+
     case EMU_IR_CLMUL:
         return aux <= 2u && (host_crypto() & HOST_PCLMUL) != 0u;
     case EMU_IR_AESSB:
@@ -3225,6 +3230,25 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    case EMU_IR_KERNEL:
+        /*
+         * emu_ir_kernel_run(cpu, imm), and its retired instructions
+         * added to the count. Lowered ahead of the body (emu_ir_lower),
+         * so a back edge does not run it again.
+         */
+        x86_mov_imm32(X86_ESI, in->imm);
+        emu_jit_emit8(0x89);
+        emu_jit_emit8(0xEA); /* mov edx, ebp: the count so far */
+        emu_jit_emit8(0x48);
+        emu_jit_emit8(0x89);
+        emu_jit_emit8(0xDF); /* mov rdi, rbx */
+        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)emu_ir_kernel_run);
+        x86_call_rax();
+        x86_alu_rr(X86_ADD, X86_CNT, X86_EAX);
+        break;
+#endif
+
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP: {
         /*
@@ -4023,9 +4047,21 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         census_inc(&emu_ir_census_cur->entries); /* past the chain entry */
     }
 #endif
+    /*
+     * A loop kernel goes ahead of the body: run once an entry, not at
+     * every back edge (EMU_IR_KERNEL).
+     */
+    uint32_t first = 0u;
+
+    while (first < b->count && b->insn[first].op == (uint8_t)EMU_IR_KERNEL) {
+        if (!lower_one(&b->insn[first], t)) {
+            return false;
+        }
+        first++;
+    }
     g_body = emu_jit_here();
 
-    for (uint32_t i = 0; i < b->count; i++) {
+    for (uint32_t i = first; i < b->count; i++) {
         if (b->insn[i].dead) {
             continue;
         }

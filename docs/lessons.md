@@ -5248,6 +5248,55 @@ session, and every one of them recurred:
   field. `emu_ir_reset` clears it now. **A reset clears every field a
   user may set, or says which it keeps.**
 
+- **A kernel that leaves the last iteration to the scalar body must
+  leave it one that completes.** The loop kernels run every iteration
+  but the last, so that the registers each iteration writes -- a
+  product, a loaded byte, the flags -- end as the scalar loop leaves
+  them, without the kernel computing any. fuzz-ir found the hole in its
+  first minutes with the generator built for it: an array ending one
+  element short of the RAM window, the scalar iteration trapping at its
+  load before writing r6, and r6 holding not the previous iteration's
+  product, as the loop as built leaves it, but the value from before the
+  kernel. The kernel checks the window for the body's iteration too. **A
+  remainder that can fault is not a remainder.**
+
+- **Measure the call with its work taken out.** The dot-product kernel
+  made RV32 CoreMark on the F746 2.2% slower, which read as a kernel
+  slower than the loop it replaced. The same firmware with a kernel that
+  returned at once measured the same 9.42: the call itself, about 100
+  cycles a block entry, was all of it, and the work saved roughly what
+  it cost. Six iterations an entry do not pay for a call; strcpy's
+  fifteen bytes a call did (Dhrystone 19% faster). **Separate a
+  mechanism's fixed cost from its marginal one before judging either.**
+
+- **The third list, again.** `EMU_IR_KERNEL` was in the Thumb-2
+  backend's capability answer and its lowering, and not in
+  `bisect_allows`, so the first board run declined every block with a
+  kernel: RV32 CoreMark 78% slower, `declined 2 (cached 345598)`, while
+  the host suites -- which lower on x86-64 -- all passed. The capability
+  answer now asks `bisect_allows` for the kernel as it does for CMP3, so
+  the two cannot disagree for either; the other operations still rely
+  on someone remembering. **Read a new operation's first board run's
+  `declined` line before its figure.**
+
+- **Move the memory the change moved.** With the kernels' commit
+  PowerPC CoreMark, which ran no kernel, measured 0.8% slower at both of
+  the A/B's layouts -- which shift flash. Shifting ITCM by four amounts,
+  and the guest's RAM by four, left the old tree between 11.36 and
+  11.40; shifting `.bss` by the 10 KB the new tables had added to it
+  made the old tree 11.67, 2.7% slower, and by 4 KB 11.41. The same
+  IR, the same blocks and entries, 192 bytes of translated code
+  different only through the addresses it named. **The pad that answers
+  is the one for the memory the change grew.**
+
+- **A table sized on a host is a board's RAM.** 64 kernel descriptors
+  and the recogniser's two arrays were 10 KB of `.bss`: nothing on the
+  F746, and on the F446, whose guest gets what the firmware leaves, a
+  third of the guest's RAM (30,640 bytes to 20,384) -- seen only by
+  linking it and reading `__guest_ram_start`. The table is 16 entries
+  now (guests make 2 to 4), one array went into the other's padding, and
+  the F446, where they were never measured, leaves the kernels off.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

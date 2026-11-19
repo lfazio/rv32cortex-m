@@ -864,6 +864,19 @@ typedef enum emu_ir_op {
      * moves on a host. Pure. A backend says so (emu_ir_can_lower).
      */
     EMU_IR_CMP3,
+    /*
+     * A loop kernel (emu_ir_kernel.c; docs/jit/autovectorisation.md):
+     * r = emu_ir_kernel_run(cpu, imm, count), which runs as many of the
+     * block's loop iterations as it can prove safe and the scalar loop
+     * would have run before the loop cap ended this entry -- all but the
+     * last -- on the guest registers and RAM directly, and returns the
+     * guest instructions they retired, which are added to the count.
+     * aux is the kernel's kind (EMU_IR_LOOP_*). Only first in a block,
+     * ahead of the body a back edge returns to, so it runs once an
+     * entry. It reads and writes guest registers: every pass treats it
+     * as a helper.
+     */
+    EMU_IR_KERNEL,
 
     EMU_IR_OP_COUNT
 } emu_ir_op_t;
@@ -1402,11 +1415,54 @@ typedef enum emu_ir_loop_kind {
 #define EMU_IR_LOOP_MAX_REGS 64u
 
 /* The analysis, for a block whose back edge is to its own start. */
+/*
+ * A 16-bit dot product as a kernel runs it (docs/jit/autovectorisation.md,
+ * P2): guest register numbers, as GET and PUT name them.
+ */
+typedef struct emu_ir_dot {
+    bool ok;            /* every field below is filled */
+    uint8_t xreg, yreg; /* the two elements' induction registers */
+    bool xswap, yswap;  /* a halfword byte-swapped before its sign (PowerPC) */
+    int32_t xoff, yoff; /* each element at its register plus this */
+    int32_t xstride;    /* bytes an iteration, a constant */
+    uint8_t ysreg;      /* y's stride is r[ysreg] << ysshift, or ysconst if 0xFF */
+    uint8_t ysshift;
+    int32_t ysconst;
+    uint8_t ereg;       /* the back edge's induction: on while r[ereg] + ec != L */
+    int32_t estep, ec;
+    uint8_t lreg;       /* L is r[lreg], or lconst if 0xFF */
+    uint32_t lconst;
+    uint8_t acc;        /* the sum */
+    uint32_t insns;     /* guest instructions an iteration retires */
+} emu_ir_dot_t;
+
+/*
+ * A byte loop as a kernel runs it -- strcpy's copy to the NUL, memcpy's
+ * copy and memset's fill: guest register numbers, as GET and PUT name
+ * them.
+ */
+typedef struct emu_ir_copy {
+    bool ok;
+    uint8_t size;       /* the element's bytes, 1 */
+    uint8_t sreg, dreg; /* source (0xFF for a fill) and destination registers */
+    int32_t soff, doff; /* each element at its register plus this */
+    int32_t step;       /* bytes an iteration, both registers: the element's */
+    uint8_t vreg;       /* a fill's value: r[vreg], or vconst if 0xFF */
+    uint32_t vconst;
+    uint8_t ereg;       /* a counted loop's back edge, as emu_ir_dot_t's */
+    int32_t estep, ec;
+    uint8_t lreg;
+    uint32_t lconst;
+    uint32_t insns;
+} emu_ir_copy_t;
+
 typedef struct emu_ir_loop {
     emu_ir_loop_kind_t kind;
     uint32_t back;  /* the back edge's index in the block */
     uint8_t loads, stores, inductions, sums;
     uint8_t sticky; /* registers ORed into each iteration: a sticky flag */
+    emu_ir_dot_t dot;   /* for EMU_IR_LOOP_DOT16 */
+    emu_ir_copy_t copy; /* for COPY_NUL, COPY and FILL */
 } emu_ir_loop_t;
 
 /*
@@ -1414,6 +1470,7 @@ typedef struct emu_ir_loop {
  * block as the passes left it; changes nothing.
  */
 bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out);
+
 
 /* An operation's name, "?" for none: for diagnostics. */
 const char *emu_ir_op_name(uint8_t op);
@@ -1449,6 +1506,7 @@ typedef struct emu_ir_opt_stats {
      * docs/jit/autovectorisation.md, P1.
      */
     uint32_t loop_shape[16];
+    uint32_t kernels; /* loops given an EMU_IR_KERNEL */
     uint32_t puts_removed; /* guest register stores made redundant  */
     uint32_t setpcs_removed; /* pc writes overwritten unobserved     */
     uint32_t folded; /* constants absorbed into an immediate  */
@@ -1610,6 +1668,41 @@ typedef struct emu_ir_target {
     uint32_t (*vfop)(uint32_t op, uint32_t a, uint32_t b, uint32_t c,
                      uint32_t rm, uint32_t *flags);
 } emu_ir_target_t;
+
+/*
+ * The kernels' table: a descriptor's index (EMU_IR_NO_KERNEL when the
+ * table is full), and the run an EMU_IR_KERNEL makes -- the guest
+ * instructions it retired, 0 where it ran none.
+ */
+#define EMU_IR_NO_KERNEL 0xFFFFFFFFu
+/*
+ * Its entries: shared by equal loops, so a guest makes a few (RV32
+ * CoreMark 3 with every kind on, crypto 4). Each is 120 bytes of a
+ * board's RAM -- at 64 the table and the recogniser's arrays took a
+ * third of the F446's guest RAM. A loop that finds it full stays
+ * scalar, and is counted (`full` below).
+ */
+#define EMU_IR_KERNELS 16u
+uint32_t emu_ir_kernel_add(const emu_ir_dot_t *d, const emu_ir_target_t *t,
+                           const emu_ir_fastmem_t *w);
+uint32_t emu_ir_kernel_add_copy(const emu_ir_copy_t *c, emu_ir_loop_kind_t kind,
+                                const emu_ir_target_t *t, const emu_ir_fastmem_t *w,
+                                const emu_ir_fastmem_t *rom);
+uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t retired);
+/*
+ * The kinds the JIT gives a kernel, a bit each (1u << EMU_IR_LOOP_*).
+ * Copy to the NUL alone by default: the others were measured and did not
+ * pay on the F746 (docs/jit/autovectorisation.md). fuzz-ir sets every
+ * kind, so none goes untested.
+ */
+extern uint32_t emu_ir_kernel_kinds;
+void emu_ir_kernel_reset(void); /* no block may name one: a harness's */
+/*
+ * Descriptors made, calls, calls that ran iterations, iterations run, and
+ * loops refused one because the table was full.
+ */
+void emu_ir_kernel_stats(uint32_t *kernels, uint32_t *calls, uint32_t *runs,
+                         uint32_t *iters, uint32_t *full);
 
 /*
  * Lower an optimised block to host code through emu_jit_emit*().

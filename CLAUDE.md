@@ -146,10 +146,12 @@ the default in the `flash` targets because this firmware never idles.
 never fills the code cache and finishes in a tenth of a second, and two
 defects sat behind those facts while it passed (a compaction that moved
 chained jumps; a cycle counter wrapping at 19.9 s). Follow it with
-CoreMark x650 (`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=650
--DEMU_MAX_INSN=0`) **at `-DEMU_JIT_CODE_BYTES=32768`**, about 100 s, timed
-from the host end too. The 64 KB default neither crosses the wrap nor
-evicts: right for a performance figure, wrong for this.
+CoreMark x2000 (`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=2000
+-DEMU_MAX_INSN=0`) **at `-DEMU_JIT_CODE_BYTES=32768`**, about 55 s, timed
+from the host end too -- **and check it ran past 19.9 s**: x650 was this
+check at 78 s, and by 2026-11-19 the JIT ran it in 12, crossing no wrap.
+The 64 KB default neither crosses the wrap nor evicts: right for a
+performance figure, wrong for this.
 
 ## Rules learned the hard way
 
@@ -319,7 +321,9 @@ Each has cost more than one session, and every one recurred.
   figure follows -- by as much as the change moved the code: the speed
   libc moved the emulator 1,588 bytes, and PowerPC's interpreter's
   +3.9% was the old tree at `EMU_LAYOUT_PAD=1588`; for translated code
-  move the buffer (`EMU_LAYOUT_PAD_BSS`). On the host, callgrind is exact; under ~10%,
+  move the buffer (`EMU_LAYOUT_PAD_BSS`) -- and move the memory the change
+  grew: 10 KB of new `.bss` tables cost PowerPC 0.8% with the flash and
+  ITCM pads flat, and the `.bss` pad alone moved it 2.7%. On the host, callgrind is exact; under ~10%,
   best-of-five wall clock is not a measurement.
 - **Callgrind cannot see what an M7 charges for a loop's shape.** An
   interpreter change is measured on the board (PowerPC's `stretch()`:
@@ -539,6 +543,13 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   conflating any two retranslated one block 957 times. Remember
   refusals keyed on (pc, context), with an epoch, not a memset (1.42x on
   Linux).
+- **A kernel that leaves the last iteration to the scalar body must
+  leave it one that completes**: an array ending one element short of
+  the window trapped that iteration, and the register each iteration
+  writes kept a value from before the kernel (fuzz-ir,
+  `kernel-last-iteration-traps`). And measure a call with its work taken
+  out: the dot-product kernel's call cost what it saved (~100 cycles on
+  the M7).
 - **Every `default:` that declines is a list a new operation falls off**,
   and both defaults of `emu_ir_can_lower` have lied (Thumb-2 promising
   what it refused, three times -- the last CLMUL, RV32 CoreMark 32%
@@ -546,7 +557,8 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   it lowers). Make each effect countable (`emu_ir_opt_totals`; a broken
   promise prints as `unkept`, and `board-ab.sh` marks it). Thumb-2's
   `bisect_allows` was a third list: `EMU_IR_VOP` promised and refused,
-  95 blocks lost on vecbench's first board run.
+  95 blocks lost on vecbench's first board run -- and `EMU_IR_KERNEL`
+  every kernel block, RV32 CoreMark 78% slower, "declined 2".
 - **A list of exceptions fails open**: the dead-value pass removed a
   load nothing read -- an APLIC claim. It is a list of pure operations
   now.
@@ -868,7 +880,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   guest: test the window with registers that exist.
 - **Board sizes are not host sizes**: 192 KB of `.bss` on a 320 KB part;
   a frontend that allocates its own memory map works on a host and
-  cannot be ported (docs/memory.md).
+  cannot be ported (docs/memory.md); 10 KB of loop-kernel tables were a
+  third of the F446's guest RAM -- read `__guest_ram_start` after adding
+  `.bss`.
 - **A lesson learned in one frontend is not applied in the next**: profile
   a new interpreter on the board (ARMv7-M's MPU fetch was a third of it).
 

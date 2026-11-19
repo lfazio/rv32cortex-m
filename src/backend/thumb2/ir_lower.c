@@ -1439,6 +1439,7 @@ static bool bisect_allows(uint8_t op)
         return T2_BISECT >= 7;
     case EMU_IR_LOAD:
     case EMU_IR_STORE:
+    case EMU_IR_KERNEL: /* a call, as a helper's; a second list it fell off once */
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
         return T2_BISECT >= 7;
@@ -1833,6 +1834,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
         return false;
 #endif
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    case EMU_IR_KERNEL:
+        /*
+         * Through bisect_allows, as CMP3: answering true here while that
+         * list refused the operation lost every block with a kernel --
+         * "declined 2", RV32 CoreMark 78% slower on the F746, while every
+         * host check passed (they lower on x86-64).
+         */
+        return bisect_allows((uint8_t)op);
+#endif
     case EMU_IR_CMP3: /* named: the default promises what it does not see */
         return (aux == (uint8_t)EMU_IR_C_LT || aux == (uint8_t)EMU_IR_C_LTU) &&
                bisect_allows((uint8_t)op);
@@ -4064,6 +4075,18 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    case EMU_IR_KERNEL:
+        /* As on x86-64: the call ahead of the body, the count added. */
+        t2_mov(T2_R0, T2_CPU);
+        t2_imm32(T2_R1, in->imm);
+        t2_mov(T2_R2, T2_CNT); /* the count so far: the cap bounds the kernel too */
+        t2_call((const void *)emu_ir_kernel_run);
+        t2_add(T2_CNT, T2_CNT, T2_R0);
+        g_r0_holds = EMU_IR_NO_TEMP;
+        break;
+#endif
+
     case EMU_IR_CMP3: {
         /*
          * 2, the compare, then IT LT (or LO) MOV 8 and IT GT (or HI) MOV
@@ -5013,11 +5036,25 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * than to the block's entry, because the frame is already pushed and
      * re-running the prologue would push it again.
      */
+    /*
+     * A loop kernel goes ahead of the body: run once an entry, not at
+     * every back edge (EMU_IR_KERNEL). The guest pc is the block's
+     * start, already in the cpu, and the kernel does not read it.
+     */
+    uint32_t first = 0u;
+
+    while (first < b->count && b->insn[first].op == (uint8_t)EMU_IR_KERNEL) {
+        g_r0_holds = EMU_IR_NO_TEMP;
+        if (!lower_one(&b->insn[first], t)) {
+            return false;
+        }
+        first++;
+    }
     g_body = emu_jit_here();
     g_pc_pending = true; /* this block's own, already in the cpu */
     g_pc_value = g_start_pc;
 
-    for (uint32_t i = 0; i < b->count; i++) {
+    for (uint32_t i = first; i < b->count; i++) {
         if (b->insn[i].dead) {
             continue;
         }

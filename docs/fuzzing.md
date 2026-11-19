@@ -533,6 +533,23 @@ the generator's byte layout and checked with `FUZZ_SHOW=1`,
 `regressions/ir/lazy-pc-loop-back` and `lazy-pc-put-r15` each find
 their mutant on the board.
 
+**The loop kernels** (docs/jit/autovectorisation.md): random words never
+spell a loop a kernel takes, so the second configuration byte from 240
+up builds one -- a 16-bit dot product (240-247) or a byte loop (248-255)
+-- with its parameters drawn where the kernel's checks decide: elements
+signed, sign-extended, byte-swapped or unsigned; strides constant or a
+register shifted; a back edge on a pointer or a counter, an end exact or
+not; source and destination overlapping a few bytes either way; the NUL
+anywhere; arrays at the window's end. Every kind is on in fuzz-ir
+whatever the default. It found the kernel's one defect in minutes (an
+iteration left to the body that trapped), and six mutants of eight; a
+seventh was equivalent, a change no input can show, and the eighth, the store guard ignored, is invisible
+to its model target, whose slow-path store is the same write --
+`seeds/rv32-jit/reservation-across-a-kernel.S` finds it in 5 s through
+RV32's reservation. The seed's first version reserved the word the
+loop's first iteration writes, which runs in the block before the one
+with the kernel, so the reservation was gone before the kernel ran.
+
 **Mutants of the lowering, one at a time** (`scripts/ir-board-mutant.sh
 FILE OLD NEW`, from a worktree): ten of the changes the dumps led to
 (2026-11-18) -- G4MH's flags without the borrow (149 inputs different)

@@ -545,7 +545,7 @@ const char *emu_ir_op_name(uint8_t op)
         N(FMAX),    N(FSGNJ),     N(FCMP),      N(FCVT_TO_I), N(FCVT_FROM_I),
         N(FCLASS),  N(HELPER),    N(HELPER_TRAP), N(RETIRE),  N(SETPC),
         N(EXIT),    N(EXIT_IF),   N(VOP),       N(VOPM),      N(VMEM),
-        N(VRED),      N(VMEMS),     N(VFOP),      N(CMP3)};
+        N(VRED),      N(VMEMS),     N(VFOP),      N(CMP3),      N(KERNEL)};
 #undef N
     return (op < EMU_IR_OP_COUNT && k[op] != NULL) ? k[op] : "?";
 }
@@ -1042,6 +1042,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
         case EMU_IR_HELPER_TRAP:
         case EMU_IR_VMEM: /* its helper may */
         case EMU_IR_VMEMS:
+        case EMU_IR_KERNEL:
             /* May touch anything. */
             for (uint32_t r = 0; r < IR_MAX_GUEST_REGS; r++) {
                 cur[r] = EMU_IR_NO_TEMP;
@@ -1144,6 +1145,7 @@ static bool op_observes_state(uint8_t op)
     case EMU_IR_HELPER_TRAP:
     case EMU_IR_VMEM:
     case EMU_IR_VMEMS:
+    case EMU_IR_KERNEL:
     case EMU_IR_EXIT:
     case EMU_IR_EXIT_IF:
         return true;
@@ -2151,33 +2153,34 @@ enum {
 typedef struct {
     uint8_t kind;
     uint8_t reg;
+    uint16_t def; /* the instruction defining the temp; in what was padding */
     uint32_t off; /* wrapping, as the guest's addresses do (fuzz-ir: INT_MIN) */
 } lk_t;
 
+/* 2 KB of a board's RAM at 256 temps: ARMv7-M's kernel loops have 140. */
 static EMU_PER_CORE lk_t g_lk[EMU_IR_MAX_TEMPS];
-static EMU_PER_CORE uint16_t g_lk_def[EMU_IR_MAX_TEMPS];
 
 static lk_t lk_of(uint16_t t)
 {
-    const lk_t inv = {LK_INV, 0u, 0};
+    const lk_t inv = {.kind = LK_INV};
 
     return (t < EMU_IR_MAX_TEMPS && g_lk[t].kind != 0u) ? g_lk[t] : inv;
 }
 
 static bool lk_const(const emu_ir_block_t *b, uint16_t t, uint32_t *v)
 {
-    if (t >= EMU_IR_MAX_TEMPS || g_lk_def[t] == EMU_IR_NO_TEMP ||
-        b->insn[g_lk_def[t]].op != (uint8_t)EMU_IR_CONST) {
+    if (t >= EMU_IR_MAX_TEMPS || g_lk[t].def == EMU_IR_NO_TEMP ||
+        b->insn[g_lk[t].def].op != (uint8_t)EMU_IR_CONST) {
         return false;
     }
-    *v = b->insn[g_lk_def[t]].imm;
+    *v = b->insn[g_lk[t].def].imm;
     return true;
 }
 
 /* The kind of a value built from two by anything but an affine step. */
 static lk_t lk_mix(lk_t x, lk_t y)
 {
-    lk_t r = {LK_INV, 0u, 0};
+    lk_t r = {.kind = LK_INV};
 
     if (x.kind >= LK_AFF && x.kind != LK_VAR) {
         r.kind = LK_DEP;
@@ -2193,7 +2196,7 @@ static lk_t lk_mix(lk_t x, lk_t y)
 
 static const emu_ir_insn_t *lk_def_insn(const emu_ir_block_t *b, uint16_t t)
 {
-    return (t < EMU_IR_MAX_TEMPS && g_lk_def[t] != EMU_IR_NO_TEMP) ? &b->insn[g_lk_def[t]]
+    return (t < EMU_IR_MAX_TEMPS && g_lk[t].def != EMU_IR_NO_TEMP) ? &b->insn[g_lk[t].def]
                                                                     : NULL;
 }
 
@@ -2218,15 +2221,31 @@ static bool lk_elem16(const emu_ir_block_t *b, uint16_t t)
            (in->aux & EMU_IR_MEM_SIGNED) != 0u;
 }
 
+/* The LOAD behind a 16-bit element (lk_elem16), and whether it is swapped. */
+static const emu_ir_insn_t *lk_elem_load(const emu_ir_block_t *b, uint16_t t, bool *swap)
+{
+    const emu_ir_insn_t *in = lk_def_insn(b, t);
+
+    *swap = false;
+    if (in != NULL && in->op == (uint8_t)EMU_IR_SEXT16) {
+        in = lk_def_insn(b, in->a);
+        if (in != NULL && in->op == (uint8_t)EMU_IR_BSWAP16) {
+            *swap = true;
+            in = lk_def_insn(b, in->a);
+        }
+    }
+    return in;
+}
+
 /* Whether temp t's value is built only from one MUL of two 16-bit signed
  * elements, through pure single-input operations and constants. */
 static bool lk_from_product(const emu_ir_block_t *b, uint16_t t, uint32_t depth,
                             bool *mapped)
 {
-    if (t >= EMU_IR_MAX_TEMPS || g_lk_def[t] == EMU_IR_NO_TEMP || depth > 12u) {
+    if (t >= EMU_IR_MAX_TEMPS || g_lk[t].def == EMU_IR_NO_TEMP || depth > 12u) {
         return false;
     }
-    const emu_ir_insn_t *const in = &b->insn[g_lk_def[t]];
+    const emu_ir_insn_t *const in = &b->insn[g_lk[t].def];
 
     if (in->op == (uint8_t)EMU_IR_MUL) {
         if (lk_elem16(b, in->a) && lk_elem16(b, in->b)) {
@@ -2261,6 +2280,300 @@ static bool lk_from_product(const emu_ir_block_t *b, uint16_t t, uint32_t depth,
         break;
     }
     return false;
+}
+
+/* Whether t is the constant 0: strcpy's back edge compares its byte with it. */
+static bool lk_is_zero(const emu_ir_block_t *b, uint16_t t)
+{
+    uint32_t v;
+
+    return lk_const(b, t, &v) && v == 0u;
+}
+
+/*
+ * An induction's step: a constant, or another register shifted -- RV32's
+ * `sh1add a2, a0, a2`, PowerPC's `add r10, r10, r5`. False for any other.
+ */
+static bool lk_step(const emu_ir_block_t *b, uint16_t get_r, uint16_t put_r, int32_t *k,
+                    uint8_t *sreg, uint8_t *sshift)
+{
+    const lk_t kv = lk_of(put_r);
+    const emu_ir_insn_t *const d = lk_def_insn(b, put_r);
+
+    *sreg = 0xFFu;
+    *sshift = 0u;
+    if (kv.kind == LK_AFF) {
+        *k = (int32_t)kv.off;
+        return true;
+    }
+    if (d == NULL || d->op != (uint8_t)EMU_IR_ADD || (d->a != get_r && d->b != get_r)) {
+        return false;
+    }
+    const emu_ir_insn_t *w = lk_def_insn(b, (d->a == get_r) ? d->b : d->a);
+
+    if (w != NULL && w->op == (uint8_t)EMU_IR_SHLI && w->imm < 4u) {
+        *sshift = (uint8_t)w->imm;
+        w = lk_def_insn(b, w->a);
+    }
+    if (w == NULL || w->op != (uint8_t)EMU_IR_GET || w->imm >= EMU_IR_LOOP_MAX_REGS) {
+        return false;
+    }
+    *sreg = (uint8_t)w->imm;
+    return true;
+}
+
+/*
+ * A DOT16 loop's descriptor (emu_ir_dot_t), or ok false where a kernel
+ * could not run it as it stands: an element not at a constant offset
+ * from its register, a stride neither constant nor a register shifted,
+ * an induction beyond the two elements' and the exit's, a back edge not
+ * on NE against an invariant register or constant.
+ */
+static void lk_dot(const emu_ir_block_t *b, emu_ir_loop_t *out, uint8_t acc, uint16_t prod,
+                   uint32_t back, const uint8_t *cls, const uint16_t *get, const uint16_t *put)
+{
+    emu_ir_dot_t *const d = &out->dot;
+    const emu_ir_insn_t *const m = lk_def_insn(b, prod);
+    const emu_ir_insn_t *const be = &b->insn[back];
+
+    memset(d, 0, sizeof(*d));
+    if (m == NULL || m->op != (uint8_t)EMU_IR_MUL) {
+        return;
+    }
+    const emu_ir_insn_t *const lx = lk_elem_load(b, m->a, &d->xswap);
+    const emu_ir_insn_t *const ly = lk_elem_load(b, m->b, &d->yswap);
+
+    if (lx == NULL || ly == NULL) {
+        return;
+    }
+    const lk_t ax = lk_of(lx->a), ay = lk_of(ly->a);
+
+    if (ax.kind != LK_AFF || ay.kind != LK_AFF || ax.reg == ay.reg) {
+        return;
+    }
+    d->xreg = ax.reg;
+    d->yreg = ay.reg;
+    d->xoff = (int32_t)(ax.off + lx->imm);
+    d->yoff = (int32_t)(ay.off + ly->imm);
+
+    uint8_t sreg, sshift;
+    int32_t k;
+
+    if (!lk_step(b, get[d->xreg], put[d->xreg], &d->xstride, &sreg, &sshift) ||
+        sreg != 0xFFu) {
+        return; /* x walks by a constant */
+    }
+    if (!lk_step(b, get[d->yreg], put[d->yreg], &k, &d->ysreg, &d->ysshift)) {
+        return;
+    }
+    d->ysconst = k;
+    if (d->ysreg != 0xFFu && cls[d->ysreg] > 1u) {
+        return; /* a stride register the loop writes */
+    }
+
+    /* The back edge, normalised as the recogniser did. */
+    uint16_t x = be->a, y = be->b;
+    uint32_t z;
+
+    if (be->op != (uint8_t)EMU_IR_EXIT_IF ||
+        (be->aux != (uint8_t)EMU_IR_C_NE && be->aux != (uint8_t)EMU_IR_C_EQ)) {
+        return;
+    }
+    if (lk_const(b, y, &z) && z == 0u) {
+        const emu_ir_insn_t *const s = lk_def_insn(b, x);
+
+        if (s != NULL && s->op == (uint8_t)EMU_IR_SUB) {
+            x = s->a;
+            y = s->b;
+        }
+    }
+    if (be->aux != (uint8_t)EMU_IR_C_NE) {
+        return;
+    }
+    lk_t ke = lk_of(x), kl = lk_of(y);
+    uint16_t lt = y;
+
+    if (ke.kind != LK_AFF) {
+        ke = lk_of(y);
+        kl = lk_of(x);
+        lt = x;
+    }
+    if (ke.kind != LK_AFF || cls[ke.reg] != 3u || kl.kind != LK_INV) {
+        return;
+    }
+    d->ereg = ke.reg;
+    d->ec = (int32_t)ke.off;
+    if (!lk_step(b, get[d->ereg], put[d->ereg], &d->estep, &sreg, &sshift) || sreg != 0xFFu ||
+        (d->estep != 1 && d->estep != -1 && d->estep != 2 && d->estep != -2 &&
+         d->estep != 4 && d->estep != -4)) {
+        return;
+    }
+    if (lk_const(b, lt, &z)) {
+        d->lreg = 0xFFu;
+        d->lconst = z;
+    } else {
+        const emu_ir_insn_t *const g = lk_def_insn(b, lt);
+
+        if (g == NULL || g->op != (uint8_t)EMU_IR_GET || g->imm >= EMU_IR_LOOP_MAX_REGS) {
+            return;
+        }
+        d->lreg = (uint8_t)g->imm;
+    }
+
+    /* No induction the kernel would not move. */
+    for (uint32_t r = 0; r < EMU_IR_LOOP_MAX_REGS; r++) {
+        if (cls[r] == 3u && r != d->xreg && r != d->yreg && r != d->ereg) {
+            return;
+        }
+    }
+    d->acc = acc;
+    for (uint32_t i = 0; i <= back; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (!in->dead && in->op == (uint8_t)EMU_IR_RETIRE) {
+            d->insns += (in->imm == 0u) ? 1u : in->imm;
+        }
+    }
+    d->ok = d->insns != 0u;
+}
+
+/*
+ * A counted back edge -- NE of an induction register plus a constant
+ * against an invariant register or constant -- as emu_ir_dot_t and
+ * emu_ir_copy_t hold it. False for any other.
+ */
+static bool lk_counted_exit(const emu_ir_block_t *b, uint32_t back, const uint8_t *cls,
+                            const uint16_t *get, const uint16_t *put, uint8_t *ereg,
+                            int32_t *estep, int32_t *ec, uint8_t *lreg, uint32_t *lconst)
+{
+    const emu_ir_insn_t *const be = &b->insn[back];
+    uint16_t x = be->a, y = be->b;
+    uint8_t sreg, sshift;
+    uint32_t z;
+
+    if (be->op != (uint8_t)EMU_IR_EXIT_IF ||
+        (be->aux != (uint8_t)EMU_IR_C_NE && be->aux != (uint8_t)EMU_IR_C_EQ)) {
+        return false;
+    }
+    if (lk_const(b, y, &z) && z == 0u) {
+        const emu_ir_insn_t *const s = lk_def_insn(b, x);
+
+        if (s != NULL && s->op == (uint8_t)EMU_IR_SUB) {
+            x = s->a;
+            y = s->b;
+        }
+    }
+    if (be->aux != (uint8_t)EMU_IR_C_NE) {
+        return false;
+    }
+    lk_t ke = lk_of(x), kl = lk_of(y);
+    uint16_t lt = y;
+
+    if (ke.kind != LK_AFF) {
+        ke = lk_of(y);
+        kl = lk_of(x);
+        lt = x;
+    }
+    if (ke.kind != LK_AFF || cls[ke.reg] != 3u || kl.kind != LK_INV) {
+        return false;
+    }
+    *ereg = ke.reg;
+    *ec = (int32_t)ke.off;
+    if (!lk_step(b, get[*ereg], put[*ereg], estep, &sreg, &sshift) || sreg != 0xFFu ||
+        (*estep != 1 && *estep != -1 && *estep != 2 && *estep != -2 && *estep != 4 &&
+         *estep != -4)) {
+        return false;
+    }
+    if (lk_const(b, lt, &z)) {
+        *lreg = 0xFFu;
+        *lconst = z;
+        return true;
+    }
+    const emu_ir_insn_t *const g = lk_def_insn(b, lt);
+
+    if (g == NULL || g->op != (uint8_t)EMU_IR_GET || g->imm >= EMU_IR_LOOP_MAX_REGS) {
+        return false;
+    }
+    *lreg = (uint8_t)g->imm;
+    return true;
+}
+
+/*
+ * A byte loop's descriptor (emu_ir_copy_t), or ok false where a kernel
+ * could not run it: an element not one byte, an access not at a constant
+ * offset from its register, a register not stepping by the element, an
+ * induction beyond the source's, the destination's and the exit's.
+ */
+static void lk_copy(const emu_ir_block_t *b, emu_ir_loop_t *out, const emu_ir_insn_t *load,
+                    const emu_ir_insn_t *store, uint32_t back, const uint8_t *cls,
+                    const uint16_t *get, const uint16_t *put)
+{
+    emu_ir_copy_t *const c = &out->copy;
+    uint8_t sreg, sshift;
+    int32_t k;
+
+    memset(c, 0, sizeof(*c));
+    c->sreg = 0xFFu;
+    c->vreg = 0xFFu;
+    c->size = (uint8_t)EMU_IR_MEM_SIZE(store->aux);
+    if (c->size != 1u || (load != NULL && EMU_IR_MEM_SIZE(load->aux) != 1u)) {
+        return;
+    }
+    const lk_t ad = lk_of(store->a);
+
+    if (ad.kind != LK_AFF) {
+        return;
+    }
+    c->dreg = ad.reg;
+    c->doff = (int32_t)(ad.off + store->imm);
+    if (!lk_step(b, get[c->dreg], put[c->dreg], &c->step, &sreg, &sshift) || sreg != 0xFFu ||
+        c->step != 1) {
+        return;
+    }
+    if (load != NULL) {
+        const lk_t as = lk_of(load->a);
+
+        if (as.kind != LK_AFF || as.reg == c->dreg) {
+            return;
+        }
+        c->sreg = as.reg;
+        c->soff = (int32_t)(as.off + load->imm);
+        if (!lk_step(b, get[c->sreg], put[c->sreg], &k, &sreg, &sshift) || sreg != 0xFFu ||
+            k != c->step) {
+            return;
+        }
+    } else {
+        uint32_t v;
+        const emu_ir_insn_t *const g = lk_def_insn(b, store->b);
+
+        if (lk_const(b, store->b, &v)) {
+            c->vconst = v;
+        } else if (g != NULL && g->op == (uint8_t)EMU_IR_GET &&
+                   g->imm < EMU_IR_LOOP_MAX_REGS && cls[g->imm] <= 1u) {
+            c->vreg = (uint8_t)g->imm;
+        } else {
+            return;
+        }
+    }
+    if (out->kind != EMU_IR_LOOP_COPY_NUL &&
+        !lk_counted_exit(b, back, cls, get, put, &c->ereg, &c->estep, &c->ec, &c->lreg,
+                         &c->lconst)) {
+        return;
+    }
+    for (uint32_t r = 0; r < EMU_IR_LOOP_MAX_REGS; r++) {
+        if (cls[r] == 3u && r != c->sreg && r != c->dreg &&
+            (out->kind == EMU_IR_LOOP_COPY_NUL || r != c->ereg)) {
+            return; /* an induction the kernel would not move */
+        }
+    }
+    for (uint32_t i = 0; i <= back; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (!in->dead && in->op == (uint8_t)EMU_IR_RETIRE) {
+            c->insns += (in->imm == 0u) ? 1u : in->imm;
+        }
+    }
+    c->ok = c->insns != 0u;
 }
 
 bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
@@ -2299,7 +2612,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
 
     for (uint32_t t = 0; t < nt; t++) {
         g_lk[t].kind = 0u;
-        g_lk_def[t] = EMU_IR_NO_TEMP;
+        g_lk[t].def = EMU_IR_NO_TEMP;
     }
 
     /* The body's operations, its registers, and what it may not hold. */
@@ -2312,7 +2625,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
             continue;
         }
         if (in->dst < nt) {
-            g_lk_def[in->dst] = (uint16_t)i;
+            g_lk[in->dst].def = (uint16_t)i;
         }
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_HELPER:
@@ -2382,7 +2695,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
         if (in->dead || in->dst >= nt) {
             continue;
         }
-        lk_t k = {LK_INV, 0u, 0};
+        lk_t k = {.kind = LK_INV};
         const lk_t ka = lk_of(in->a), kb = lk_of(in->b);
         uint32_t c;
 
@@ -2434,7 +2747,9 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
             k = lk_mix(ka, lk_mix(kb, lk_of(in->c)));
             break;
         }
-        g_lk[in->dst] = k;
+        g_lk[in->dst].kind = k.kind; /* not .def: where this temp was defined */
+        g_lk[in->dst].reg = k.reg;
+        g_lk[in->dst].off = k.off;
     }
 
     /* Each register the body writes: per-iteration, an induction, or a sum. */
@@ -2457,7 +2772,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
             out->inductions++;
         } else {
             const emu_ir_insn_t *const d =
-                (put[r] < nt && g_lk_def[put[r]] != EMU_IR_NO_TEMP) ? &b->insn[g_lk_def[put[r]]]
+                (put[r] < nt && g_lk[put[r]].def != EMU_IR_NO_TEMP) ? &b->insn[g_lk[put[r]].def]
                                                                      : NULL;
             const bool sum_op =
                 d != NULL && (d->op == (uint8_t)EMU_IR_ADD || d->op == (uint8_t)EMU_IR_OR);
@@ -2519,6 +2834,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
     bool counted = be->op == (uint8_t)EMU_IR_EXIT;
     bool on_data = false;
     uint16_t data_t = EMU_IR_NO_TEMP;
+    uint16_t data_k = EMU_IR_NO_TEMP; /* what the loaded value is compared with */
 
     if (be->op == (uint8_t)EMU_IR_EXIT_IF) {
         uint16_t x = be->a, y = be->b;
@@ -2526,10 +2842,10 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
 
         /* ARMv7-M's `cmp; bne`: (p - q) != 0 is p != q */
         if ((be->aux == (uint8_t)EMU_IR_C_NE || be->aux == (uint8_t)EMU_IR_C_EQ) &&
-            lk_const(b, y, &z) && z == 0 && x < nt && g_lk_def[x] != EMU_IR_NO_TEMP &&
-            b->insn[g_lk_def[x]].op == (uint8_t)EMU_IR_SUB) {
-            y = b->insn[g_lk_def[x]].b;
-            x = b->insn[g_lk_def[x]].a;
+            lk_const(b, y, &z) && z == 0 && x < nt && g_lk[x].def != EMU_IR_NO_TEMP &&
+            b->insn[g_lk[x].def].op == (uint8_t)EMU_IR_SUB) {
+            y = b->insn[g_lk[x].def].b;
+            x = b->insn[g_lk[x].def].a;
         }
         const lk_t kx = lk_of(x), ky = lk_of(y);
         const bool ix = (kx.kind == LK_AFF || kx.kind == LK_AFFX) && cls[kx.reg] == 3u;
@@ -2539,6 +2855,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
         on_data = (kx.kind == LK_VAR && ky.kind == LK_INV) ||
                   (ky.kind == LK_VAR && kx.kind == LK_INV);
         data_t = (kx.kind == LK_VAR) ? x : y;
+        data_k = (kx.kind == LK_VAR) ? y : x;
     }
     if (!counted && !on_data) {
         out->kind = EMU_IR_LOOP_NO_EXIT;
@@ -2553,22 +2870,75 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
 
             if (cls[r] == 4u && lk_from_product(b, sum_term[r], 0u, &mapped)) {
                 out->kind = mapped ? EMU_IR_LOOP_DOT16_F : EMU_IR_LOOP_DOT16;
+                if (!mapped && out->sticky == 0u) {
+                    lk_dot(b, out, (uint8_t)r, sum_term[r], back, cls, get, put);
+                }
             }
         }
     } else if (on_data && out->sums == 0u && out->loads == 1u && out->stores == 1u &&
                be->aux == (uint8_t)EMU_IR_C_NE && store->b == load_t && data_t == load_t &&
                EMU_IR_MEM_SIZE(store->aux) == 1u &&
-               EMU_IR_MEM_SIZE(b->insn[g_lk_def[load_t]].aux) == 1u) {
+               EMU_IR_MEM_SIZE(b->insn[g_lk[load_t].def].aux) == 1u &&
+               lk_is_zero(b, data_k)) {
         out->kind = EMU_IR_LOOP_COPY_NUL;
+        if (out->sticky == 0u) {
+            lk_copy(b, out, &b->insn[g_lk[load_t].def], store, back, cls, get, put);
+        }
     } else if (counted && out->sums == 0u && out->loads == 1u && out->stores == 1u &&
                store->b == load_t) {
         out->kind = EMU_IR_LOOP_COPY;
+        if (out->sticky == 0u) {
+            lk_copy(b, out, &b->insn[g_lk[load_t].def], store, back, cls, get, put);
+        }
     } else if (counted && out->sums == 0u && out->loads == 0u && out->stores == 1u &&
                lk_of(store->b).kind == LK_INV) {
         out->kind = EMU_IR_LOOP_FILL;
+        if (out->sticky == 0u) {
+            lk_copy(b, out, NULL, store, back, cls, get, put);
+        }
     }
     return true;
 }
+
+#if EMU_IR_LOOP_SHAPE
+/*
+ * A recognised loop's kernel, first in the block: everything else moves
+ * up one. Only where the block has its RAM window -- the kernel's checks
+ * are that window's -- the backend lowers one, and there is room.
+ */
+static void loop_kernel(emu_ir_block_t *b, const emu_ir_target_t *t, const emu_ir_loop_t *lp,
+                        emu_ir_opt_stats_t *st)
+{
+    const bool dot = lp->kind == EMU_IR_LOOP_DOT16 && lp->dot.ok;
+    const bool bytes = (lp->kind == EMU_IR_LOOP_COPY_NUL || lp->kind == EMU_IR_LOOP_COPY ||
+                        lp->kind == EMU_IR_LOOP_FILL) &&
+                       lp->copy.ok;
+
+    if (t == NULL || (!dot && !bytes) || (emu_ir_kernel_kinds & (1u << lp->kind)) == 0u ||
+        !b->has_fast || b->count + 1u > EMU_IR_MAX_INSNS ||
+        !backend_can_lower(EMU_IR_KERNEL, 0u)) {
+        return;
+    }
+    const uint32_t k = dot ? emu_ir_kernel_add(&lp->dot, t, &b->fast)
+                           : emu_ir_kernel_add_copy(&lp->copy, lp->kind, t, &b->fast,
+                                                    b->has_rom ? &b->rom : NULL);
+
+    if (k == EMU_IR_NO_KERNEL) {
+        return;
+    }
+    memmove(&b->insn[1], &b->insn[0], b->count * sizeof(b->insn[0]));
+    memset(&b->insn[0], 0, sizeof(b->insn[0]));
+    b->insn[0].op = (uint8_t)EMU_IR_KERNEL;
+    b->insn[0].aux = (uint8_t)lp->kind;
+    b->insn[0].dst = EMU_IR_NO_TEMP;
+    b->insn[0].a = EMU_IR_NO_TEMP;
+    b->insn[0].b = EMU_IR_NO_TEMP;
+    b->insn[0].c = EMU_IR_NO_TEMP;
+    b->insn[0].imm = k;
+    b->count++;
+    st->kernels++;
+}
+#endif
 
 void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
                      uint8_t live_out, emu_ir_opt_stats_t *stats)
@@ -2611,6 +2981,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
 
         if (emu_ir_loop_shape(b, &lp)) {
             stats->loop_shape[lp.kind]++;
+            loop_kernel(b, t, &lp, stats);
         }
     }
 #endif
@@ -2625,6 +2996,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     for (uint32_t k = 0; k < EMU_IR_LOOP_KINDS; k++) {
         g_opt_totals.loop_shape[k] += stats->loop_shape[k];
     }
+    g_opt_totals.kernels += stats->kernels;
     g_opt_totals.branch_folded += stats->branch_folded;
     g_opt_totals.puts_removed += stats->puts_removed;
     g_opt_totals.setpcs_removed += stats->setpcs_removed;

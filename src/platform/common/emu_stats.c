@@ -18,6 +18,7 @@
 
 #include "emu_console.h"
 
+#include "emu/emu_ir.h"
 #include "emu/emu_jit.h"
 
 void emu_print_run_summary(uint64_t retired, uint64_t host_cycles)
@@ -135,6 +136,22 @@ bool emu_print_jit_stats(void)
     emu_console_printf("  thrash   %u (cached %u, retries %u)\n",
                        (unsigned)js.thrashed, (unsigned)js.thrash_cached,
                        (unsigned)js.thrash_retries);
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    {
+        /* docs/jit/autovectorisation.md: a kernel that never runs reads 0 */
+        uint32_t kn, kc, kr, ki, kf;
+
+        emu_ir_kernel_stats(&kn, &kc, &kr, &ki, &kf);
+        if (kn != 0u) {
+            emu_console_printf("  kernels  %u made, %u calls, %u ran %u iterations\n",
+                               (unsigned)kn, (unsigned)kc, (unsigned)kr, (unsigned)ki);
+        }
+        if (kf != 0u) {
+            emu_console_printf("  kernels  %u loops left scalar: the table (%u) was full\n",
+                               (unsigned)kf, (unsigned)EMU_IR_KERNELS);
+        }
+    }
+#endif
 
 #ifdef EMU_JIT_DIFF
     /*

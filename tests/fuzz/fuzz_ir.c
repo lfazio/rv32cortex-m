@@ -1183,6 +1183,157 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
  * flag layout), how memory is reached -- and which window, all of RAM,
  * part of it, or part at an odd base -- and the store guard.
  */
+/*
+ * A 16-bit dot product that loops on itself, the shape a kernel takes
+ * (emu_ir_kernel.c, docs/jit/autovectorisation.md): random words never
+ * spell one. Each parameter is drawn where the kernel's checks decide:
+ * the element signed, sign-extended, byte-swapped first, or unsigned
+ * (which no kernel may take); x walking up or down; y by a constant or
+ * by a register shifted; the back edge on x against an end, or on a
+ * counter down to zero; an end a whole number of steps away or not;
+ * arrays placed anywhere in the RAM, past its end and misaligned among
+ * them. The kernel's run is checked as every block is: as built -- the
+ * scalar loop -- against as optimised, and against the compiled code.
+ */
+static uint16_t dot_elem(uint16_t addr, uint32_t off, uint32_t form)
+{
+    const bool sgn = form == 0u;
+    const uint16_t l = E(EMU_IR_LOAD, EMU_IR_MEM_AUX(2u, sgn), addr, EMU_IR_NO_TEMP, off, 0u);
+
+    switch (form) {
+    case 1u:
+        return E(EMU_IR_SEXT16, 0u, l, EMU_IR_NO_TEMP, 0u, 0u);
+    case 2u:
+        return E(EMU_IR_SEXT16, 0u, E(EMU_IR_BSWAP16, 0u, l, EMU_IR_NO_TEMP, 0u, 0u),
+                 EMU_IR_NO_TEMP, 0u, 0u);
+    default:
+        return l; /* 0: signed load; 3: unsigned, as a kernel must refuse */
+    }
+}
+
+static void build_dot(in_t *in, fcpu_t *c)
+{
+    const uint32_t f = byte(in);
+    const uint32_t xo = byte(in), yo = byte(in);
+    const uint32_t trip = 1u + (byte(in) & 63u);
+    const uint32_t ys = byte(in);
+    const int32_t xstep = (f & 0x10u) ? -2 : 2;
+    const uint32_t xoff = (uint32_t)(int32_t)(int8_t)(xo & 0x86u); /* 0, 2, 4, 6, -128... */
+    const uint32_t yoff = (uint32_t)(int32_t)(int8_t)(yo & 0x86u);
+
+    /* x anywhere, near the end, or misaligned; y likewise */
+    c->r[1] = RAM_BASE + ((xo >> 3) * 16u) + ((f & 1u) ? (PAGE - 2u * trip) : 0u) +
+              ((f & 2u) ? 1u : 0u);
+    c->r[2] = RAM_BASE + ((yo >> 3) * 8u) + ((yo & 1u) ? (PAGE / 2u) : 0u);
+    c->r[3] = interesting(byte(in));
+    c->r[5] = (ys >> 4) & 7u; /* y's stride register: 0 to 7, shifted by (ys & 3) */
+    c->r[8] = trip;           /* the counter, for a back edge on it */
+    c->r[4] = c->r[1] + (uint32_t)xstep * trip + ((f & 0x40u) ? 1u : 0u);
+
+    (void)E(EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, START_PC, 0u);
+    const uint16_t tx = emu_ir_get(&g_built, 1u);
+    const uint16_t lx = dot_elem(tx, xoff, (f >> 2) & 3u);
+    const uint16_t ty = emu_ir_get(&g_built, 2u);
+    const uint16_t ly = dot_elem(ty, yoff, (ys & 0x80u) ? ((f >> 2) & 3u) : 0u);
+    const uint16_t tx2 = E(EMU_IR_ADDI, 0u, tx, EMU_IR_NO_TEMP, (uint32_t)xstep, 0u);
+    uint16_t ty2;
+
+    emu_ir_put(&g_built, 1u, tx2);
+    if ((ys & 0x08u) != 0u) {
+        ty2 = E(EMU_IR_ADDI, 0u, ty, EMU_IR_NO_TEMP, (uint32_t)(int32_t)(int8_t)(ys & 0x8Eu), 0u);
+    } else {
+        uint16_t s = emu_ir_get(&g_built, 5u);
+
+        if ((ys & 3u) != 0u) {
+            s = E(EMU_IR_SHLI, 0u, s, EMU_IR_NO_TEMP, ys & 3u, 0u);
+        }
+        ty2 = (ys & 0x04u) ? E(EMU_IR_ADD, 0u, s, ty, 0u, 0u) : E(EMU_IR_ADD, 0u, ty, s, 0u, 0u);
+    }
+    emu_ir_put(&g_built, 2u, ty2);
+
+    const uint16_t p = E(EMU_IR_MUL, 0u, lx, ly, 0u, 0u);
+
+    emu_ir_put(&g_built, 6u, p); /* a register each iteration writes */
+    emu_ir_put(&g_built, 3u, E(EMU_IR_ADD, 0u, emu_ir_get(&g_built, 3u), p, 0u, 0u));
+    (void)E(EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 3u + (f >> 7), 0u);
+    if ((f & 0x20u) != 0u) {
+        /* PowerPC's bdnz: a counter down to zero */
+        const uint16_t k = E(EMU_IR_SUB, 0u, emu_ir_get(&g_built, 8u),
+                             emu_ir_const(&g_built, 1u), 0u, 0u);
+
+        emu_ir_put(&g_built, 8u, k);
+        (void)E(EMU_IR_EXIT_IF, EMU_IR_C_NE, k, emu_ir_const(&g_built, 0u), START_PC, 0u);
+    } else {
+        (void)E(EMU_IR_EXIT_IF, EMU_IR_C_NE, emu_ir_get(&g_built, 4u), tx2, START_PC, 0u);
+    }
+    (void)E(EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+    (void)E(EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, START_PC + 0x40u, 0u);
+}
+
+/*
+ * A byte loop that loops on itself: strcpy's copy to the NUL, memcpy's
+ * copy, memset's fill -- the kernels' other shapes. The source in RAM or
+ * in the image; the destination over the source a byte or a few behind
+ * or ahead, or apart; the NUL anywhere, or past where the loop could
+ * reach this entry; an end near the window's; the store guard as the
+ * window's configuration leaves it.
+ */
+static void build_bytes(in_t *in, fcpu_t *c)
+{
+    const uint32_t f = byte(in);
+    const uint32_t kind = f % 3u; /* 0 copy to NUL, 1 copy, 2 fill */
+    const uint32_t so = byte(in), dd = byte(in);
+    const uint32_t trip = 1u + (byte(in) & 63u);
+    const uint32_t z = byte(in) & 127u;
+
+    if ((f & 4u) != 0u && g_built.has_rom) {
+        c->r[1] = ROM_BASE + so * 8u;
+        g_rom[(c->r[1] - ROM_BASE + z) % PAGE] = 0u;
+    } else {
+        c->r[1] = RAM_BASE + so * 8u + ((f & 8u) ? (PAGE - trip - 2u) : 0u);
+        g_mem[(c->r[1] - RAM_BASE + z) % g_mem_size] = 0u;
+    }
+    /* the destination: over the source, near it either side, or apart */
+    c->r[2] = ((f & 0x30u) == 0x10u) ? c->r[1] + (dd & 7u)
+              : ((f & 0x30u) == 0x20u) ? c->r[1] - (dd & 7u)
+                                       : RAM_BASE + (dd * 8u) % PAGE;
+    if (c->r[2] - RAM_BASE >= PAGE) {
+        c->r[2] = RAM_BASE + (dd & 0x7Fu);
+    }
+    c->r[4] = c->r[2] + trip + ((f & 0x40u) ? 1u : 0u); /* a counted loop's end */
+    c->r[5] = interesting(byte(in));                    /* a fill's value */
+
+    (void)E(EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, START_PC, 0u);
+    uint16_t v;
+
+    if (kind == 2u) {
+        v = emu_ir_get(&g_built, 5u);
+    } else {
+        const uint16_t ts = emu_ir_get(&g_built, 1u);
+
+        v = E(EMU_IR_LOAD, EMU_IR_MEM_AUX(1u, false), ts, EMU_IR_NO_TEMP, 0u, 0u);
+        emu_ir_put(&g_built, 6u, v); /* the byte, a register each iteration writes */
+        emu_ir_put(&g_built, 1u, E(EMU_IR_ADDI, 0u, ts, EMU_IR_NO_TEMP, 1u, 0u));
+    }
+    const uint16_t td = emu_ir_get(&g_built, 2u);
+    const uint16_t td2 = E(EMU_IR_ADDI, 0u, td, EMU_IR_NO_TEMP, 1u, 0u);
+
+    emu_ir_put(&g_built, 2u, td2);
+    if ((f & 0x80u) != 0u) {
+        (void)E(EMU_IR_STORE, EMU_IR_MEM_AUX(1u, false), td2, v, 0xFFFFFFFFu, 0u);
+    } else {
+        (void)E(EMU_IR_STORE, EMU_IR_MEM_AUX(1u, false), td, v, 0u, 0u);
+    }
+    (void)E(EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 4u, 0u);
+    if (kind == 0u) {
+        (void)E(EMU_IR_EXIT_IF, EMU_IR_C_NE, v, emu_ir_const(&g_built, 0u), START_PC, 0u);
+    } else {
+        (void)E(EMU_IR_EXIT_IF, EMU_IR_C_NE, emu_ir_get(&g_built, 4u), td2, START_PC, 0u);
+    }
+    (void)E(EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+    (void)E(EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, START_PC + 0x40u, 0u);
+}
+
 static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
 {
     const uint32_t cfg = byte(in);
@@ -1291,6 +1442,16 @@ static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
      * whose bound is the retired count. Every frontend's block retires
      * an instruction before it can leave.
      */
+    if (cfg2 >= 240u && g_built.has_fast) {
+        if (cfg2 >= 248u) {
+            build_bytes(in, c);
+        } else {
+            build_dot(in, c);
+        }
+        g_built.guest_insns = 4u;
+        return t;
+    }
+
     uint32_t pc = START_PC;
     const uint32_t n = 1u + pick(in, 40u);
 
@@ -1468,8 +1629,16 @@ static void print_stats(void)
             loops += o.loop_shape[k];
             kernels += (k < EMU_IR_LOOP_AFFINE) ? o.loop_shape[k] : 0u;
         }
-        fprintf(stderr, "fuzz-ir: loops analysed %u, a kernel's shape %u\n",
-                (unsigned)loops, (unsigned)kernels);
+        uint32_t kn = 0u, kc = 0u, kr = 0u, ki = 0u, kf = 0u;
+
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+        emu_ir_kernel_stats(&kn, &kc, &kr, &ki, &kf);
+#endif
+        fprintf(stderr,
+                "fuzz-ir: loops analysed %u, a kernel's shape %u, kernels %u (%u made, "
+                "%u calls, %u ran %u iterations, %u left scalar by a full table)\n",
+                (unsigned)loops, (unsigned)kernels, (unsigned)o.kernels, (unsigned)kn,
+                (unsigned)kc, (unsigned)kr, (unsigned)ki, (unsigned)kf);
     }
 }
 
@@ -1498,6 +1667,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 #endif
     }
     g_st.inputs++;
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    emu_ir_kernel_reset(); /* the last input's blocks are gone */
+    emu_ir_kernel_kinds = 0xFFFFFFFFu; /* every kernel, used or not by default */
+#endif
 
     const emu_ir_target_t *const t = build(&in, &g_init);
 

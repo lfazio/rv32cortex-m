@@ -1220,6 +1220,50 @@ static void loop_dot_block(uint32_t brk)
     (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0x1020u, 0u);
 }
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+/*
+ * The kernels' table at its size: every distinct descriptor gets the next
+ * entry, an equal one the entry it had, and the first past the end none
+ * -- counted, so a guest whose loops stay scalar for want of room says so.
+ */
+static void test_kernel_table_full(void)
+{
+    static uint8_t ram[64];
+    const emu_ir_fastmem_t w = {.base = 0x1000u, .size = sizeof(ram), .host = ram};
+    emu_ir_dot_t d;
+    uint32_t kn, kc, kr, ki, kf0, kf;
+
+    memset(&d, 0, sizeof(d));
+    d.ok = true;
+    d.xreg = 1u;
+    d.yreg = 2u;
+    d.ereg = 1u;
+    d.acc = 3u;
+    d.lreg = 0xFFu;
+    d.ysreg = 0xFFu;
+    d.xstride = 2;
+    d.estep = 2;
+    d.insns = 6u;
+    emu_ir_kernel_reset();
+    emu_ir_kernel_stats(&kn, &kc, &kr, &ki, &kf0);
+    for (uint32_t i = 0; i < EMU_IR_KERNELS; i++) {
+        d.xoff = (int32_t)i; /* a different loop each time */
+        CHECK_EQ(emu_ir_kernel_add(&d, &g_fake_target, &w), i);
+    }
+    d.xoff = 3;
+    CHECK_EQ(emu_ir_kernel_add(&d, &g_fake_target, &w), 3u); /* shared */
+    d.xoff = (int32_t)EMU_IR_KERNELS;
+    CHECK_EQ(emu_ir_kernel_add(&d, &g_fake_target, &w), EMU_IR_NO_KERNEL);
+    emu_ir_kernel_stats(&kn, &kc, &kr, &ki, &kf);
+    CHECK_EQ(kn, EMU_IR_KERNELS);
+    CHECK_EQ(kf - kf0, 1u);
+    emu_ir_kernel_reset();
+    d.xoff = 1000;
+    CHECK_EQ(emu_ir_kernel_add(&d, &g_fake_target, &w), 0u); /* room again */
+    emu_ir_kernel_reset();
+}
+#endif
+
 static void test_loop_shape(void)
 {
     static const struct {
@@ -4569,6 +4613,9 @@ void test_ir(void)
     test_branch_on_setcc_folded();
     test_loop_shape();
     test_loop_shape_bytes();
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+    test_kernel_table_full();
+#endif
     test_flags_live_out();
     test_redundant_get_elided();
     test_dead_put_removed();

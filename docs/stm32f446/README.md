@@ -168,6 +168,11 @@ guest has. The default stays: 35 KiB is already the smallest guest RAM
 of any board, and the interpreter's 114 KiB is the alternative for a
 guest that needs room more than speed.
 
+The JIT's loop kernels ([../jit/autovectorisation.md](../jit/autovectorisation.md))
+are off here (`EMU_IR_LOOP_SHAPE`): their table and the recogniser's
+arrays are 4 KB of `.bss`, and the guest's RAM would go from 30,640
+bytes to 26,648 for a gain measured on the F746 and the N6 only.
+
 Correctness at the default: `isatest` **937 checks, 0 failures**, under
 the JIT and the interpreter, with the host's retired counts to the
 instruction (96,995 and 96,883; 2026-10-25). It had stopped fitting:

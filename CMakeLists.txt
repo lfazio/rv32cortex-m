@@ -508,12 +508,15 @@ option(EMU_JIT_BYTE_STATS "Count emitted bytes per IR operation" OFF)
 # finds hot actually is, on a board no host can emit its code for.
 option(EMU_JIT_DUMP "Print the translated blocks after the run" OFF)
 option(EMU_JIT_LOOP_CENSUS "Count the self-looping blocks' entries and iterations (x86-64 host)" OFF)
-if(EMU_PLATFORM STREQUAL "host")
-    set(_loop_shape_default ON)
+# The loop kernels' table and the recogniser's arrays are 4 KB of .bss,
+# which on the F446 is 4 KB of the guest's RAM (30 KiB to 26): off there,
+# where nothing measured them.
+if(EMU_PLATFORM STREQUAL "stm32f446")
+    set(_loop_shape_default OFF)
 else()
-    set(_loop_shape_default OFF) # its tables are BSS the boards do not spend yet
+    set(_loop_shape_default ON)
 endif()
-option(EMU_IR_LOOP_SHAPE "Classify self-looping blocks for the autovectoriser (counted only)" ${_loop_shape_default})
+option(EMU_IR_LOOP_SHAPE "Recognise self-looping blocks, and give those emu_ir_kernel_kinds names a kernel (docs/jit/autovectorisation.md)" ${_loop_shape_default})
 
 # Histogram adjacent executed instruction pairs, to decide which are worth
 # fusing in the translator. Measurement scaffolding, off by default.
@@ -771,6 +774,7 @@ add_library(emucore STATIC
     src/emu/emu_regstats.c
     # Self-guarding on EMU_JIT_BYTE_STATS, likewise.
     src/emu/emu_ir_bytes.c
+    src/emu/emu_ir_kernel.c
     # The IR JIT framework and its two host backends. Every one of these
     # guards itself on the host it emits for, so all of them can stay in
     # the list and exactly one backend compiles to anything. They belong

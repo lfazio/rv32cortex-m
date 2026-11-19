@@ -1146,6 +1146,18 @@ is still a loss on PowerPC, whose cached loops run few iterations an
 entry and pay the load before and the store after for little between.
 Kept on `wip/t2-loop-cache`.
 
+### ARMv7-M's flag stores as STRD: measured, not kept
+
+The profile above put ARMv7-M's stores to the cpu at 17.2% of its
+translated time, and 47% of its PUTs are the flags: four adjacent words
+(N, Z, C, V) written in a row, N and Z often the same value. A PUT
+followed by a PUT of the next word was lowered as one STRD. ARMv7-M's
+translated CoreMark went from 89,576 bytes to 86,988 (-2.9%), with the
+same block entries, and ran **0.97% slower** at both layouts (11.29 to
+11.40; RV32 unchanged at 9.22). Why was not measured: fewer bytes and
+the same stores did not make less time, and what is left to try is
+storing fewer of the four. Kept on `wip/t2-strd-flag-stores`.
+
 ## The guest-RAM window
 
 A frontend may offer a window (`emu_ir_fastmem_t`) that a `LOAD` or
