@@ -296,12 +296,20 @@ endif()
 #
 #
 # Where ROM ends and RAM begins in AXISRAM2's 511 KiB (the linker
-# script's note): 220 by default, 272 with the vector unit, which needs
-# the code -- 255 KiB of it with the MVE lowering, against 209 KiB of RAM
-# used. A setting, so that a build short of one can move it.
+# script's note), by what the build holds: 280 with RV32's vector unit
+# (278 KiB of code with the MVE lowering, 209 of RAM used), 240 with RV32
+# (233 KiB, 209), 220 without (G4MH's firmware: 172 KiB of code, 267 of
+# RAM -- at 240 it had 1.4% left). A setting, so that a build short of
+# one can move it. RV32 was 220 and the vector unit 272 until
+# 2026-11-20: the loop kernels and their recogniser, on for this board
+# since 3fb2264, put the default build 8,096 bytes over, and the next
+# day's JIT work 13,536 -- unnoticed, because the N6 runs those days
+# linked Dhrystone, a smaller guest than the default isatest.
 #
 if(RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
-    set(_n6_rom_kib 272)
+    set(_n6_rom_kib 280)
+elseif(EMU_GUEST_ARCH_RV32)
+    set(_n6_rom_kib 240)
 else()
     set(_n6_rom_kib 220)
 endif()

@@ -72,10 +72,14 @@ kept because every part of it was carried out: the shared runner
   unit: the unmasked single-width integer operations and the
   whole-group copies, vecbench 18% fewer cycles under the JIT
   ([backend/thumb2.md](../backend/thumb2.md#helium-mve-on-the-n6)). With
-  the vector unit the image needs 255 KiB of code, so its ROM/RAM line
-  is 272 KiB, not 220 (`EMU_N6_ROM_KIB`, passed to the linker script as
-  `__emu_rom_k`): a G4MH build cannot give RAM away like that, so the
-  line is the build's.
+  the vector unit the image needs 278 KiB of code, so its ROM/RAM line
+  is 280 KiB (`EMU_N6_ROM_KIB`, passed to the linker script as
+  `__emu_rom_k`), an RV32 build's 240 and a G4MH build's 220: G4MH's
+  firmware cannot give RAM away like that, so the line is the build's.
+  RV32's was 220 and the vector unit's 272 until 2026-11-20, when the
+  loop kernels had put the default build 13.5 KB over unnoticed -- the N6
+  runs had linked Dhrystone, smaller than the default isatest. The
+  vector build has 2 KiB left.
 - **A PC profile is printed, not read**: probe-rs cannot reach the
   M55's access port, so `-DEMU_PC_PROFILE=<samples>` samples the tick
   as the F746 does and the firmware prints the samples after the run;

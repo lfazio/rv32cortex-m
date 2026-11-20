@@ -5364,6 +5364,14 @@ session, and every one of them recurred:
   above it. Three mutants survived that way. **A guest that reports
   FAIL and then finishes needs a test that reads the FAIL.**
 
+- **A board row links with its own guest.** The loop kernels' commit was
+  checked on the F446 (it linked) and run on the N6 -- with Dhrystone,
+  for its figure. The N6's ROM holds the guest, and the default build
+  carries isatest, which is larger: it had overflowed by 8,096 bytes
+  since that commit, and by 13,536 a day later, while every N6 figure in
+  the docs was real. **Link each board's matrix rows, not the
+  configuration a measurement used.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
