@@ -30,7 +30,7 @@
 #define KERNEL_SMLAD 0
 #endif
 
-#define NO_REG 0xFFFFFFFFu
+#define NO_REG EMU_IR_KERNEL_NO_REG
 
 /* A descriptor, with the registers resolved to their offsets in the cpu. */
 typedef struct {
@@ -51,7 +51,7 @@ typedef struct {
     bool xswap, yswap;
 } kernel_t;
 
-uint32_t emu_ir_kernel_kinds = 1u << EMU_IR_LOOP_COPY_NUL;
+uint32_t emu_ir_kernel_kinds = (1u << EMU_IR_LOOP_COPY_NUL) | (1u << EMU_IR_LOOP_DOT16);
 
 static kernel_t g_kernels[EMU_IR_KERNELS];
 static uint32_t g_nkernels;
@@ -193,6 +193,38 @@ void emu_ir_kernel_reset(void)
     emu_lock(&g_kernel_lock);
     g_nkernels = 0u;
     emu_unlock(&g_kernel_lock);
+}
+
+uint32_t emu_ir_kernel_inline_iters;
+
+bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out)
+{
+    if (index >= g_nkernels || g_kernels[index].kind != EMU_IR_LOOP_DOT16) {
+        return false;
+    }
+    const kernel_t *const k = &g_kernels[index];
+
+    out->xo = k->xo;
+    out->yo = k->yo;
+    out->eo = k->eo;
+    out->ao = k->ao;
+    out->lo = k->lo;
+    out->so = k->so;
+    out->xoff = k->xoff;
+    out->yoff = k->yoff;
+    out->xstride = k->xstride;
+    out->ysconst = k->ysconst;
+    out->estep = k->estep;
+    out->ec = k->ec;
+    out->lconst = k->lconst;
+    out->ysshift = k->ysshift;
+    out->insns = k->insns;
+    out->base = k->base;
+    out->size = k->size;
+    out->host = k->host;
+    out->xswap = k->xswap;
+    out->yswap = k->yswap;
+    return true;
 }
 
 void emu_ir_kernel_stats(uint32_t *kernels, uint32_t *calls, uint32_t *runs,

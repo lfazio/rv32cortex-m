@@ -5309,6 +5309,27 @@ session, and every one of them recurred:
   and lost another. **An average over a run is a mixture until the
   intervals agree.**
 
+- **A word a tool searches the console for is reserved.** The inline
+  dot product's report line read "...iterations in loops the backend
+  emitted". board-run.py takes the run's banner to be the *last*
+  "backend " in the capture, so it found that line, after `-- done --`,
+  reported "the run did not finish inside the capture", and the A/B
+  printed no figure for the one row the change was for. The run was
+  fine; the line says "emitted inline" now. **A new console line is
+  read by every script that reads the console -- grep them for what
+  they search.**
+
+- **A control differs in more than the variable.** PowerPC CoreMark
+  was 0.44% slower with the inline dot product, though it emitted none of
+  its two (byte-swapped) dot kernels. A control -- the same tree with dot
+  kernels off -- measured 11.46 against 11.51, at both layouts, and I
+  took the skipped kernels for the cost and had the pass ask the backend
+  before inserting one. With no kernel made at all, PowerPC measured
+  11.49 and 11.51: the control's code differed too, and the difference
+  was layout. **A control isolates the variable only if its binary
+  differs in nothing else; when it cannot, a figure that survives the
+  variable's removal was never the variable's.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

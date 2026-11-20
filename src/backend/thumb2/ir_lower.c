@@ -1254,6 +1254,203 @@ static bool loop_back(uint32_t target_pc)
     return true;
 }
 
+#if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
+/*
+ * A 16-bit dot product's kernel emitted in the block (EMU_IR_KERNEL),
+ * where the call to emu_ir_kernel_run cost about what CoreMark's six
+ * iterations an entry saved. The same decisions as that function, on the
+ * cases it is worth emitting for -- x's stride 2, neither element swapped,
+ * y's stride within 0x8000 so nothing below overflows 32 bits -- and
+ * otherwise the call: declining is always correct, since the scalar body
+ * then runs the iterations and ends in the same state. fuzz-ir's corpus
+ * on the board compares this with that function (scripts/ir-board.sh).
+ *
+ * At the block's start, before the body: nothing is allocated yet, so
+ * r0-r3, r6-r10 and r12 are free (the frame saved r6-r10).
+ *
+ * KI_CALL: not a dot product, call the C kernel; KI_SKIP: a dot product
+ * this does not emit, so nothing -- the call measured no faster than the
+ * scalar loop it would have run; KI_DONE: emitted; KI_FAIL: an encoder
+ * refused partway, and the block must be declined.
+ */
+enum { KI_CALL, KI_SKIP, KI_DONE, KI_FAIL };
+
+static int emit_dot_inline(uint32_t index)
+{
+    emu_ir_kernel_dot_t d;
+
+    if (!emu_ir_kernel_dot(index, &d)) {
+        return KI_CALL;
+    }
+    const uint32_t s = (uint32_t)((d.estep < 0) ? -d.estep : d.estep);
+    const uint32_t offs[] = {d.xo, d.yo, d.eo, d.ao,
+                             (d.lo == EMU_IR_KERNEL_NO_REG) ? 0u : d.lo,
+                             (d.so == EMU_IR_KERNEL_NO_REG) ? 0u : d.so};
+
+    if (d.xstride != 2 || d.xswap || d.yswap || (s != 1u && s != 2u && s != 4u) ||
+        d.insns == 0u || d.insns > EMU_JIT_LOOP_CAP || d.size < 2u || d.size > 0x7FFFFFFFu ||
+        d.ysshift > 31u) {
+        return KI_SKIP;
+    }
+    for (uint32_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+        if (offs[i] > 4095u) {
+            return KI_SKIP;
+        }
+    }
+    enum { KX = 6u, KY = 7u, KS = 8u, KXH = 9u, KYH = 10u };
+    uint8_t *skip[12];
+    uint32_t ns = 0u;
+    uint16_t minus1;
+
+    /* Nothing is emitted before every refusal. */
+    if (!t2_expand_imm(0xFFFFFFFFu, &minus1)) {
+        return KI_SKIP;
+    }
+
+    /* m, the iterations after this one: e + ec + m * estep == L (kernel_trip) */
+    t2_ldr_imm(T2_R0, T2_CPU, d.eo);
+    if (d.lo == EMU_IR_KERNEL_NO_REG) {
+        t2_imm32(T2_R1, d.lconst);
+    } else {
+        t2_ldr_imm(T2_R1, T2_CPU, d.lo);
+    }
+    t2_sub(T2_R1, T2_R1, T2_R0);
+    t2_imm32(T2_R2, (uint32_t)d.ec);
+    t2_sub(T2_R1, T2_R1, T2_R2);
+    if (d.estep < 0) {
+        t2_neg(T2_R1, T2_R1);
+    }
+    if (s > 1u) {
+        /* not a whole number of steps: the loop runs to the cap */
+        if (!t2_tst_imm8(T2_R1, s - 1u)) {
+            t2_imm32(T2_R2, s - 1u);
+            t2_and(T2_R2, T2_R1, T2_R2);
+            t2_cmp_imm(T2_R2, 0u);
+        }
+        skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_NE));
+        t2_shift_imm(T2_LSR, T2_R1, T2_R1, (s == 2u) ? 1u : 2u);
+    }
+    /* no more than the cap leaves, less the body's iteration (kernel_room) */
+    if (!t2_cmp_imm8(T2_CNT, EMU_JIT_LOOP_CAP)) {
+        t2_imm32(T2_R2, EMU_JIT_LOOP_CAP);
+        t2_cmp(T2_CNT, T2_R2);
+    }
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GEU));
+    t2_imm32(T2_R2, EMU_JIT_LOOP_CAP + d.insns - 1u);
+    t2_sub(T2_R2, T2_R2, T2_CNT);
+    t2_imm32(T2_R3, d.insns);
+    t2_udiv(T2_R2, T2_R2, T2_R3);
+    t2_imm32(T2_R3, 1u);
+    t2_sub(T2_R2, T2_R2, T2_R3);
+    t2_cmp(T2_R1, T2_R2); /* m = min(m, room), unsigned */
+    t2_emit16((uint16_t)(0xBF00u | (t2_cond((uint8_t)EMU_IR_C_GTU) << 4) | 0x8u));
+    t2_mov(T2_R1, T2_R2);
+    t2_cmp_imm(T2_R1, 0u);
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_EQ));
+
+    /* x, y and y's stride */
+    t2_ldr_imm(KX, T2_CPU, d.xo);
+    if (d.xoff != 0) {
+        t2_imm32(T2_R3, (uint32_t)d.xoff);
+        t2_add(KX, KX, T2_R3);
+    }
+    t2_ldr_imm(KY, T2_CPU, d.yo);
+    if (d.yoff != 0) {
+        t2_imm32(T2_R3, (uint32_t)d.yoff);
+        t2_add(KY, KY, T2_R3);
+    }
+    if (d.so == EMU_IR_KERNEL_NO_REG) {
+        t2_imm32(KS, (uint32_t)d.ysconst);
+    } else {
+        t2_ldr_imm(KS, T2_CPU, d.so);
+        if (d.ysshift != 0u) {
+            t2_shift_imm(T2_LSL, KS, KS, d.ysshift);
+        }
+    }
+    /* halfword-aligned, both of them and the stride (in_window) */
+    t2_orr(T2_R3, KX, KY);
+    t2_orr(T2_R3, T2_R3, KS);
+    if (!t2_tst_imm8(T2_R3, 1u)) {
+        t2_imm32(T2_R2, 1u);
+        t2_and(T2_R2, T2_R3, T2_R2);
+        t2_cmp_imm(T2_R2, 0u);
+    }
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_NE));
+    /* |ys| <= 0x8000: ys * m below fits, where the C kernel uses 64 bits */
+    t2_imm32(T2_R3, 0x8000u);
+    t2_add(T2_R3, KS, T2_R3);
+    t2_imm32(T2_R2, 0x10000u);
+    t2_cmp(T2_R3, T2_R2);
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GTU));
+    /* x's m + 1 elements in the window: x - base <= size, then + 2m + 2 */
+    t2_imm32(T2_R12, d.base);
+    t2_sub(KXH, KX, T2_R12);
+    t2_imm32(T2_R3, d.size);
+    t2_cmp(KXH, T2_R3);
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GTU));
+    t2_add_lsl(T2_R2, KXH, T2_R1, 1u);
+    t2_imm32(T2_R0, 2u);
+    t2_add(T2_R2, T2_R2, T2_R0);
+    t2_cmp(T2_R2, T2_R3);
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GTU));
+    /* y's: its first and its last within size - 2, unsigned */
+    t2_sub(KYH, KY, T2_R12);
+    t2_imm32(T2_R3, d.size - 2u);
+    t2_cmp(KYH, T2_R3);
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GTU));
+    t2_mla(T2_R2, KS, T2_R1, KYH, false);
+    t2_cmp(T2_R2, T2_R3);
+    skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GTU));
+
+    /* the loop: r0 the sum, r2 the count, r6 and r7 the byte offsets */
+    t2_imm32(T2_R12, (uint32_t)(uintptr_t)d.host);
+    t2_add(KXH, KXH, T2_R12);
+    t2_add(KYH, KYH, T2_R12);
+    t2_imm32(T2_R0, 0u);
+    t2_mov(T2_R2, T2_R1);
+    t2_imm32(KX, 0u);
+    t2_imm32(KY, 0u);
+    const uint8_t *const top = emu_jit_here();
+
+    if (!t2_ld_reg(T2_R3, KXH, KX, 2u, true) || !t2_ld_reg(T2_R12, KYH, KY, 2u, true)) {
+        return KI_FAIL;
+    }
+    t2_add_imm(KX, KX, 2u); /* imm12 2: the byte itself */
+    t2_add(KY, KY, KS);
+    t2_mla(T2_R0, T2_R3, T2_R12, T2_R0, false); /* MLA: no Q, unlike SMLABB */
+    t2_adds_imm(T2_R2, T2_R2, minus1);
+    patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_NE)), top, true);
+
+    /* the registers, in the C kernel's order: x, y, e, the sum */
+    t2_ldr_imm(T2_R3, T2_CPU, d.xo);
+    t2_add_lsl(T2_R3, T2_R3, T2_R1, 1u);
+    t2_str_imm(T2_R3, T2_CPU, d.xo);
+    t2_ldr_imm(T2_R3, T2_CPU, d.yo);
+    t2_mla(T2_R3, KS, T2_R1, T2_R3, false);
+    t2_str_imm(T2_R3, T2_CPU, d.yo);
+    if (d.eo != d.xo && d.eo != d.yo) {
+        t2_ldr_imm(T2_R3, T2_CPU, d.eo);
+        t2_imm32(T2_R12, (uint32_t)d.estep);
+        t2_mla(T2_R3, T2_R12, T2_R1, T2_R3, false);
+        t2_str_imm(T2_R3, T2_CPU, d.eo);
+    }
+    t2_ldr_imm(T2_R3, T2_CPU, d.ao);
+    t2_add(T2_R3, T2_R3, T2_R0);
+    t2_str_imm(T2_R3, T2_CPU, d.ao);
+    /* what it retired, and the report's count */
+    t2_imm32(T2_R12, d.insns);
+    t2_mla(T2_CNT, T2_R1, T2_R12, T2_CNT, false);
+    t2_imm32(T2_R12, (uint32_t)(uintptr_t)&emu_ir_kernel_inline_iters);
+    t2_ldr_imm(T2_R3, T2_R12, 0u);
+    t2_add(T2_R3, T2_R3, T2_R1);
+    t2_str_imm(T2_R3, T2_R12, 0u);
+    for (uint32_t i = 0; i < ns; i++) {
+        patch_branch(skip[i], emu_jit_here(), true);
+    }
+    return KI_DONE;
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Lowering                                                            */
 /* ------------------------------------------------------------------ */
@@ -1841,7 +2038,13 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
          * list refused the operation lost every block with a kernel --
          * "declined 2", RV32 CoreMark 78% slower on the F746, while every
          * host check passed (they lower on x86-64).
+         *
+         * And a dot product only of the shape emit_dot_inline takes: the
+         * call to the C kernel was no faster than the scalar loop.
          */
+        if ((aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16 && (aux & EMU_IR_KERNEL_PLAIN) == 0u) {
+            return false;
+        }
         return bisect_allows((uint8_t)op);
 #endif
     case EMU_IR_CMP3: /* named: the default promises what it does not see */
@@ -4076,15 +4279,23 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
 #if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
-    case EMU_IR_KERNEL:
-        /* As on x86-64: the call ahead of the body, the count added. */
-        t2_mov(T2_R0, T2_CPU);
-        t2_imm32(T2_R1, in->imm);
-        t2_mov(T2_R2, T2_CNT); /* the count so far: the cap bounds the kernel too */
-        t2_call((const void *)emu_ir_kernel_run);
-        t2_add(T2_CNT, T2_CNT, T2_R0);
+    case EMU_IR_KERNEL: {
+        const int ki = emit_dot_inline(in->imm);
+
+        if (ki == KI_FAIL) {
+            return false;
+        }
+        if (ki == KI_CALL) {
+            /* As on x86-64: the call ahead of the body, the count added. */
+            t2_mov(T2_R0, T2_CPU);
+            t2_imm32(T2_R1, in->imm);
+            t2_mov(T2_R2, T2_CNT); /* the count so far: the cap bounds the kernel too */
+            t2_call((const void *)emu_ir_kernel_run);
+            t2_add(T2_CNT, T2_CNT, T2_R0);
+        }
         g_r0_holds = EMU_IR_NO_TEMP;
         break;
+    }
 #endif
 
     case EMU_IR_CMP3: {

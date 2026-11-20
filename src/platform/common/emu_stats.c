@@ -150,6 +150,11 @@ bool emu_print_jit_stats(void)
             emu_console_printf("  kernels  %u loops left scalar: the table (%u) was full\n",
                                (unsigned)kf, (unsigned)EMU_IR_KERNELS);
         }
+        if (emu_ir_kernel_inline_iters != 0u) {
+            /* not "backend ": board-run.py finds the banner by it */
+            emu_console_printf("  kernels  %u iterations in loops emitted inline\n",
+                               (unsigned)emu_ir_kernel_inline_iters);
+        }
     }
 #endif
 

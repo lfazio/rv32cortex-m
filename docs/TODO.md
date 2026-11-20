@@ -121,6 +121,17 @@ measured at.
       stores to the cpu are 17.2% of its translated time, PowerPC's
       arithmetic 38%, G4MH's 28.5%
       ([backend/thumb2.md](backend/thumb2.md#the-profile-again-after-all-of-it)).
+      By mnemonic, 2026-11-20
+      ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
+      G4MH's SETF -- MRS, two UBFX/BFI pairs, the PSW read and written
+      -- is about 27% of its translated time, and 87% of the SETFs left
+      after the dead-flag pass are there for the block's exit, not for a
+      load that might fault; only flags kept as operands and derived when
+      read would remove them. PowerPC's `cmpw` is 13 instructions, 4 of
+      them the CR's read-modify-write for one field and 3 the summary
+      overflow: a CR field a byte of its own would drop the first; and
+      its byte swaps are about 10%, which only RAM kept in the host's
+      order for words (an address XOR for halves and bytes) would drop.
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have. It is inlined on Thumb-2 for RV32
       (2.5-7x on driver code,
@@ -130,14 +141,14 @@ measured at.
 - [ ] **Autovectorisation, what is left**
       ([jit/autovectorisation.md](jit/autovectorisation.md)): strcpy's
       kernel is on (Dhrystone on the F746 19-20% faster for RV32, 15%
-      for ARMv7-M; off on the F446, whose guest RAM it costs); the dot
-      product, the copy and the fill are built and tested and off, the
-      call at each block entry -- about 100 cycles on the M7 -- costing
-      what CoreMark's six iterations an entry save. Emitting the dot
-      product in the block, where it is a few instructions and no call,
-      is what would decide it; Helium's `VMLADAVA` on the N6; ARMv7-M's
-      dot products, whose sticky Q a kernel would have to compute per
-      step.
+      for ARMv7-M; off on the F446, whose guest RAM it costs), and the
+      dot product, emitted in the block on Thumb-2 (RV32 CoreMark 0.89%
+      faster). Left: the mapped product, DOT16_F --
+      `matrix_mul_matrix_bitextract`, CoreMark's largest matrix loop at
+      5.8% of RV32's samples, has no kernel; Helium's `VMLADAVA` on the
+      N6; PowerPC's dot products, byte-swapped, which the emitted loop
+      declines; ARMv7-M's, whose sticky Q a kernel would compute per
+      step. The copy and the fill stay off.
 - [ ] **The thrash policy's two equilibria**
       ([jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)):
       RV32 CoreMark x2000 at 32 KB on the F746 runs at 16 host cycles an

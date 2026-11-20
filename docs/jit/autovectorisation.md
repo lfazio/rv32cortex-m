@@ -3,8 +3,9 @@
 **Status, 2026-11-19: P0 (the census) and P1 (recognition) done; P2 and
 P3 built -- four kernels -- and measured: strcpy's copy to the NUL kept,
 Dhrystone 19-20% faster for RV32 on the F746 and 19% on the N6, 15% for
-ARMv7-M; the dot product, the copy and the fill not paying on the F746,
-off by default.** Every phase ends
+ARMv7-M; the dot product on since 2026-11-20, emitted in the block on
+Thumb-2 (RV32 CoreMark 0.89% faster); the copy and the fill not paying
+on the F746, off by default.** Every phase ends
 in a measurement that decides whether the next one starts, because this
 is the kind of feature that reads as obviously worth it and then is not
 (the loop register cache, [../backend/thumb2.md](../backend/thumb2.md#a-loops-guest-registers-in-host-ones-measured-not-kept),
@@ -223,8 +224,9 @@ sanitizers -- which found a negation of INT_MIN in it, the offsets
 unsigned now. None of fuzz-ir's random loops has a kernel's shape:
 P2's generator has to build them.
 
-**P2 -- the 16-bit dot product. Built, measured, off by default.**
-Not as planned: no backend emits the kernel. `EMU_IR_KERNEL` is a call,
+**P2 -- the 16-bit dot product. On, emitted in the block on Thumb-2:
+RV32 CoreMark on the F746 0.89% faster.** First not as planned -- no
+backend emitted the kernel. `EMU_IR_KERNEL` is a call,
 ahead of the block's body so a back edge does not repeat it, to one C
 function, `emu_ir_kernel_run` (src/emu/emu_ir_kernel.c), which reads the
 descriptor the pass made (`emu_ir_kernel_add`: registers resolved to
@@ -253,6 +255,37 @@ first board run lost every kernel block to the interpreter (RV32 78%
 slower, "declined 2") because the Thumb-2 backend's `bisect_allows`, a
 third list of what it lowers, did not name the operation while its
 capability list said yes (docs/lessons.md).
+
+That figure was the call's, not the kernel's: the C loop runs an
+iteration in about 14 instructions where the translated one takes about
+40 (each load through the window check, each register stored and
+reloaded), and what it saved went on the call and on reading a 120-byte
+descriptor from SRAM each time. So the Thumb-2 backend now emits the
+loop itself (`emit_dot_inline`): the descriptor's offsets, window and
+constants baked in, the trip and the window checked in a few compares on
+the cpu's DTCM words, then LDRSH, LDRSH, MLA (not SMLABB, which would
+set Q) and a count-down, and the registers written back in the C
+kernel's order. It takes the shape CoreMark has -- x's stride 2, neither
+element swapped -- and y's stride within 0x8000, so nothing overflows
+32 bits where the C kernel uses 64; anything else the scalar body runs,
+which ends in the same state. The pass asks first (`EMU_IR_KERNEL_PLAIN`
+in the op's aux), so a dot product the backend would neither emit nor
+call -- PowerPC's, byte-swapped -- gets no kernel, no table entry and no
+op.
+x86-64 still calls the C function, the IR interpreter too, so the
+board's replay of fuzz-ir's corpus compares the emitted loop with it.
+
+| F746, against df58293 | before | after | |
+|---|---|---|---|
+| RV32 CoreMark, pad 0 / 64 | 9.02 / 9.02 | 8.94 / 8.94 | **-0.89%** (325,673 iterations in loops emitted inline) |
+| PowerPC CoreMark, pad 0 / 64 | 11.44 / 11.45 | 11.49 / 11.51 | +0.44% / +0.52%, no kernel made: layout |
+| ARMv7-M, G4MH CoreMark | 11.27, 14.40 | 11.34, 14.39 | no dot kernel there: layout |
+
+Less than the dot loops' share suggested (matrix_mul_matrix and
+matrix_mul_vect, 4.2% of the samples): six iterations an entry still
+leave the checks a large part, and the largest of CoreMark's matrix
+loops, `matrix_mul_matrix_bitextract` (5.8%), maps its product through
+two bit-field extracts -- a DOT16_F, with no kernel at all.
 
 **P3 -- copies and fills. strcpy's kept.** The byte loops get the same
 call: copy to the NUL (strcpy), copy and fill counted (memcpy, memset),

@@ -1690,10 +1690,41 @@ uint32_t emu_ir_kernel_add_copy(const emu_ir_copy_t *c, emu_ir_loop_kind_t kind,
                                 const emu_ir_fastmem_t *rom);
 uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t retired);
 /*
+ * A dot product's descriptor, registers resolved to their offsets in the
+ * cpu, for a backend that emits the loop in the block rather than calling
+ * emu_ir_kernel_run (Thumb-2): the call alone cost what CoreMark's six
+ * iterations an entry save. False for an index that is not a DOT16. What
+ * the emitted loop does must be what emu_ir_kernel_run does, or decline
+ * -- running the scalar body instead, which ends in the same state.
+ */
+#define EMU_IR_KERNEL_NO_REG 0xFFFFFFFFu
+/*
+ * EMU_IR_KERNEL's aux: the kind (EMU_IR_LOOP_*), and this bit for a dot
+ * product of the shape a backend may emit in the block -- x's stride 2,
+ * neither element byte-swapped. The pass asks emu_ir_can_lower with it
+ * before inserting, so a kernel the backend would neither call nor emit
+ * takes no table entry and puts no op in the block.
+ */
+#define EMU_IR_KERNEL_PLAIN 0x80u
+typedef struct emu_ir_kernel_dot {
+    uint32_t xo, yo, eo, ao; /* x and y's induction registers, the back edge's, the sum */
+    uint32_t lo, so;         /* L and y's stride registers, or EMU_IR_KERNEL_NO_REG */
+    int32_t xoff, yoff, xstride, ysconst, estep, ec;
+    uint32_t lconst, ysshift, insns;
+    uint32_t base, size; /* the RAM window */
+    const uint8_t *host;
+    bool xswap, yswap;
+} emu_ir_kernel_dot_t;
+bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out);
+/* Iterations the loops a backend emitted itself ran, for the report. */
+extern uint32_t emu_ir_kernel_inline_iters;
+/*
  * The kinds the JIT gives a kernel, a bit each (1u << EMU_IR_LOOP_*).
- * Copy to the NUL alone by default: the others were measured and did not
- * pay on the F746 (docs/jit/autovectorisation.md). fuzz-ir sets every
- * kind, so none goes untested.
+ * Copy to the NUL and the 16-bit dot product by default -- the second
+ * only where the backend emits it or calls it (EMU_IR_KERNEL_PLAIN) --
+ * and not the copy and the fill, which were measured and did not pay on
+ * the F746 (docs/jit/autovectorisation.md). fuzz-ir sets every kind, so
+ * none goes untested.
  */
 extern uint32_t emu_ir_kernel_kinds;
 void emu_ir_kernel_reset(void); /* no block may name one: a harness's */

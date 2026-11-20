@@ -1112,6 +1112,40 @@ whole shrank. What it points at next: ARMv7-M's stores to the cpu --
 and PowerPC's arithmetic, its CR field still built in IR
 ([../TODO.md](../TODO.md)).
 
+### By mnemonic: PowerPC and G4MH
+
+The class table above put PowerPC's arithmetic at 38% and G4MH's at
+28.5%; a class does not say which instruction. Dumps of df58293
+(`-DEMU_JIT_DUMP=ON -DEMU_PC_PROFILE=8000`), samples in translated code
+by host mnemonic:
+
+| PowerPC (376 samples) | | G4MH (820) | |
+|---|---|---|---|
+| add | 10.3% | ldr | 18.3% |
+| mov | 10.0% | **bfi** | **14.3%** |
+| cmp | 10.0% | add | 9.0% |
+| ldr | 8.3% | **mrs** | **6.8%** |
+| sub, str | 7.7% each | mov | 6.4% |
+| **rev, rev16** | **9.7%** | sub | 6.3% |
+| orr | 4.7% | **ubfx** | **5.7%** |
+
+**G4MH's is its SETF**: MRS, the PSW loaded, UBFX and BFI for Z,S then
+OV,CY, the PSW stored -- ten instructions after each flag-setting add,
+and 27% of its translated time before counting the PSW's share of the
+loads. Counted
+on the host, 392 SETFs survive the dead-flag pass in CoreMark's blocks
+and only 52 of them for a load or store that might fault after them;
+the rest are live at the block's exit, where an interrupt may read the
+PSW. So moving them into the slow paths of accesses would save little;
+only flags kept as their operands and derived when read would.
+
+**PowerPC's `cmpw` is thirteen**: the three-way compare (six), the
+summary overflow from XER (three), and the CR's read-modify-write for
+the one field it changes (four) -- one byte a field would make that a
+store. Its loads and stores swap bytes (rev, rev16: 9.7%), the price of
+a big-endian guest in little-endian RAM; and the RAM window's guard is
+6.6%.
+
 ### A loop's guest registers in host ones: measured, not kept
 
 Not the whole-block register cache above, which lost 15.5%: a block

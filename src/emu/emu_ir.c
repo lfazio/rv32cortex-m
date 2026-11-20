@@ -2914,9 +2914,14 @@ static void loop_kernel(emu_ir_block_t *b, const emu_ir_target_t *t, const emu_i
                         lp->kind == EMU_IR_LOOP_FILL) &&
                        lp->copy.ok;
 
+    const uint8_t aux =
+        (uint8_t)(lp->kind | ((dot && lp->dot.xstride == 2 && !lp->dot.xswap && !lp->dot.yswap)
+                                  ? EMU_IR_KERNEL_PLAIN
+                                  : 0u));
+
     if (t == NULL || (!dot && !bytes) || (emu_ir_kernel_kinds & (1u << lp->kind)) == 0u ||
         !b->has_fast || b->count + 1u > EMU_IR_MAX_INSNS ||
-        !backend_can_lower(EMU_IR_KERNEL, 0u)) {
+        !backend_can_lower(EMU_IR_KERNEL, aux)) {
         return;
     }
     const uint32_t k = dot ? emu_ir_kernel_add(&lp->dot, t, &b->fast)
@@ -2929,7 +2934,7 @@ static void loop_kernel(emu_ir_block_t *b, const emu_ir_target_t *t, const emu_i
     memmove(&b->insn[1], &b->insn[0], b->count * sizeof(b->insn[0]));
     memset(&b->insn[0], 0, sizeof(b->insn[0]));
     b->insn[0].op = (uint8_t)EMU_IR_KERNEL;
-    b->insn[0].aux = (uint8_t)lp->kind;
+    b->insn[0].aux = aux;
     b->insn[0].dst = EMU_IR_NO_TEMP;
     b->insn[0].a = EMU_IR_NO_TEMP;
     b->insn[0].b = EMU_IR_NO_TEMP;

@@ -323,7 +323,9 @@ Each has cost more than one session, and every one recurred.
   +3.9% was the old tree at `EMU_LAYOUT_PAD=1588`; for translated code
   move the buffer (`EMU_LAYOUT_PAD_BSS`) -- and move the memory the change
   grew: 10 KB of new `.bss` tables cost PowerPC 0.8% with the flash and
-  ITCM pads flat, and the `.bss` pad alone moved it 2.7%. On the host, callgrind is exact; under ~10%,
+  ITCM pads flat, and the `.bss` pad alone moved it 2.7%. A control build
+  is another layout: 0.44% blamed on skipped kernels stayed when none were
+  made. On the host, callgrind is exact; under ~10%,
   best-of-five wall clock is not a measurement.
 - **Callgrind cannot see what an M7 charges for a loop's shape.** An
   interpreter change is measured on the board (PowerPC's `stretch()`:
@@ -870,6 +872,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   the write, the F746 returned LSPACT's old value beside every other
   bit's new one, which read as "LSPACT cannot be cleared"
   (`fpccr-writable`).
+- **A word a tool searches the console for is reserved**: a report line
+  ending "the backend emitted" became the run's banner to board-run.py
+  (the last "backend "), and an A/B lost its only row that mattered.
 - **Read the peripheral before suspecting the code**: a UART configured,
   enabled and muxed with nothing arriving is a wire.
 - **Diff the code memory against the image** when code misbehaves on
