@@ -828,6 +828,15 @@ uint32_t emu_jit_hot_threshold(void);
 #define EMU_JIT_THRASH_RETRY 65536u
 #endif
 /*
+ * And each retry waits twice as long as the one before, this many times
+ * at most, until a flush starts again from EMU_JIT_THRASH_RETRY: the
+ * early retries find a better set to give up, the later ones only
+ * rebuild the one they forgot. 0 retries at a fixed period.
+ */
+#ifndef EMU_JIT_THRASH_BACKOFF
+#define EMU_JIT_THRASH_BACKOFF 6u
+#endif
+/*
  * And at most this many given up at each compaction. A cycle too large
  * for the buffer evicts all its blocks at the same rate, so they reach
  * the limit together; given up all at once, more of the cycle goes to

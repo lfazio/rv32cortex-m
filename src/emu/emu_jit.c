@@ -733,6 +733,18 @@ static uint32_t g_thrash_evictions = EMU_JIT_THRASH_EVICTIONS;
  * forgotten. */
 static EMU_PER_CORE uint32_t g_thrash_interps;
 
+/*
+ * How many of them the next retry waits for: EMU_JIT_THRASH_RETRY after
+ * a flush, doubled at each retry up to EMU_JIT_THRASH_BACKOFF times.
+ * Reaching a retry at all says the pcs were given up again and run --
+ * the cycle still does not fit -- and forgetting every mark sends the
+ * whole cycle back through the translator and the compactions until it
+ * is marked again: RV32 CoreMark x2000 at 32 KB on the F746 ran 47 of
+ * those and 47% slower than its first 650 iterations.
+ */
+static EMU_PER_CORE uint32_t g_thrash_retry_at = EMU_JIT_THRASH_RETRY;
+static EMU_PER_CORE uint32_t g_thrash_backoffs;
+
 /* Marks this compaction may still make: EMU_JIT_THRASH_MARKS each. */
 static EMU_PER_CORE uint32_t g_thrash_marks_left;
 
@@ -913,6 +925,10 @@ void emu_jit_flush(void)
     ibtc_reset();
     g_stats.flushes++;
     neg_invalidate();
+    /* The marks are gone with the epoch: a new program, or a new start. */
+    g_thrash_interps = 0u;
+    g_thrash_retry_at = EMU_JIT_THRASH_RETRY;
+    g_thrash_backoffs = 0u;
 }
 
 void emu_jit_flush_all(void)
@@ -1900,6 +1916,28 @@ static EMU_NOINLINE emu_run_reason_t interp_to_jump(emu_cpu_t *cpu,
     return r;
 }
 
+#if defined(JIT_THRASH_PART) && JIT_THRASH_PART
+/*
+ * EXPERIMENT: forget a quarter of the marks -- the slots of one residue
+ * mod 4, a different one each time -- and leave each on probation, one
+ * eviction from being marked again.
+ */
+static EMU_PER_CORE uint32_t g_forget_phase;
+
+static EMU_NOINLINE void thrash_forget_quarter(void)
+{
+    const uint32_t probation =
+        JIT_SEEN_EVICTED | ((g_thrash_evictions > 0u) ? g_thrash_evictions - 1u : 0u);
+
+    for (uint32_t s = g_forget_phase; s < JIT_NEG_SIZE; s += 4u) {
+        if ((g_neg[s].tag >> 8) == g_neg_epoch && (g_neg[s].tag & 0xFFu) == JIT_SEEN_THRASH) {
+            g_neg[s].tag = (g_neg_epoch << 8) | probation;
+        }
+    }
+    g_forget_phase = (g_forget_phase + 1u) & 3u;
+}
+#endif
+
 static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
                                            const emu_jit_ops_t *ops,
                                            const uint32_t *pcp, uint32_t *done,
@@ -1912,11 +1950,23 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
      * again. All the marks go together, by the epoch, as a flush takes
      * them.
      */
-    if (++g_thrash_interps >= EMU_JIT_THRASH_RETRY) {
+#if defined(JIT_THRASH_PART) && JIT_THRASH_PART
+    if (++g_thrash_interps >= g_thrash_retry_at / 4u) {
         g_thrash_interps = 0u;
         g_stats.thrash_retries++;
+        thrash_forget_quarter();
+    }
+#else
+    if (++g_thrash_interps >= g_thrash_retry_at) {
+        g_thrash_interps = 0u;
+        g_stats.thrash_retries++;
+        if (g_thrash_backoffs < EMU_JIT_THRASH_BACKOFF && g_thrash_retry_at <= 0x7FFFFFFFu) {
+            g_thrash_backoffs++;
+            g_thrash_retry_at *= 2u;
+        }
         neg_invalidate();
     }
+#endif
     return interp_to_jump(cpu, ops, pcp, done, budget, slot);
 }
 
