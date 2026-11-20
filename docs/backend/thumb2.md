@@ -1139,6 +1139,12 @@ the rest are live at the block's exit, where an interrupt may read the
 PSW. So moving them into the slow paths of accesses would save little;
 only flags kept as their operands and derived when read would.
 
+What the dump did show was two `mov`s before each `adds`: the SETF
+lowering copied its operands into r0 and r1 whether or not they were
+already in allocated registers. Taking them where they are (`use_reg`)
+made G4MH CoreMark **1.6% / 1.7% faster** at two layouts (14.40 to 14.17
+and 14.16), ARMv7-M, which had no SETF yet, within layout (+0.18%).
+
 **PowerPC's `cmpw` is thirteen**: the three-way compare (six), the
 summary overflow from XER (three), and the CR's read-modify-write for
 the one field it changes (four) -- one byte a field would make that a

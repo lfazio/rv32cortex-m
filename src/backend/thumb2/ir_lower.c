@@ -2132,10 +2132,17 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         return;
     }
 
-    ld_operand(SETF_A, in->a);
-    if (arith || src == EMU_IR_FS_SHIFT) {
-        ld_operand(SETF_B, in->b);
-    }
+    /*
+     * The operands where they are: copied into r0 and r1 first, a G4MH
+     * `add` paid two MOVs before its ADDS on every SETF, five times in
+     * the hottest block of its CoreMark profile. use_reg answers an
+     * allocated register or the scratch it is given: `b` is read again
+     * at the end (a shift's carry), so it must not be r0, r3 or r12,
+     * which the sequence writes -- r1 or allocated -- and `a` may be r0,
+     * its scratch, because nothing reads it after the ADDS.
+     */
+    const uint32_t ra = use_reg(in->a, SETF_A);
+    const uint32_t rb = (arith || src == EMU_IR_FS_SHIFT) ? use_reg(in->b, SETF_B) : SETF_B;
 
     /*
      * The IR hands over the *operands* for ADD and SUB -- carry and
@@ -2147,11 +2154,11 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * what was just set.
      */
     if (src == EMU_IR_FS_ADD) {
-        t2_adds(SETF_RES, SETF_A, SETF_B);
+        t2_adds(SETF_RES, ra, rb);
     } else if (src == EMU_IR_FS_SUB) {
-        t2_subs(SETF_RES, SETF_A, SETF_B);
+        t2_subs(SETF_RES, ra, rb);
     } else {
-        t2_adds_imm(SETF_RES, SETF_A, 0u);
+        t2_adds_imm(SETF_RES, ra, 0u);
     }
     t2_mrs_apsr(SETF_PSR);
 
@@ -2181,7 +2188,7 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              * computed and handed over in `b`; the APSR knows nothing
              * about it. Only bit 0 is read.
              */
-            t2_bfi(SETF_ACC, SETF_B, (uint32_t)__builtin_ctz(t->flag_bit[f]), 1u);
+            t2_bfi(SETF_ACC, rb, (uint32_t)__builtin_ctz(t->flag_bit[f]), 1u);
             continue;
         }
         fl[n].psr = k_psr_bit[f];
