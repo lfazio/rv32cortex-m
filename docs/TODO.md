@@ -138,14 +138,16 @@ measured at.
       is what would decide it; Helium's `VMLADAVA` on the N6; ARMv7-M's
       dot products, whose sticky Q a kernel would have to compute per
       step.
-- [ ] **Why a longer run is slower at 32 KB.** RV32 CoreMark on the
-      F746 with `-DEMU_JIT_CODE_BYTES=32768`: x650 runs at 16.40 host
-      cycles an instruction, x2000 at 23.87 (330775a; 24.16 with the
-      loop kernels, which make none there). Per million instructions,
-      57 translations against 113, and 3.1% interpreted against 5.0%
-      (thrash 232 against 1,479). A steady state should not depend on
-      the run's length; something accumulates -- the pcs given up on,
-      their retries, or a cyclic set the compactions drift into.
+- [ ] **The thrash policy's two equilibria**
+      ([jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)):
+      RV32 CoreMark x2000 at 32 KB on the F746 runs at 16 host cycles an
+      instruction for its first 163M instructions and at 28-31 for the
+      next 290M, with the same work in every iteration -- the marks a
+      retry rebuilds land in a worse set and stay there. Backing off the
+      retry, forgetting a quarter at a time and never forgetting each
+      won one regime and lost another on the host
+      (`wip/jit-thrash-retry-variants`). Untried: keep the marks a retry
+      replaced, and put them back when the next window compacts more.
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure.** Linking a later block's exit made all four CoreMarks
       3.6-8.0% faster at their default buffers, but without the stop

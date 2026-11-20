@@ -5297,6 +5297,18 @@ session, and every one of them recurred:
   now (guests make 2 to 4), one array went into the other's padding, and
   the F446, where they were never measured, leaves the kernels off.
 
+- **Cut a long run at several lengths before calling it a steady
+  state.** RV32 CoreMark x2000 at 32 KB ran at 24.16 host cycles an
+  instruction against x650's 16.40, which read as something
+  accumulating -- a table filling, a list growing. Cut at six lengths
+  with `-DEMU_MAX_INSN`, the run was 16 for 163M instructions, 28-31 for
+  the next 290M, and 20.6 for the last 50M: two equilibria of the thrash
+  marks, entered and left with the same work in every iteration. The
+  host, with its own tables, showed the same switching, and with the
+  board's showed none. Three alternative policies each won one regime
+  and lost another. **An average over a run is a mixture until the
+  intervals agree.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

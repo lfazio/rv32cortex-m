@@ -293,6 +293,48 @@ and at 8 KB 13.24 s; CoreMark x650 at 32 KB 33.70 s, valid,
 `crcfinal 0x25e3` (b5277c7, before both: 3.80, 8.11, 16.92 and
 41.48 s).
 
+### A long run at 32 KB: two equilibria
+
+CoreMark x650 at 32 KB, the board's long check, ran in 12.2 s by
+2026-11-19 -- short of the cycle counter's wrap -- so the check became
+x2000, and x2000 ran at 24.16 host cycles an instruction against x650's
+16.40. The same on 330775a (23.87), with the same translations to the
+block. The x2000 run cut off at six lengths (`-DEMU_MAX_INSN`), F746:
+
+| instructions | cycles / instruction | compactions | interpreted |
+|---|---|---|---|
+| 0-50M | 15.5 | 25 | 1.3M |
+| 50-100M | 17.6 | 28 | 1.8M |
+| 100-163M | 16.1 | 32 | 1.9M |
+| 163-250M | **27.6** | 102 | 5.1M |
+| 250-350M | **28.4** | 120 | 5.6M |
+| 350-450M | **31.4** | 163 | 7.2M |
+| 450-500M | 20.6 | 46 | 1.9M |
+
+Every iteration retires the same 250,1xx instructions. Nothing grows:
+the run switches between two equilibria of the marks, each a set some
+retry left behind, and the worse one compacts three to five times as
+often. The host shows the same at 64 KB with the host's tables -- quiet
+stretches of 25M instructions without a compaction, then 26 to 45 --
+and not with the board's tables at 32 KB, where x120 and x2000 cost the
+same per instruction.
+
+Three alternatives, on the host (`wip/jit-thrash-retry-variants`), best
+of three:
+
+| | default | retry backs off | a quarter forgotten | never forgotten |
+|---|---|---|---|---|
+| board tables, 32 KB: Whetstone | 0.176 s | 0.172 | 0.182 | 0.185 |
+| CoreMark x120 | 0.308 | 0.374 | 0.494 | 0.456 |
+| CoreMark x2000 | 4.99 | 8.06 | 10.41 | 8.94 |
+| host tables, 64 KB: CoreMark x2000 | 1.51 | 2.68 | 5.46 | 1.21 |
+
+Where the buffer is barely too small the marks converge and a retry
+only storms; where it is far too small the marks pile up past what is
+needed -- never forgetting interpreted 80% of x2000 -- and the retry is
+what undoes it. Each alternative won one and lost the other, so the
+policy stays as measured on 2026-11-14.
+
 ### The hooks a block calls
 
 Every block ends in the frontend's `count` hook (retired instructions,
