@@ -1603,6 +1603,18 @@ typedef struct emu_ir_target {
      */
     uint32_t flag_bit[4];
 
+    /*
+     * The word's C is ARM's: set by an add that carries (FS_ADD) and by
+     * a subtract that does *not* borrow (FS_SUB) -- where every other
+     * guest here, and the IR, mean a borrow -- and the conditions that
+     * read C (LTU, GEU, LEU, GTU) read it inverted. So after a subtract
+     * each compare condition is still the relation of its operands, and
+     * pass_cond_forward holds; and the word is the APSR's own, which a
+     * host with ARM's flags writes with MRS and nothing to invert.
+     * ARMv7-M's. FS_SHIFT's C is bit 0 of `b` either way.
+     */
+    bool flags_arm_carry;
+
     /* Guest register `n` reads as zero and ignores writes. */
     bool (*reg_is_zero)(uint32_t n);
 

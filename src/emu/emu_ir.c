@@ -757,10 +757,60 @@ static uint8_t op_reads_flags(const emu_ir_insn_t *in)
  * `lahf` plus masking and a store -- and most of them are overwritten by
  * the next arithmetic instruction before any conditional looks.
  */
-static void pass_dead_flags(emu_ir_block_t *b, uint8_t live_out,
+/*
+ * The guest register that *is* the flag word, if one is -- ARMv7-M's,
+ * which its translator writes with PUT where SETF has no mode for the
+ * instruction (a carry in, an IT block) -- or IR_MAX_GUEST_REGS. A PUT of
+ * it defines every flag and a GET reads them all; SETF, GETCOND and the
+ * bit operations reach the same word through flags_offset, which the
+ * passes below must see as the register. Found once per target.
+ */
+#define IR_MAX_GUEST_REGS 64u
+
+static uint32_t flags_reg(const emu_ir_target_t *t)
+{
+    static EMU_PER_CORE const emu_ir_target_t *seen;
+    static EMU_PER_CORE uint32_t reg;
+
+    if (t == NULL || t->reg_offset == NULL ||
+        (t->flag_bit[0] | t->flag_bit[1] | t->flag_bit[2] | t->flag_bit[3]) == 0u) {
+        return IR_MAX_GUEST_REGS;
+    }
+    if (t != seen) {
+        reg = IR_MAX_GUEST_REGS;
+        for (uint32_t n = 0; n < IR_MAX_GUEST_REGS; n++) {
+            if (t->reg_offset(n) == t->flags_offset) {
+                reg = n;
+                break;
+            }
+        }
+        seen = t;
+    }
+    return reg;
+}
+
+/* An instruction that reads or rewrites the flag word through flags_offset. */
+static bool op_uses_flag_word(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_SETF: /* a read-modify-write of the live flags */
+    case EMU_IR_GETCOND:
+    case EMU_IR_SELECT:
+    case EMU_IR_BITOP_SET:
+    case EMU_IR_BITOP_CLR:
+    case EMU_IR_BITOP_INV:
+    case EMU_IR_BITOP_TST:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void pass_dead_flags(emu_ir_block_t *b, const emu_ir_target_t *t, uint8_t live_out,
                             emu_ir_opt_stats_t *st)
 {
     uint8_t live = live_out;
+    const uint32_t fr = flags_reg(t);
 
     for (uint32_t i = b->count; i-- > 0;) {
         emu_ir_insn_t *const in = &b->insn[i];
@@ -777,6 +827,13 @@ static void pass_dead_flags(emu_ir_block_t *b, uint8_t live_out,
             }
             /* What it defines is no longer live above it. */
             live = (uint8_t)(live & ~in->defs);
+        }
+        if (fr != IR_MAX_GUEST_REGS && in->imm == fr) {
+            if (in->op == (uint8_t)EMU_IR_PUT) {
+                live = 0u; /* the whole word: every flag defined */
+            } else if (in->op == (uint8_t)EMU_IR_GET) {
+                live = EMU_IR_F_ALL;
+            }
         }
 
         live |= op_reads_flags(in);
@@ -861,7 +918,33 @@ static void pass_cond_forward(emu_ir_block_t *b, const emu_ir_target_t *t,
             continue;
         }
         if (in->op == (uint8_t)EMU_IR_SETF) {
-            setf = (in->aux == (uint8_t)EMU_IR_FS_SUB) ? in : NULL;
+            setf = (in->aux == (uint8_t)EMU_IR_FS_SUB || in->aux == (uint8_t)EMU_IR_FS_ZS ||
+                    in->aux == (uint8_t)EMU_IR_FS_LOGIC || in->aux == (uint8_t)EMU_IR_FS_SHIFT)
+                       ? in
+                       : NULL;
+            continue;
+        }
+        if (in->op == (uint8_t)EMU_IR_GETCOND && setf != NULL &&
+            setf->aux != (uint8_t)EMU_IR_FS_SUB) {
+            /*
+             * A result's own flags (ARMv7-M's `tst; bne`, `lsls; bmi`): Z
+             * is the result against zero and S its sign, whatever the
+             * mode did to C and V. No second operand: zero.
+             */
+            const uint8_t c = in->aux;
+            const bool zc = c == (uint8_t)EMU_IR_C_EQ || c == (uint8_t)EMU_IR_C_NE;
+            const bool sc = c == (uint8_t)EMU_IR_C_MI || c == (uint8_t)EMU_IR_C_PL;
+            const unsigned f = zc ? 0u : 1u; /* EMU_IR_F_Z or EMU_IR_F_S */
+
+            if ((zc || sc) && (setf->defs & (1u << f)) != 0u && t->flag_bit[f] != 0u) {
+                in->op = (uint8_t)EMU_IR_SETCC;
+                in->aux = zc ? c
+                          : (c == (uint8_t)EMU_IR_C_MI) ? (uint8_t)EMU_IR_C_LT
+                                                        : (uint8_t)EMU_IR_C_GE;
+                in->a = setf->a;
+                in->b = EMU_IR_NO_TEMP;
+                st->conds_forwarded++;
+            }
             continue;
         }
         if (in->op == (uint8_t)EMU_IR_GETCOND && setf != NULL) {
@@ -925,8 +1008,6 @@ static void pass_cond_forward(emu_ir_block_t *b, const emu_ir_target_t *t,
  * invariants the lowerings do. Being right in all three backends does
  * not help when the thing that is wrong runs before them.
  */
-#define IR_MAX_GUEST_REGS 64u
-
 /*
  * Whether a guest register reads as zero and discards writes. NULL target
  * means none does -- the passes stay usable by a unit test that builds a
@@ -968,6 +1049,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
 {
     uint16_t cur[IR_MAX_GUEST_REGS];
     const uint32_t pcr = pc_reg(t);
+    const uint32_t fr = flags_reg(t);
     static EMU_PER_CORE uint16_t copy[EMU_IR_MAX_TEMPS];
 
     for (uint32_t i = 0; i < IR_MAX_GUEST_REGS; i++) {
@@ -1064,6 +1146,14 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
             break;
 
         default:
+            /*
+             * The same for the flag word: SETF and the bit operations
+             * rewrite it through flags_offset, and a GET forwarded from
+             * a PUT before one of them would read the flags before it.
+             */
+            if (fr < IR_MAX_GUEST_REGS && op_uses_flag_word(in->op)) {
+                cur[fr] = EMU_IR_NO_TEMP;
+            }
             break;
         }
 
@@ -1164,6 +1254,7 @@ static void pass_dead_puts(emu_ir_block_t *b, const emu_ir_target_t *t,
      * reads it there.
      */
     bool pc_rewritten = false;
+    const uint32_t fr = flags_reg(t);
 
     memset(seen, 0, sizeof(seen));
 
@@ -1171,6 +1262,13 @@ static void pass_dead_puts(emu_ir_block_t *b, const emu_ir_target_t *t,
         emu_ir_insn_t *const in = &b->insn[i];
         if (in->dead) {
             continue;
+        }
+        /*
+         * A read of the flag word that is not a GET -- no forwarding
+         * answers it from the PUT before -- reads that PUT from memory.
+         */
+        if (fr < IR_MAX_GUEST_REGS && op_uses_flag_word(in->op)) {
+            seen[fr] = false;
         }
 
         switch ((emu_ir_op_t)in->op) {
@@ -2966,7 +3064,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
      * orphaned.
      */
     pass_cond_forward(b, t, stats); /* first: what it rewrites reads no flags */
-    pass_dead_flags(b, live_out, stats);
+    pass_dead_flags(b, t, live_out, stats);
     pass_reg_traffic(b, t, stats);
     /*
      * After reg_traffic, which rewrites GETs into MOVs and so exposes

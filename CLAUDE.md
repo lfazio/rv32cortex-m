@@ -297,6 +297,9 @@ Each has cost more than one session, and every one recurred.
   reference from the manual, none by running it; 24 mutants show the
   run would have. A null result (fuzz-armv7m-mpu) is the mutants' to
   vouch for.
+- **A model reads state the way the IR does**: fuzz-ir's `h_vmems` read
+  `r[n]` where the IR's GET went through `reg_offset`, and the first
+  target with a register elsewhere (ARMv7-M's flag word) split them.
 - **A test input is checked against the mutant it is for**: a
   dictionary's own sequence took its interrupt and passed under a
   dispatcher that never takes one -- only interpreted code followed the
@@ -641,6 +644,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   SYNCI and G4MH's CACHE discard translations; FENCE, SYNCM and the rest
   order nothing on one host thread. Self-modifying tests must patch a
   block's *start* and run the backend they name.
+- **A design measured slower may be its lowering**: ARMv7-M's flag word
+  was 1.6-2.0% slower until SETF stopped copying its operands into r0
+  and r1, then 0.62% faster. Read the emitted code before blaming the
+  design.
 - **What the JIT emits is the cost on a fixed cache** -- and on a fixed
   temp budget: PowerPC's efsmul in IR took 60 of Thumb-2's 256 temps a
   block, cut Whetstone's blocks (entries +38%) and was 19% slower, where

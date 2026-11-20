@@ -5330,6 +5330,22 @@ session, and every one of them recurred:
   differs in nothing else; when it cannot, a figure that survives the
   variable's removal was never the variable's.**
 
+- **A model reads state the way the IR does.** fuzz-ir's helper for a
+  strided vector access read its stride register as `r[n]`; the IR's
+  GET of the same register went through the target's `reg_offset`. The
+  same, on every target until one put a register elsewhere -- ARMv7-M's
+  flag word at r12 -- and then the inline path and the helper disagreed
+  on the first run. **A harness's shortcut through the layout is an
+  assumption every new target can break; take the target's own path.**
+
+- **A design measured slower may be its lowering.** ARMv7-M's flags as
+  one word written by SETF were 1.6-2.0% slower on the F746 than four
+  lazy words, and it read as MRS being dear on an M7. The G4MH dump of
+  the same day showed two MOVs before every SETF's ADDS -- operands
+  copied into r0 and r1 that were already in registers. Without them the
+  flag word was 0.62% faster than the four words. **Before a measurement
+  condemns a design, read the code it was measured with.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

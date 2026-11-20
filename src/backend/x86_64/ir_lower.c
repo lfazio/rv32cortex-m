@@ -496,6 +496,9 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
         }
         x86_and_imm8(T0, 1);
+        if (f == 3u && in->aux == (uint8_t)EMU_IR_FS_SUB && t->flags_arm_carry) {
+            x86_alu_imm32(X86_X_XOR, T0, 1u); /* CF is a borrow; ARM's C is not */
+        }
         x86_shift_imm(T0, X86_SHL, (uint32_t)__builtin_ctz(t->flag_bit[f]));
         x86_alu_rr(X86_OR, T2, T0);
     }
@@ -534,6 +537,14 @@ static void flag_bit_to(int dst, int src, const emu_ir_target_t *t, unsigned f)
         x86_shift_imm(dst, X86_SHR, sh);
     }
     x86_and_imm8(dst, 1);
+}
+
+/* C as the conditions read it, a borrow: ARM's inverted (flags_arm_carry). */
+static void carry_as_borrow(int reg, const emu_ir_target_t *t)
+{
+    if (t->flags_arm_carry && t->flag_bit[3] != 0u) {
+        x86_alu_imm32(X86_X_XOR, reg, 1u);
+    }
 }
 
 /*
@@ -576,6 +587,7 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_C_LTU:
     case EMU_IR_C_GEU:
         flag_bit_to(T0, T1, t, 3); /* C */
+        carry_as_borrow(T0, t);
         break;
 
     case EMU_IR_C_LT:
@@ -597,6 +609,7 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_C_LEU:
     case EMU_IR_C_GTU:
         flag_bit_to(T0, T1, t, 3);
+        carry_as_borrow(T0, t);
         flag_bit_to(T2, T1, t, 0);
         x86_alu_rr(X86_OR, T0, T2); /* C || Z */
         break;

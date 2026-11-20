@@ -522,6 +522,23 @@ The flag representation was the obvious target and the smallest win;
 the profile said a loop decrementing SysTick once per instruction was
 16% of all host instructions. **Profile before choosing.**
 
+**The flags as one word, 2026-11-20.** Four lazy words kept `cmp`
+about twelve host instructions and four stores on Thumb-2 -- N and Z the
+result stored twice, C and V derived arithmetically. Now `jit_nzcv`
+holds the APSR's four bits and nothing else, as the IR's flag word:
+EMU_IR_SETF writes it (SUBS, MRS, a bit-field move, one store) and
+EMU_IR_GETCOND reads it, with `flags_arm_carry` saying C is ARM's --
+set by a subtract that does *not* borrow, which the shared modes and
+every other guest here mean the other way. A logical operation's SETF
+defines Z, S and C only, so V is kept; a carry in (ADC, SBC) and an
+instruction in an IT block write the word whole. Three passes learnt
+that a guest register can *be* the flag word, and the condition
+forwarding that after a result's own flags EQ, NE, MI and PL are the
+result against zero (`tst; bne`). On the F746 it was 1.6-2.0% *slower*
+at first; with SETF taking its operands where they are, not copied into
+r0 and r1, CoreMark is **0.62% faster** than the four words at both
+layouts (11.27 to 11.20), Dhrystone 0.3%.
+
 What a block may assume, and what invalidates it:
 
 - **Context** (`armv7m_jit_ctx`): Thumb, inside IT, Handler mode,

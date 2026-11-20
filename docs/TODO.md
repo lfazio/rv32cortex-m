@@ -111,11 +111,11 @@ measured at.
       ([backend/thumb2.md](backend/thumb2.md#then-the-flags)): G4MH's
       branches compare a subtract's operands now and PowerPC's a
       compare's, and PowerPC's CR field is one three-way compare
-      (`EMU_IR_CMP3`). ARMv7-M stores four words of flag state at
-      every flag-setting instruction (N and Z as the result, C, V), in
-      loops whose next instruction reads only one of them; pairing them
-      into STRDs made its code 2.9% smaller and CoreMark 0.97% slower
-      (`wip/t2-strd-flag-stores`): fewer stores, not wider ones. Profiled again
+      (`EMU_IR_CMP3`). ARMv7-M's flags are one APSR-layout word now,
+      written by SETF with ARM's carry (`flags_arm_carry`) -- one store
+      where there were four; pairing the four into STRDs had made its
+      code 2.9% smaller and CoreMark 0.97% slower
+      (`wip/t2-strd-flag-stores`). Profiled again
       after the changes that took 16-30% off these three (ARMv7-M 13.40
       to 11.31, PowerPC 17.69 to 12.46, G4MH 18.74 to 14.30): ARMv7-M's
       stores to the cpu are 17.2% of its translated time, PowerPC's

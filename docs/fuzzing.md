@@ -550,6 +550,21 @@ RV32's reservation. The seed's first version reserved the word the
 loop's first iteration writes, which runs in the block before the one
 with the kernel, so the reservation was gone before the kernel ran.
 
+**ARMv7-M's flag word** (`flags_arm_carry`, docs/frontend/armv7m.md):
+four of fuzz-ir's sixteen targets have ARM's carry and r12 for the flag
+word, so SETF and GETCOND meet GET and PUT of the same word. They took
+half the inputs of the ARM layout, which no regression input used. They
+found a fault in fuzz-ir's own model at once: `h_vmems` read its stride
+register as `r[n]`, where the IR's GET went through `reg_offset` -- on
+these targets the flag word -- and the inline path and the helper
+disagreed (`regressions/ir/vmems-stride-in-a-moved-register`). Seven
+mutants of the new IR (ARM's carry in the reference, x86-64's SETF and
+GETCOND; the forwarding, dead-store and dead-flag passes ignoring the
+flag register; MI forwarded as GE) were found in 5 to 59 s, and four of
+the translator (CS and CC swapped, a shifter carry clearing V, IT flags
+not chosen against the old, an add's flags as a subtract's) by
+fuzz-armv7m-jit in 5 to 11 s.
+
 **Mutants of the lowering, one at a time** (`scripts/ir-board-mutant.sh
 FILE OLD NEW`, from a worktree): ten of the changes the dumps led to
 (2026-11-18) -- G4MH's flags without the borrow (149 inputs different)

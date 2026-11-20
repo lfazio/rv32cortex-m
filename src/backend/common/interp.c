@@ -88,7 +88,7 @@ static void apply_flags(emu_cpu_t *cpu, const emu_ir_target_t *t,
         const uint32_t d = res - rhs;
         z = (d == 0u);
         s = (d & 0x80000000u) != 0u;
-        c = (res < rhs); /* borrow */
+        c = t->flags_arm_carry ? (res >= rhs) : (res < rhs); /* ARM's, or a borrow */
         v = (((res ^ rhs) & (res ^ d) & 0x80000000u) != 0u);
         break;
     }
@@ -167,7 +167,9 @@ static bool eval_cond(emu_cpu_t *cpu, const emu_ir_target_t *t, uint8_t cond)
     const bool z = (t->flag_bit[0] != 0u) && ((w & t->flag_bit[0]) != 0u);
     const bool s = (t->flag_bit[1] != 0u) && ((w & t->flag_bit[1]) != 0u);
     const bool v = (t->flag_bit[2] != 0u) && ((w & t->flag_bit[2]) != 0u);
-    const bool c = (t->flag_bit[3] != 0u) && ((w & t->flag_bit[3]) != 0u);
+    /* A borrow, as the conditions below read it: ARM's C inverted. */
+    const bool c = (t->flag_bit[3] != 0u) &&
+                   (((w & t->flag_bit[3]) != 0u) != t->flags_arm_carry);
 
     switch ((emu_ir_cond_t)cond) {
     case EMU_IR_C_EQ:

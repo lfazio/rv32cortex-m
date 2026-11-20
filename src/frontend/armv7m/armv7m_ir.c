@@ -24,23 +24,22 @@
  *
  * Flags
  * -----
- * N, Z, C and V are ordinary IR values, held while translated code runs
- * as four guest "registers" -- one word each, read lazily; see jit_nf in
- * armv7m_cpu.h. EMU_IR_SETF is not used: its flag model is the first
- * guest's, where a subtract's C is a *borrow* and a logical operation
- * clears V and C. ARM's C is the inverse of a borrow, and a logical
- * operation leaves V alone and takes C from the shifter -- so the shared
- * flag sources would be wrong in exactly the cases a compiler relies on
- * (`cmp; bhs`, `adds; adcs`).
+ * N, Z, C and V are the IR's flag word, jit_nzcv in armv7m_cpu.h: the
+ * APSR's own four bits and nothing else, written by EMU_IR_SETF and read
+ * by EMU_IR_GETCOND. ARM's C is the inverse of a subtract's borrow, which
+ * the IR and every other guest here mean, so the target says
+ * flags_arm_carry; and a logical operation leaves V alone and takes C
+ * from the shifter, so its SETF defines Z, S and C only -- SETF writes
+ * no flag it does not define. Where SETF has no mode -- a carry in, an
+ * instruction inside an IT block, whose flags are chosen against the
+ * old -- the word is computed and written whole (flags_word).
  *
- * One word each rather than four bits of xPSR, because of who can look.
- * A load can fault, and a fault stacks xPSR, so the flags have to be
- * *recoverable* before every load -- and the first version of this file
- * made them recoverable by packing all four into xPSR each time, which
- * is seventeen operations. Kept apart, N and Z are the result stored
- * twice, and the packing is done by ir_fault, on the path that actually
- * needs it. CoreMark went from 3.0 times the interpreter to the figure
- * in docs/frontend/armv7m.md.
+ * It was four words, read lazily: N and Z the result stored twice, C and
+ * V computed arithmetically, `cmp` about twelve host instructions and
+ * four stores on Thumb-2 where SUBS, MRS and a bit-field move and one
+ * store do now. Before that, all four packed into xPSR at every flag
+ * write: seventeen operations, and CoreMark at 3.0 times the
+ * interpreter.
  *
  * The cost is a second representation with a rule about which is
  * current: jit_split, and armv7m_flags_pack / _unpack at every crossing
@@ -102,10 +101,12 @@
 #define R_PC 15u
 #define R_XPSR 16u
 #define R_CTX 17u /* the low word of jit_ctx */
-#define R_NF 18u  /* N is bit 31                 */
-#define R_ZF 19u  /* Z is "this word is zero"    */
-#define R_CF 20u  /* C, 0 or 1                   */
-#define R_VF 21u  /* V is bit 31                 */
+#define R_FLAGS 18u /* jit_nzcv: N, Z, C and V where the APSR has them */
+
+#define NZCV_N 0x80000000u
+#define NZCV_Z 0x40000000u
+#define NZCV_C 0x20000000u
+#define NZCV_V 0x10000000u
 
 /* A frontend-private bit in a LOAD or STORE's spec: MemA, not MemU. */
 #define A7_MEM_ALIGNED (1u << 4)
@@ -346,14 +347,8 @@ static uint32_t a7_reg_offset(uint32_t n)
     switch (n) {
     case R_XPSR:
         return (uint32_t)offsetof(armv7m_cpu_t, xpsr);
-    case R_NF:
-        return (uint32_t)offsetof(armv7m_cpu_t, jit_nf);
-    case R_ZF:
-        return (uint32_t)offsetof(armv7m_cpu_t, jit_zf);
-    case R_CF:
-        return (uint32_t)offsetof(armv7m_cpu_t, jit_cf);
-    case R_VF:
-        return (uint32_t)offsetof(armv7m_cpu_t, jit_vf);
+    case R_FLAGS:
+        return (uint32_t)offsetof(armv7m_cpu_t, jit_nzcv);
     default:
         /* R_CTX: the low word of a little-endian 64-bit key. Both hosts
          * are. */
@@ -370,12 +365,13 @@ static bool a7_reg_zero(uint32_t n)
 const emu_ir_target_t armv7m_ir_target = {
     .reg_offset = a7_reg_offset,
     /*
-     * No EMU_IR_SETF is ever emitted, so no flag has a home here: the
-     * flags are ordinary values in guest registers of their own. A
-     * backend that sees flag_bit[] zero lowers no flag operation.
+     * The APSR's own layout, in a word that holds nothing else, and
+     * ARM's carry: a host with ARM's flags writes it with MRS, and the
+     * IR's unsigned conditions are ARM's CS, CC, HI and LS.
      */
-    .flags_offset = (uint32_t)offsetof(armv7m_cpu_t, xpsr),
-    .flag_bit = {0u, 0u, 0u, 0u},
+    .flags_offset = (uint32_t)offsetof(armv7m_cpu_t, jit_nzcv),
+    .flag_bit = {NZCV_Z, NZCV_N, NZCV_V, NZCV_C}, /* Z, S, V, C */
+    .flags_arm_carry = true,
     .reg_is_zero = a7_reg_zero,
     .pc_offset = (uint32_t)offsetof(armv7m_cpu_t, r) + R_PC * 4u,
     .helpers = a7_ir_helpers,
@@ -628,26 +624,55 @@ static void it_access_done(T *t)
     }
 }
 
-/* One flag word, chosen against its old value inside an IT block. */
-static void wflag(T *t, uint32_t reg, uint16_t v)
+/*
+ * The flag word written whole, for what SETF has no mode for: a carry in
+ * (ADC, SBC), or an instruction inside an IT block, whose flags are chosen
+ * against the old ones. `c01` is C as 0 or 1 and `vword` a word whose bit
+ * 31 is V; NOT keeps the flag as it was.
+ */
+static void flags_word(T *t, uint16_t res, uint16_t c01, uint16_t vword)
 {
+    B *const b = t->b;
+    const uint16_t old = G(b, R_FLAGS);
+    uint16_t w = OP(b, EMU_IR_OR, ANDK(b, res, NZCV_N),
+                    SHL(b, CC(b, EMU_IR_C_EQ, res, K(b, 0u)), 30u));
+
+    w = OP(b, EMU_IR_OR, w, (c01 == NOT) ? ANDK(b, old, NZCV_C) : SHL(b, c01, 29u));
+    w = OP(b, EMU_IR_OR, w,
+           (vword == NOT) ? ANDK(b, old, NZCV_V) : ANDK(b, SHR(b, vword, 3u), NZCV_V));
     if (t->in_it) {
-        v = sel(t, v, G(t->b, reg));
+        w = sel(t, w, old);
     }
-    emu_ir_put(t->b, reg, v);
+    emu_ir_put(b, R_FLAGS, w);
 }
 
-/* N and Z from a result: the result is both. */
+/* N and Z from a result; C and V as they were. */
 static void flags_nz(T *t, uint16_t res)
 {
-    wflag(t, R_NF, res);
-    wflag(t, R_ZF, res);
+    if (t->in_it) {
+        flags_word(t, res, NOT, NOT);
+        return;
+    }
+    (void)emu_ir_emit(t->b, EMU_IR_SETF, EMU_IR_FS_ZS, res, NOT, 0u,
+                      EMU_IR_F_Z | EMU_IR_F_S);
+}
+
+/* ARM's condition as the IR's, under flags_arm_carry: CS is GEU. */
+static emu_ir_cond_t ir_cond(uint32_t cond)
+{
+    static const uint8_t k[14] = {
+        EMU_IR_C_EQ,  EMU_IR_C_NE,  EMU_IR_C_GEU, EMU_IR_C_LTU, EMU_IR_C_MI,
+        EMU_IR_C_PL,  EMU_IR_C_VS,  EMU_IR_C_VC,  EMU_IR_C_GTU, EMU_IR_C_LEU,
+        EMU_IR_C_GE,  EMU_IR_C_LT,  EMU_IR_C_GT,  EMU_IR_C_LE,
+    };
+
+    return (cond < 14u) ? (emu_ir_cond_t)k[cond] : EMU_IR_C_ALWAYS;
 }
 
 /* The carry flag as it stands, 0 or 1. */
 static uint16_t carry01(B *b)
 {
-    return G(b, R_CF);
+    return emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)EMU_IR_C_GEU, NOT, NOT, 0u, 0u);
 }
 
 /*
@@ -659,38 +684,17 @@ static uint16_t carry01(B *b)
  */
 static uint16_t cond01(B *b, uint32_t cond)
 {
-    const bool inv = (cond & 1u) != 0u;
-    const uint16_t zero = K(b, 0u);
+    const emu_ir_cond_t c = ir_cond(cond);
 
-    switch (cond >> 1) {
-    case 0u: /* EQ / NE */
-        return CC(b, inv ? EMU_IR_C_NE : EMU_IR_C_EQ, G(b, R_ZF), zero);
-    case 1u: /* CS / CC */
-        return inv ? XORK(b, G(b, R_CF), 1u) : G(b, R_CF);
-    case 2u: /* MI / PL */
-        return CC(b, inv ? EMU_IR_C_GE : EMU_IR_C_LT, G(b, R_NF), zero);
-    case 3u: /* VS / VC */
-        return CC(b, inv ? EMU_IR_C_GE : EMU_IR_C_LT, G(b, R_VF), zero);
-    case 4u: { /* HI: C and not Z / LS */
-        const uint16_t hi = OP(b, EMU_IR_AND, G(b, R_CF),
-                               CC(b, EMU_IR_C_NE, G(b, R_ZF), zero));
-
-        return inv ? XORK(b, hi, 1u) : hi;
-    }
-    case 5u: /* GE: N == V / LT */
-        return CC(b, inv ? EMU_IR_C_LT : EMU_IR_C_GE,
-                  OP(b, EMU_IR_XOR, G(b, R_NF), G(b, R_VF)), zero);
-    case 6u: { /* GT: not Z, and N == V / LE */
-        const uint16_t gt =
-            OP(b, EMU_IR_AND, CC(b, EMU_IR_C_NE, G(b, R_ZF), zero),
-               CC(b, EMU_IR_C_GE, OP(b, EMU_IR_XOR, G(b, R_NF), G(b, R_VF)),
-                  zero));
-
-        return inv ? XORK(b, gt, 1u) : gt;
-    }
-    default: /* AL */
+    if (c == EMU_IR_C_ALWAYS) {
         return K(b, 1u);
     }
+    /*
+     * From the flag word. After a compare in the same block,
+     * pass_cond_forward makes it the compare of its operands, and after a
+     * logical operation EQ, NE, MI and PL the result against zero.
+     */
+    return emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)c, NOT, NOT, 0u, 0u);
 }
 
 /*
@@ -776,21 +780,23 @@ static bool sets_flags(const T *t, const I *d)
            (d->setflags == ARMV7M_SF_NOT_IN_IT && !t->in_it);
 }
 
-/* N and Z from a result, and C where the shifter produced one. */
+/*
+ * N and Z from a result, and C where the shifter produced one: FS_SHIFT
+ * with V left out of what it defines, since ARM's logical operations keep
+ * V -- SETF writes only the flags it defines.
+ */
 static void flags_logical(T *t, uint16_t res, uint16_t cout)
 {
-    flags_nz(t, res);
-    if (cout != NOT) {
-        wflag(t, R_CF, cout);
+    if (cout == NOT) {
+        flags_nz(t, res);
+        return;
     }
-}
-
-/* All four, given the carry as 0/1 and a word whose bit 31 is overflow. */
-static void flags_arith(T *t, uint16_t res, uint16_t c01, uint16_t vword)
-{
-    flags_nz(t, res);
-    wflag(t, R_CF, c01);
-    wflag(t, R_VF, vword);
+    if (t->in_it) {
+        flags_word(t, res, cout, NOT);
+        return;
+    }
+    (void)emu_ir_emit(t->b, EMU_IR_SETF, EMU_IR_FS_SHIFT, res, cout, 0u,
+                      EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_C);
 }
 
 /*
@@ -813,18 +819,23 @@ static uint16_t adder(T *t, uint16_t a, uint16_t m, bool sub, uint16_t cin,
     if (cin == NOT) {
         if (sub) {
             res = OP(b, EMU_IR_SUB, a, m);
-            if (flags) {
-                c01 = CC(b, EMU_IR_C_GEU, a, m);
-                vword = OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, a, m),
-                           OP(b, EMU_IR_XOR, a, res));
-            }
         } else {
             res = OP(b, EMU_IR_ADD, a, m);
-            if (flags) {
-                c01 = CC(b, EMU_IR_C_LTU, res, a);
-                vword = OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, a, res),
-                           OP(b, EMU_IR_XOR, m, res));
-            }
+        }
+        if (flags && !t->in_it) {
+            /* The common case: the host recomputes it with its own flags. */
+            (void)emu_ir_emit(b, EMU_IR_SETF, sub ? EMU_IR_FS_SUB : EMU_IR_FS_ADD, a, m,
+                              0u, EMU_IR_F_ALL);
+            return res;
+        }
+        if (flags && sub) {
+            c01 = CC(b, EMU_IR_C_GEU, a, m);
+            vword = OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, a, m),
+                       OP(b, EMU_IR_XOR, a, res));
+        } else if (flags) {
+            c01 = CC(b, EMU_IR_C_LTU, res, a);
+            vword = OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, a, res),
+                       OP(b, EMU_IR_XOR, m, res));
         }
     } else {
         /* With a carry in: two adds, and a carry out of either is one. */
@@ -840,7 +851,7 @@ static uint16_t adder(T *t, uint16_t a, uint16_t m, bool sub, uint16_t cin,
         }
     }
     if (flags) {
-        flags_arith(t, res, c01, vword);
+        flags_word(t, res, c01, vword);
     }
     return res;
 }
@@ -892,48 +903,14 @@ static void exit_if(T *t, uint16_t c01, uint32_t target)
 }
 
 /*
- * Leave if a condition holds.
- *
- * The ten conditions that are one flag word against zero are *that
- * compare*, with no 0/1 value in between: `cmp; bne` is a subtract and a
- * branch on its result, which is what it is on the machine being
- * emulated. Only HI, LS, GT and LE combine two flags and go through
- * cond01.
+ * Leave if a condition holds: a GETCOND, which pass_cond_forward makes the
+ * compare that set the flags where one did in this block -- `cmp; bne`
+ * is a compare and a branch -- and the fold of EXIT_IF over SETCC one
+ * conditional branch.
  */
 static void exit_cond(T *t, uint32_t cond, uint32_t target)
 {
-    B *const b = t->b;
-    const bool inv = (cond & 1u) != 0u;
-    emu_ir_cond_t cc;
-    uint16_t v;
-
-    switch (cond >> 1) {
-    case 0u:
-        cc = inv ? EMU_IR_C_NE : EMU_IR_C_EQ;
-        v = G(b, R_ZF);
-        break;
-    case 1u:
-        cc = inv ? EMU_IR_C_EQ : EMU_IR_C_NE;
-        v = G(b, R_CF);
-        break;
-    case 2u:
-        cc = inv ? EMU_IR_C_GE : EMU_IR_C_LT;
-        v = G(b, R_NF);
-        break;
-    case 3u:
-        cc = inv ? EMU_IR_C_GE : EMU_IR_C_LT;
-        v = G(b, R_VF);
-        break;
-    case 5u:
-        cc = inv ? EMU_IR_C_LT : EMU_IR_C_GE;
-        v = OP(b, EMU_IR_XOR, G(b, R_NF), G(b, R_VF));
-        break;
-    default:
-        exit_if(t, cond01(b, cond), target);
-        return;
-    }
-    retire(t);
-    (void)emu_ir_emit(b, EMU_IR_EXIT_IF, (uint8_t)cc, v, K(b, 0u), target, 0u);
+    exit_if(t, cond01(t->b, cond), target);
 }
 
 /*
@@ -1171,12 +1148,11 @@ static bool lower_shift_reg(T *t, const I *d)
     if (sf) {
         /* A count of zero leaves the carry alone. */
         const uint16_t keep = OP(b, EMU_IR_SUB, zero, CC(b, EMU_IR_C_EQ, amt, zero));
-        const uint16_t old = G(b, R_CF);
+        const uint16_t old = carry01(b);
 
-        flags_nz(t, res);
-        wflag(t, R_CF,
-              OP(b, EMU_IR_XOR, cn,
-                 OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, cn, old), keep)));
+        flags_logical(t, res,
+                      OP(b, EMU_IR_XOR, cn,
+                         OP(b, EMU_IR_AND, OP(b, EMU_IR_XOR, cn, old), keep)));
     }
     wreg(t, d->rd, res);
     return true;

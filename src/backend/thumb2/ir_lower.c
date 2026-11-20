@@ -321,6 +321,10 @@ static void kcmp_scan(const emu_ir_block_t *b)
 /* CMP ra, b -- by immediate where kcmp_scan kept b's constant. */
 static void emit_cmp_operand(uint32_t ra, uint16_t bt, uint32_t scratch)
 {
+    if (bt == EMU_IR_NO_TEMP) {
+        t2_cmp_imm(ra, 0u); /* no second operand: zero (a result's own flags) */
+        return;
+    }
     if (bt < EMU_IR_MAX_TEMPS && bt < g_ntemps && g_kcmp[bt] != 0u) {
         const uint32_t v = g_kcmp_block->insn[g_kcmp[bt] - 1u].imm;
         uint16_t enc;
@@ -2115,6 +2119,14 @@ static void setf_flag_bit(uint32_t dst, uint32_t word, const emu_ir_target_t *t,
     t2_ubfx(dst, word, (uint32_t)__builtin_ctz(t->flag_bit[f]), 1u);
 }
 
+/* C as the conditions read it, a borrow: ARM's inverted (flags_arm_carry). */
+static void getcond_borrow(uint32_t rd, const emu_ir_target_t *t)
+{
+    if (t->flags_arm_carry && t->flag_bit[3] != 0u) {
+        t2_eor_imm(rd, rd, 1u);
+    }
+}
+
 static bool setf_wants(const emu_ir_insn_t *in, const emu_ir_target_t *t,
                        unsigned f)
 {
@@ -2193,7 +2205,9 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         fl[n].psr = k_psr_bit[f];
         fl[n].dst = (uint8_t)__builtin_ctz(t->flag_bit[f]);
-        fl[n].inv = (f == 3u && src == EMU_IR_FS_SUB) ? 1u : 0u; /* borrow */
+        /* ARM's C after a subtract is no borrow: a borrow, unless the
+         * guest's C is ARM's too (flags_arm_carry) */
+        fl[n].inv = (f == 3u && src == EMU_IR_FS_SUB && !t->flags_arm_carry) ? 1u : 0u;
         for (uint32_t k = n; k > 0u && fl[k - 1u].psr > fl[k].psr; k--) {
             const uint8_t p = fl[k].psr, d = fl[k].dst, v = fl[k].inv;
 
@@ -2271,6 +2285,7 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_C_LTU:
     case EMU_IR_C_GEU:
         setf_flag_bit(rd, T2_R12, t, 3); /* C */
+        getcond_borrow(rd, t);
         break;
 
     case EMU_IR_C_LT:
@@ -2292,6 +2307,7 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_C_LEU:
     case EMU_IR_C_GTU:
         setf_flag_bit(rd, T2_R12, t, 3);
+        getcond_borrow(rd, t);
         setf_flag_bit(T2_R1, T2_R12, t, 0);
         t2_orr(rd, rd, T2_R1); /* C || Z */
         break;

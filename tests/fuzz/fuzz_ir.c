@@ -301,6 +301,8 @@ static uint32_t h_vmem(emu_cpu_t *cpu, uint32_t c, uint32_t addr, uint32_t vl)
  * and reads rs2 -- which the generator wrote just before. Not logged,
  * as h_vmem is not.
  */
+static const emu_ir_target_t *g_tgt; /* this input's, for h_vmems */
+
 static uint32_t h_vmems(emu_cpu_t *cpu, uint32_t imm, uint32_t addr,
                         uint32_t vl)
 {
@@ -308,7 +310,14 @@ static uint32_t h_vmems(emu_cpu_t *cpu, uint32_t imm, uint32_t addr,
     uint8_t *const reg = (uint8_t *)f->v + EMU_IR_VMEM_VD(imm) * EMU_IR_VREG_BYTES;
     const uint32_t eb = 1u << EMU_IR_VMEM_EEW(imm);
     const bool store = EMU_IR_VMEM_STORE(imm);
-    const uint32_t stride = f->r[EMU_IR_VMEMS_ARG(imm) & 15u];
+    /*
+     * The register through the target, as the IR's GET read it: r[n]
+     * directly disagreed with the inline path wherever a target puts a
+     * register elsewhere -- r12, the flag word on ARMv7-M's targets.
+     */
+    uint32_t stride;
+
+    memcpy(&stride, (const uint8_t *)f + g_tgt->reg_offset(EMU_IR_VMEMS_ARG(imm) & 15u), 4u);
 
     g_st.helpers++;
     for (uint32_t i = 0; i < vl; i++) {
@@ -400,6 +409,17 @@ static bool zero_r0(uint32_t n)
     return n == 0u;
 }
 
+/* r12 is the flag word, as ARMv7-M's R_FLAGS is: a GET or PUT of it. */
+static uint32_t off_reg_fl(uint32_t n)
+{
+    return (n == 12u) ? (uint32_t)offsetof(fcpu_t, flags) : off_reg(n);
+}
+
+static uint32_t off_reg_pc_fl(uint32_t n)
+{
+    return (n == 12u) ? (uint32_t)offsetof(fcpu_t, flags) : off_reg_pc(n);
+}
+
 static uint32_t off_freg(uint32_t n)
 {
     return (uint32_t)(offsetof(fcpu_t, f) + 8u * n);
@@ -425,10 +445,28 @@ static uint32_t off_vreg(uint32_t n)
     TGT(ro, rz, 1u, 2u, 4u, 8u),                                               \
         TGT(ro, rz, 1u << 30, 1u << 31, 1u << 28, 1u << 29),                   \
         TGT(ro, rz, 0u, 0u, 0u, 0u)
+/*
+ * And ARMv7-M's: the APSR's layout, ARM's carry (flags_arm_carry), and a
+ * guest register that is the flag word -- SETF and GETCOND beside GET and
+ * PUT of the same word, which three passes must see as one thing.
+ */
+#define TGT_ARM(ro, rz)                                                        \
+    {                                                                          \
+        .reg_offset = (ro), .flags_offset = offsetof(fcpu_t, flags),          \
+        .flag_bit = {1u << 30, 1u << 31, 1u << 28, 1u << 29},                  \
+        .flags_arm_carry = true, .reg_is_zero = (rz),                          \
+        .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
+        .helper_count = 6u, .load = f_load, .store = f_store,                  \
+        .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
+        .vreg_offset = off_vreg, .vsat_offset = offsetof(fcpu_t, vsat),       \
+        .vfop = f_vfop,                                                        \
+    }
 
-static const emu_ir_target_t k_targets[12] = {
+static const emu_ir_target_t k_targets[16] = {
     TGT_FLAGS(off_reg, NULL), TGT_FLAGS(off_reg, zero_r0),
-    TGT_FLAGS(off_reg_pc, NULL), TGT_FLAGS(off_reg_pc, zero_r0)};
+    TGT_FLAGS(off_reg_pc, NULL), TGT_FLAGS(off_reg_pc, zero_r0),
+    TGT_ARM(off_reg_fl, NULL), TGT_ARM(off_reg_fl, zero_r0),
+    TGT_ARM(off_reg_pc_fl, NULL), TGT_ARM(off_reg_pc_fl, zero_r0)};
 
 /* ------------------------------------------------------------------ */
 /* Reading the input                                                   */
@@ -1338,8 +1376,16 @@ static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
 {
     const uint32_t cfg = byte(in);
     const uint32_t cfg2 = byte(in);
-    const emu_ir_target_t *const t = &k_targets[(cfg & 3u) * 3u +
-                                                (cfg2 % 3u)];
+    /*
+     * ARMv7-M's targets take half of the ARM layout's inputs, keyed on a
+     * bit of cfg2 nothing else reads there; no regression input has the
+     * ARM layout, so none changed meaning.
+     */
+    const bool arm = (cfg2 % 3u) == 1u && ((cfg2 / 3u) & 1u) != 0u;
+    const emu_ir_target_t *const t =
+        arm ? &k_targets[12u + (cfg & 3u)] : &k_targets[(cfg & 3u) * 3u + (cfg2 % 3u)];
+
+    g_tgt = t;
 
     memset(c, 0, sizeof(*c));
     for (uint32_t i = 0; i < 16u; i++) {

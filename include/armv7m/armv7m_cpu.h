@@ -305,30 +305,25 @@ typedef struct armv7m_cpu {
     uint32_t jit_gen;
 
     /*
-     * N, Z, C and V while translated code is running -- one word each,
-     * read lazily, instead of four bits packed into xPSR:
+     * N, Z, C and V while translated code is running, where the APSR
+     * has them (bits 31-28) and nothing else in the word: the IR's flag
+     * word (EMU_IR_SETF), which a host with ARM's flags writes with MRS
+     * after recomputing the operation -- `cmp` is SUBS, MRS and a
+     * bit-field move, one store -- and a compare in the same block as
+     * its branch is that compare (pass_cond_forward). It was four words
+     * each read lazily, N and Z the result stored twice, C and V derived
+     * arithmetically; packed into xPSR instead, a flag-setting
+     * instruction had been seventeen operations.
      *
-     *   N   bit 31 of jit_nf
-     *   Z   jit_zf == 0
-     *   C   jit_cf, which is 0 or 1
-     *   V   bit 31 of jit_vf
-     *
-     * So an instruction that sets N and Z from its result stores the
-     * result twice and computes nothing, and `bne` is a compare of a
-     * word against zero. Packed, every flag-setting instruction whose
-     * flags *might* be observed -- by the next load faulting, say -- was
-     * seventeen operations of shifting and masking.
-     *
-     * `jit_split` says which copy is current. Set, these four are and
-     * xPSR's top nibble is stale; clear, xPSR is and these are stale.
-     * Every path from translated code into C that reads the flags packs
-     * first, and every path back unpacks -- see armv7m_flags_pack. The
-     * interpreter never sees the split form and was not changed for it.
+     * Apart from xPSR, because xPSR holds the exception number, the IT
+     * state and Q, which the flags' writes must not touch. `jit_split`
+     * says which copy is current. Set, jit_nzcv is and xPSR's top nibble
+     * is stale; clear, xPSR is and jit_nzcv is stale. Every path from
+     * translated code into C that reads the flags packs first, and every
+     * path back unpacks -- see armv7m_flags_pack. The interpreter never
+     * sees the split form.
      */
-    uint32_t jit_nf;
-    uint32_t jit_zf;
-    uint32_t jit_cf;
-    uint32_t jit_vf;
+    uint32_t jit_nzcv;
     bool jit_split;
 
     /*
@@ -554,10 +549,7 @@ static inline uint64_t armv7m_jit_ctx(const armv7m_cpu_t *c)
 static inline void armv7m_flags_pack(armv7m_cpu_t *c)
 {
     if (c->jit_split) {
-        c->xpsr = (c->xpsr & 0x0FFFFFFFu) | (c->jit_nf & 0x80000000u) |
-                  ((c->jit_zf == 0u) ? 0x40000000u : 0u) |
-                  ((c->jit_cf != 0u) ? 0x20000000u : 0u) |
-                  ((c->jit_vf >> 31) << 28);
+        c->xpsr = (c->xpsr & 0x0FFFFFFFu) | (c->jit_nzcv & 0xF0000000u);
         c->jit_split = false;
     }
 }
@@ -565,10 +557,7 @@ static inline void armv7m_flags_pack(armv7m_cpu_t *c)
 static inline void armv7m_flags_unpack(armv7m_cpu_t *c)
 {
     if (!c->jit_split) {
-        c->jit_nf = c->xpsr;
-        c->jit_zf = (c->xpsr & 0x40000000u) ? 0u : 1u;
-        c->jit_cf = (c->xpsr >> 29) & 1u;
-        c->jit_vf = (c->xpsr & 0x10000000u) << 3;
+        c->jit_nzcv = c->xpsr & 0xF0000000u; /* nothing else, ever */
         c->jit_split = true;
     }
 }
