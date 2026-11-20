@@ -565,6 +565,16 @@ the translator (CS and CC swapped, a shifter carry clearing V, IT flags
 not chosen against the old, an add's flags as a subtract's) by
 fuzz-armv7m-jit in 5 to 11 s.
 
+**The mapped dot product**: `build_dot` draws a map after everything it
+drew before maps existed (an input ending there reads 0 and keeps its
+meaning) -- none, one chain or two multiplied, up to four of the
+fourteen operations each, shifts past 31 and constants with no
+immediate form among them. Four mutants of the C kernel's map and the
+recogniser's chain (a shift masked to four bits, a rotate the wrong
+way, the second chain dropped, a chain taken outside in) were found in
+6 to 35 s; `test_loop_shape` holds CoreMark's map operation by
+operation.
+
 **Mutants of the lowering, one at a time** (`scripts/ir-board-mutant.sh
 FILE OLD NEW`, from a worktree): ten of the changes the dumps led to
 (2026-11-18) -- G4MH's flags without the borrow (149 inputs different)

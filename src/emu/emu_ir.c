@@ -2427,14 +2427,114 @@ static bool lk_step(const emu_ir_block_t *b, uint16_t get_r, uint16_t put_r, int
  * an induction beyond the two elements' and the exit's, a back edge not
  * on NE against an invariant register or constant.
  */
-static void lk_dot(const emu_ir_block_t *b, emu_ir_loop_t *out, uint8_t acc, uint16_t prod,
+/*
+ * A chain of single-input operations from temp t down to the product of
+ * two elements: its operations from the product outward into ops/imms,
+ * at most EMU_IR_DOT_FN_OPS of them, and the product's temp in *p.
+ */
+static bool lk_chain(const emu_ir_block_t *b, uint16_t t, uint16_t *p, uint8_t *ops,
+                     uint32_t *imms, uint8_t *len)
+{
+    uint8_t rop[EMU_IR_DOT_FN_OPS];
+    uint32_t rimm[EMU_IR_DOT_FN_OPS];
+    uint32_t n = 0u;
+
+    for (uint32_t depth = 0u; depth < 16u; depth++) {
+        const emu_ir_insn_t *const in = lk_def_insn(b, t);
+
+        if (in == NULL) {
+            return false;
+        }
+        if (in->op == (uint8_t)EMU_IR_MUL) {
+            if (!lk_elem16(b, in->a) || !lk_elem16(b, in->b)) {
+                return false;
+            }
+            for (uint32_t i = 0u; i < n; i++) {
+                ops[i] = rop[n - 1u - i];
+                imms[i] = rimm[n - 1u - i];
+            }
+            *len = (uint8_t)n;
+            *p = t;
+            return true;
+        }
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_ADDI:
+        case EMU_IR_ANDI:
+        case EMU_IR_ORI:
+        case EMU_IR_XORI:
+        case EMU_IR_SHLI:
+        case EMU_IR_SHRI:
+        case EMU_IR_SARI:
+        case EMU_IR_ROTLI:
+        case EMU_IR_SEXT8:
+        case EMU_IR_SEXT16:
+        case EMU_IR_ZEXT8:
+        case EMU_IR_ZEXT16:
+        case EMU_IR_NOT:
+        case EMU_IR_NEG:
+            if (n == EMU_IR_DOT_FN_OPS) {
+                return false;
+            }
+            rop[n] = in->op;
+            rimm[n] = in->imm;
+            n++;
+            break;
+        case EMU_IR_MOV:
+            break;
+        default:
+            return false;
+        }
+        t = in->a;
+    }
+    return false;
+}
+
+/*
+ * The map from the product to the summed term (emu_ir_dot_t's fchains):
+ * the product itself, a chain of it, or one chain of it times another
+ * of the same product. The product's temp in *p.
+ */
+static bool lk_map(const emu_ir_block_t *b, uint16_t term, uint16_t *p, emu_ir_dot_t *d)
+{
+    const emu_ir_insn_t *const in = lk_def_insn(b, term);
+    uint16_t p1;
+
+    if (in == NULL) {
+        return false;
+    }
+    if (in->op == (uint8_t)EMU_IR_MUL && lk_elem16(b, in->a) && lk_elem16(b, in->b)) {
+        d->fchains = 0u;
+        *p = term;
+        return true;
+    }
+    if (in->op == (uint8_t)EMU_IR_MUL) {
+        if (!lk_chain(b, in->a, p, d->fop[0], d->fimm[0], &d->flen[0]) ||
+            !lk_chain(b, in->b, &p1, d->fop[1], d->fimm[1], &d->flen[1]) || *p != p1) {
+            return false;
+        }
+        d->fchains = 2u;
+        return true;
+    }
+    if (!lk_chain(b, term, p, d->fop[0], d->fimm[0], &d->flen[0])) {
+        return false;
+    }
+    d->fchains = 1u;
+    return true;
+}
+
+static void lk_dot(const emu_ir_block_t *b, emu_ir_loop_t *out, uint8_t acc, uint16_t term,
                    uint32_t back, const uint8_t *cls, const uint16_t *get, const uint16_t *put)
 {
     emu_ir_dot_t *const d = &out->dot;
-    const emu_ir_insn_t *const m = lk_def_insn(b, prod);
     const emu_ir_insn_t *const be = &b->insn[back];
+    uint16_t prod;
 
     memset(d, 0, sizeof(*d));
+    if (!lk_map(b, term, &prod, d)) {
+        return;
+    }
+    const emu_ir_insn_t *const m = lk_def_insn(b, prod);
+
     if (m == NULL || m->op != (uint8_t)EMU_IR_MUL) {
         return;
     }
@@ -2968,7 +3068,7 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
 
             if (cls[r] == 4u && lk_from_product(b, sum_term[r], 0u, &mapped)) {
                 out->kind = mapped ? EMU_IR_LOOP_DOT16_F : EMU_IR_LOOP_DOT16;
-                if (!mapped && out->sticky == 0u) {
+                if (out->sticky == 0u) {
                     lk_dot(b, out, (uint8_t)r, sum_term[r], back, cls, get, put);
                 }
             }
@@ -3007,7 +3107,8 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
 static void loop_kernel(emu_ir_block_t *b, const emu_ir_target_t *t, const emu_ir_loop_t *lp,
                         emu_ir_opt_stats_t *st)
 {
-    const bool dot = lp->kind == EMU_IR_LOOP_DOT16 && lp->dot.ok;
+    const bool dot =
+        (lp->kind == EMU_IR_LOOP_DOT16 || lp->kind == EMU_IR_LOOP_DOT16_F) && lp->dot.ok;
     const bool bytes = (lp->kind == EMU_IR_LOOP_COPY_NUL || lp->kind == EMU_IR_LOOP_COPY ||
                         lp->kind == EMU_IR_LOOP_FILL) &&
                        lp->copy.ok;

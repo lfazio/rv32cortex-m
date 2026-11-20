@@ -1419,6 +1419,8 @@ typedef enum emu_ir_loop_kind {
  * A 16-bit dot product as a kernel runs it (docs/jit/autovectorisation.md,
  * P2): guest register numbers, as GET and PUT name them.
  */
+#define EMU_IR_DOT_FN_OPS 4u
+
 typedef struct emu_ir_dot {
     bool ok;            /* every field below is filled */
     uint8_t xreg, yreg; /* the two elements' induction registers */
@@ -1434,6 +1436,18 @@ typedef struct emu_ir_dot {
     uint32_t lconst;
     uint8_t acc;        /* the sum */
     uint32_t insns;     /* guest instructions an iteration retires */
+    /*
+     * DOT16_F's map from the product p to what is summed: p itself (0
+     * chains), chain 0 of p (1), or chain 0 of p times chain 1 of p (2)
+     * -- CoreMark's bit_extract(p, 2, 4) * bit_extract(p, 5, 7). A chain
+     * is single-input operations with a constant (EMU_IR_ADDI, ANDI,
+     * ORI, XORI, SHLI, SHRI, SARI, ROTLI, SEXT8/16, ZEXT8/16, NOT, NEG),
+     * from p outward, as the IR defines each.
+     */
+    uint8_t fchains;
+    uint8_t flen[2];
+    uint8_t fop[2][EMU_IR_DOT_FN_OPS];
+    uint32_t fimm[2][EMU_IR_DOT_FN_OPS];
 } emu_ir_dot_t;
 
 /*
@@ -1726,6 +1740,10 @@ typedef struct emu_ir_kernel_dot {
     uint32_t base, size; /* the RAM window */
     const uint8_t *host;
     bool xswap, yswap;
+    uint8_t fchains; /* the map, as emu_ir_dot_t's */
+    uint8_t flen[2];
+    uint8_t fop[2][EMU_IR_DOT_FN_OPS];
+    uint32_t fimm[2][EMU_IR_DOT_FN_OPS];
 } emu_ir_kernel_dot_t;
 bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out);
 /* Iterations the loops a backend emitted itself ran, for the report. */

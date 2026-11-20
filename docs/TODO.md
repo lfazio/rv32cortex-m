@@ -143,9 +143,8 @@ measured at.
       kernel is on (Dhrystone on the F746 19-20% faster for RV32, 15%
       for ARMv7-M; off on the F446, whose guest RAM it costs), and the
       dot product, emitted in the block on Thumb-2 (RV32 CoreMark 0.89%
-      faster). Left: the mapped product, DOT16_F --
-      `matrix_mul_matrix_bitextract`, CoreMark's largest matrix loop at
-      5.8% of RV32's samples, has no kernel; Helium's `VMLADAVA` on the
+      faster), and the mapped product (`matrix_mul_matrix_bitextract`,
+      0.45% more). Left: Helium's `VMLADAVA` on the
       N6; PowerPC's dot products, byte-swapped, which the emitted loop
       declines; ARMv7-M's, whose sticky Q a kernel would compute per
       step. The copy and the fill stay off.

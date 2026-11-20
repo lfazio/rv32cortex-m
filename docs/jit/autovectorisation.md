@@ -285,7 +285,30 @@ Less than the dot loops' share suggested (matrix_mul_matrix and
 matrix_mul_vect, 4.2% of the samples): six iterations an entry still
 leave the checks a large part, and the largest of CoreMark's matrix
 loops, `matrix_mul_matrix_bitextract` (5.8%), maps its product through
-two bit-field extracts -- a DOT16_F, with no kernel at all.
+two bit-field extracts -- a DOT16_F, which had no kernel.
+
+**The mapped product, DOT16_F** (2026-11-20). The descriptor carries
+the map from the product p to what is summed: p, a chain of p, or a
+chain of p times another of the same p, each chain up to four of the
+single-input operations the recogniser already followed (ADDI, ANDI,
+ORI, XORI, the shifts and rotate, the extensions, NOT, NEG) --
+CoreMark's `bit_extract(p, 5, 7) * bit_extract(p, 2, 4)` is two chains
+of SHRI and ANDI. The C kernel applies it as the IR interpreter defines
+each operation; Thumb-2 emits it in the loop -- the product in r3,
+chain 0 into r12, chain 1 in place, one MLA -- with up to two constants
+that have no immediate form in r1 and lr (r1 is free there: the count
+comes back after the loop from x's offset), and declines a third.
+
+| F746, against d00c3e0 | before | after | |
+|---|---|---|---|
+| RV32 CoreMark, pad 0 / 64 | 8.94 / 8.95 | 8.90 / 8.91 | **-0.45%** (605,515 iterations inline, 325,673 before) |
+| ARMv7-M, PowerPC, G4MH | | | +0.18 to +1.25%, no such kernel made: layout |
+
+G4MH's +0.56% / +1.25% was checked: moving `.bss` by 4 KB put the two
+trees at 14.38 and 14.39, and moving the old tree's ITCM by 1 KB alone
+took it to 14.46, where the new one had measured. And the ITCM has
+under 1 KB left in a G4MH firmware: the same pad did not link the new
+tree (`.itcm` 0x88 bytes past its region), nor 2 KB the old.
 
 **P3 -- copies and fills. strcpy's kept.** The byte loops get the same
 call: copy to the NUL (strcpy), copy and fill counted (memcpy, memset),

@@ -1170,6 +1170,7 @@ static void test_cond_not_forwarded(void)
 enum {
     LB_NONE, LB_STORE, LB_ADDR, LB_EXIT, LB_CARRIED, LB_CALL, LB_SIDE,
     LB_UNSIGNED, LB_NOLOOP,
+    LB_BITEXTRACT, /* not a break: CoreMark's mapped product, a DOT16_F */
 };
 
 static void loop_dot_block(uint32_t brk)
@@ -1196,8 +1197,19 @@ static void loop_dot_block(uint32_t brk)
     emu_ir_put(b, 12u, emu_ir_alu(b, EMU_IR_ADD, s2, p));
     const uint16_t m = emu_ir_alu(b, EMU_IR_MUL, x, y);
     const uint16_t acc = emu_ir_get(b, 16u);
+    uint16_t term = m;
 
-    emu_ir_put(b, 16u, emu_ir_alu(b, EMU_IR_ADD, acc, m));
+    if (brk == LB_BITEXTRACT) { /* bit_extract(m, 5, 7) * bit_extract(m, 2, 4) */
+        const uint16_t h = emu_ir_emit(b, EMU_IR_ANDI, 0u,
+                                       emu_ir_emit(b, EMU_IR_SHRI, 0u, m, EMU_IR_NO_TEMP, 5u, 0u),
+                                       EMU_IR_NO_TEMP, 127u, 0u);
+        const uint16_t l = emu_ir_emit(b, EMU_IR_ANDI, 0u,
+                                       emu_ir_emit(b, EMU_IR_SHRI, 0u, m, EMU_IR_NO_TEMP, 2u, 0u),
+                                       EMU_IR_NO_TEMP, 15u, 0u);
+
+        term = emu_ir_alu(b, EMU_IR_MUL, h, l);
+    }
+    emu_ir_put(b, 16u, emu_ir_alu(b, EMU_IR_ADD, acc, term));
     if (brk == LB_STORE) {
         (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, false), a, m, 0x40u, 0u);
     }
@@ -1282,6 +1294,23 @@ static void test_loop_shape(void)
         CHECK(emu_ir_loop_shape(&g_b, &lp));
         CHECK_EQ(lp.kind, k[i].want);
     }
+
+    /* The mapped product: its map, each chain from the product outward. */
+    loop_dot_block(LB_BITEXTRACT);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_DOT16_F);
+    CHECK(lp.dot.ok);
+    CHECK_EQ(lp.dot.fchains, 2u);
+    CHECK_EQ(lp.dot.flen[0], 2u);
+    CHECK_EQ(lp.dot.flen[1], 2u);
+    CHECK_EQ(lp.dot.fop[0][0], (uint32_t)EMU_IR_SHRI);
+    CHECK_EQ(lp.dot.fimm[0][0], 5u);
+    CHECK_EQ(lp.dot.fop[0][1], (uint32_t)EMU_IR_ANDI);
+    CHECK_EQ(lp.dot.fimm[0][1], 127u);
+    CHECK_EQ(lp.dot.fop[1][0], (uint32_t)EMU_IR_SHRI);
+    CHECK_EQ(lp.dot.fimm[1][0], 2u);
+    CHECK_EQ(lp.dot.fop[1][1], (uint32_t)EMU_IR_ANDI);
+    CHECK_EQ(lp.dot.fimm[1][1], 15u);
     loop_dot_block(LB_NONE);
     (void)emu_ir_loop_shape(&g_b, &lp);
     CHECK_EQ(lp.inductions, 2u);

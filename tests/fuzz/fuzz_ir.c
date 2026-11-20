@@ -1249,6 +1249,55 @@ static uint16_t dot_elem(uint16_t addr, uint32_t off, uint32_t form)
     }
 }
 
+/*
+ * DOT16_F's map of the product: none, a chain of it, or a chain times
+ * another of the same product (CoreMark's bit_extract(p, 2, 4) *
+ * bit_extract(p, 5, 7)). Drawn after everything build_dot drew before
+ * maps existed, so an input that ends there -- reading 0 -- keeps its
+ * meaning. Shifts past 31 and constants with no immediate form included:
+ * the IR masks the first, Thumb-2 needs a register for the second.
+ */
+static uint16_t dot_chain(in_t *in, uint16_t v)
+{
+    static const uint8_t k_ops[14] = {
+        EMU_IR_ADDI,  EMU_IR_ANDI,  EMU_IR_ORI,   EMU_IR_XORI,  EMU_IR_SHLI,
+        EMU_IR_SHRI,  EMU_IR_SARI,  EMU_IR_ROTLI, EMU_IR_SEXT8, EMU_IR_SEXT16,
+        EMU_IR_ZEXT8, EMU_IR_ZEXT16, EMU_IR_NOT,  EMU_IR_NEG,
+    };
+    const uint32_t len = byte(in) % 5u; /* the recogniser takes 4 */
+
+    for (uint32_t i = 0u; i < len; i++) {
+        const uint8_t op = k_ops[byte(in) % 14u];
+        const uint32_t b = byte(in);
+        uint32_t imm = 0u;
+
+        if (op == (uint8_t)EMU_IR_SHLI || op == (uint8_t)EMU_IR_SHRI ||
+            op == (uint8_t)EMU_IR_SARI || op == (uint8_t)EMU_IR_ROTLI) {
+            imm = (b & 0x80u) ? b : (b & 31u);
+        } else if (op == (uint8_t)EMU_IR_ADDI || op == (uint8_t)EMU_IR_ANDI ||
+                   op == (uint8_t)EMU_IR_ORI || op == (uint8_t)EMU_IR_XORI) {
+            imm = (b & 0x80u) ? interesting(b) : ((1u << (b & 7u)) - 1u); /* masks */
+        }
+        v = E((emu_ir_op_t)op, 0u, v, EMU_IR_NO_TEMP, imm, 0u);
+    }
+    return v;
+}
+
+static uint16_t dot_map(in_t *in, uint16_t p)
+{
+    switch (byte(in) & 3u) {
+    case 0u:
+        return p;
+    case 1u:
+        return dot_chain(in, p);
+    default: {
+        const uint16_t a = dot_chain(in, p);
+
+        return E(EMU_IR_MUL, 0u, a, dot_chain(in, p), 0u, 0u);
+    }
+    }
+}
+
 static void build_dot(in_t *in, fcpu_t *c)
 {
     const uint32_t f = byte(in);
@@ -1292,7 +1341,7 @@ static void build_dot(in_t *in, fcpu_t *c)
     const uint16_t p = E(EMU_IR_MUL, 0u, lx, ly, 0u, 0u);
 
     emu_ir_put(&g_built, 6u, p); /* a register each iteration writes */
-    emu_ir_put(&g_built, 3u, E(EMU_IR_ADD, 0u, emu_ir_get(&g_built, 3u), p, 0u, 0u));
+    emu_ir_put(&g_built, 3u, E(EMU_IR_ADD, 0u, emu_ir_get(&g_built, 3u), dot_map(in, p), 0u, 0u));
     (void)E(EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 3u + (f >> 7), 0u);
     if ((f & 0x20u) != 0u) {
         /* PowerPC's bdnz: a counter down to zero */

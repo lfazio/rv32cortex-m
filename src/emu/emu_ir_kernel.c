@@ -49,9 +49,15 @@ typedef struct {
     uint32_t rbase, rsize;
     const uint8_t *rhost;
     bool xswap, yswap;
+    /* DOT16_F's map, as emu_ir_dot_t's; fchains 0 for a plain product */
+    uint8_t fchains;
+    uint8_t flen[2];
+    uint8_t fop[2][EMU_IR_DOT_FN_OPS];
+    uint32_t fimm[2][EMU_IR_DOT_FN_OPS];
 } kernel_t;
 
-uint32_t emu_ir_kernel_kinds = (1u << EMU_IR_LOOP_COPY_NUL) | (1u << EMU_IR_LOOP_DOT16);
+uint32_t emu_ir_kernel_kinds =
+    (1u << EMU_IR_LOOP_COPY_NUL) | (1u << EMU_IR_LOOP_DOT16) | (1u << EMU_IR_LOOP_DOT16_F);
 
 static kernel_t g_kernels[EMU_IR_KERNELS];
 static uint32_t g_nkernels;
@@ -88,6 +94,10 @@ uint32_t emu_ir_kernel_add(const emu_ir_dot_t *d, const emu_ir_target_t *t,
     k.host = w->host;
     k.xswap = d->xswap;
     k.yswap = d->yswap;
+    k.fchains = d->fchains;
+    memcpy(k.flen, d->flen, sizeof(k.flen));
+    memcpy(k.fop, d->fop, sizeof(k.fop));
+    memcpy(k.fimm, d->fimm, sizeof(k.fimm));
     return kernel_insert(&k);
 }
 
@@ -224,6 +234,10 @@ bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out)
     out->host = k->host;
     out->xswap = k->xswap;
     out->yswap = k->yswap;
+    out->fchains = k->fchains;
+    memcpy(out->flen, k->flen, sizeof(out->flen));
+    memcpy(out->fop, k->fop, sizeof(out->fop));
+    memcpy(out->fimm, k->fimm, sizeof(out->fimm));
     return true;
 }
 
@@ -243,6 +257,61 @@ void emu_ir_kernel_stats(uint32_t *kernels, uint32_t *calls, uint32_t *runs,
  * would run before the cap ends this entry, less the last: 0 for none.
  */
 static uint32_t kernel_trip(const emu_cpu_t *cpu, const kernel_t *k, uint32_t retired);
+
+/* One of a map's operations, as src/backend/common/interp.c has it. */
+static EMU_ALWAYS_INLINE uint32_t map_op(uint8_t op, uint32_t imm, uint32_t v)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_ADDI:
+        return v + imm;
+    case EMU_IR_ANDI:
+        return v & imm;
+    case EMU_IR_ORI:
+        return v | imm;
+    case EMU_IR_XORI:
+        return v ^ imm;
+    case EMU_IR_SHLI:
+        return v << (imm & 31u);
+    case EMU_IR_SHRI:
+        return v >> (imm & 31u);
+    case EMU_IR_SARI:
+        return (uint32_t)((int32_t)v >> (imm & 31u));
+    case EMU_IR_ROTLI:
+        return ((imm & 31u) == 0u) ? v : ((v << (imm & 31u)) | (v >> (32u - (imm & 31u))));
+    case EMU_IR_SEXT8:
+        return (uint32_t)(int32_t)(int8_t)v;
+    case EMU_IR_SEXT16:
+        return (uint32_t)(int32_t)(int16_t)v;
+    case EMU_IR_ZEXT8:
+        return v & 0xFFu;
+    case EMU_IR_ZEXT16:
+        return v & 0xFFFFu;
+    case EMU_IR_NOT:
+        return ~v;
+    default: /* EMU_IR_NEG: the recogniser takes no other */
+        return 0u - v;
+    }
+}
+
+static EMU_ALWAYS_INLINE uint32_t map_chain(const kernel_t *k, unsigned c, uint32_t v)
+{
+    for (uint32_t i = 0u; i < k->flen[c]; i++) {
+        v = map_op(k->fop[c][i], k->fimm[c][i], v);
+    }
+    return v;
+}
+
+/* What an iteration adds for the product p: DOT16_F's map of it. */
+static EMU_ALWAYS_INLINE uint32_t mapped(const kernel_t *k, uint32_t p)
+{
+    if (k->fchains == 0u) {
+        return p;
+    }
+    if (k->fchains == 1u) {
+        return map_chain(k, 0u, p);
+    }
+    return map_chain(k, 0u, p) * map_chain(k, 1u, p);
+}
 
 /* How many the cap leaves: the scalar loop's iterations this entry, less one. */
 static EMU_ALWAYS_INLINE uint32_t kernel_room(const kernel_t *k, uint32_t retired)
@@ -426,7 +495,8 @@ EMU_HOT_TEXT uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t
     uint32_t i = 0u;
 
 #if KERNEL_SMLAD
-    if (k->xstride == 2 && !k->xswap && !k->yswap && ((x - k->base) & 3u) == 0u) {
+    if (k->fchains == 0u && k->xstride == 2 && !k->xswap && !k->yswap &&
+        ((x - k->base) & 3u) == 0u) {
         /* Two products a SMLAD: x's pair from one word, y's packed. */
         const uint8_t *px = k->host + (x - k->base);
 
@@ -441,8 +511,8 @@ EMU_HOT_TEXT uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t
     }
 #endif
     for (; i < m; i++) {
-        sum += (uint32_t)(elem(k, x + (uint32_t)k->xstride * i, k->xswap) *
-                          elem(k, y + (uint32_t)ys * i, k->yswap));
+        sum += mapped(k, (uint32_t)(elem(k, x + (uint32_t)k->xstride * i, k->xswap) *
+                                    elem(k, y + (uint32_t)ys * i, k->yswap)));
     }
 
     set_reg(cpu, k->xo, reg(cpu, k->xo) + (uint32_t)k->xstride * m);

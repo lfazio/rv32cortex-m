@@ -1279,6 +1279,114 @@ static bool loop_back(uint32_t target_pc)
  */
 enum { KI_CALL, KI_SKIP, KI_DONE, KI_FAIL };
 
+/*
+ * Whether a map operation's constant has no immediate form, so it must
+ * be in a register before the loop: its own, or for ADDI, ANDI and ORI
+ * the negated or complemented one SUB, BIC and ORN take.
+ */
+static bool map_needs_reg(uint8_t op, uint32_t imm)
+{
+    uint16_t e;
+
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_ADDI:
+        return !t2_expand_imm(imm, &e) && !t2_expand_imm(0u - imm, &e);
+    case EMU_IR_ANDI:
+    case EMU_IR_ORI:
+        return !t2_expand_imm(imm, &e) && !t2_expand_imm(~imm, &e);
+    case EMU_IR_XORI:
+        return !t2_expand_imm(imm, &e);
+    default:
+        return false;
+    }
+}
+
+/*
+ * One map operation, rd = op(rs): as src/backend/common/interp.c defines
+ * it. A constant with no immediate form is in `rk`, loaded before the
+ * loop. A shift by zero is a move: LSR and ASR #0 mean #32 here.
+ */
+static void emit_map_op(uint8_t op, uint32_t imm, uint32_t rd, uint32_t rs, uint32_t rk)
+{
+    const uint32_t k = imm & 31u;
+    uint16_t e;
+
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_ADDI:
+        if (rk != 0xFFu) {
+            t2_add(rd, rs, rk);
+        } else if (t2_expand_imm(imm, &e)) {
+            t2_add_imm(rd, rs, e);
+        } else {
+            (void)t2_expand_imm(0u - imm, &e); /* map_needs_reg said one does */
+            t2_sub_imm(rd, rs, e);
+        }
+        break;
+    case EMU_IR_ANDI:
+        if (rk != 0xFFu) {
+            t2_and(rd, rs, rk);
+        } else if (t2_expand_imm(imm, &e)) {
+            t2_and_imm(rd, rs, e);
+        } else {
+            (void)t2_expand_imm(~imm, &e);
+            t2_bic_imm(rd, rs, e);
+        }
+        break;
+    case EMU_IR_ORI:
+        if (rk != 0xFFu) {
+            t2_orr(rd, rs, rk);
+        } else if (t2_expand_imm(imm, &e)) {
+            t2_orr_imm(rd, rs, e);
+        } else {
+            (void)t2_expand_imm(~imm, &e);
+            t2_orn_imm(rd, rs, e);
+        }
+        break;
+    case EMU_IR_XORI:
+        if (rk != 0xFFu) {
+            t2_eor(rd, rs, rk);
+        } else {
+            (void)t2_expand_imm(imm, &e);
+            t2_eor_imm(rd, rs, e);
+        }
+        break;
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI:
+    case EMU_IR_ROTLI:
+        if (k == 0u) {
+            if (rd != rs) {
+                t2_mov(rd, rs);
+            }
+        } else {
+            t2_shift_imm((op == (uint8_t)EMU_IR_SHLI)   ? T2_LSL
+                         : (op == (uint8_t)EMU_IR_SHRI) ? T2_LSR
+                         : (op == (uint8_t)EMU_IR_SARI) ? T2_ASR
+                                                        : T2_ROR,
+                         rd, rs, (op == (uint8_t)EMU_IR_ROTLI) ? 32u - k : k);
+        }
+        break;
+    case EMU_IR_SEXT8:
+        t2_sxtb(rd, rs);
+        break;
+    case EMU_IR_SEXT16:
+        t2_sxth(rd, rs);
+        break;
+    case EMU_IR_ZEXT8:
+        t2_uxtb(rd, rs);
+        break;
+    case EMU_IR_ZEXT16:
+        t2_uxth(rd, rs);
+        break;
+    case EMU_IR_NOT:
+        t2_mvn(rd, rs);
+        break;
+    default: /* EMU_IR_NEG */
+        t2_neg(rd, rs);
+        break;
+    }
+}
+
 static int emit_dot_inline(uint32_t index)
 {
     emu_ir_kernel_dot_t d;
@@ -1309,6 +1417,30 @@ static int emit_dot_inline(uint32_t index)
     /* Nothing is emitted before every refusal. */
     if (!t2_expand_imm(0xFFFFFFFFu, &minus1)) {
         return KI_SKIP;
+    }
+    /*
+     * The map's constants with no immediate form, in r1 and lr through
+     * the loop: r1 is free there (the count is recovered from x's offset
+     * after it), and lr in a block's body. A third, and it is not worth a
+     * loop of its own.
+     */
+    uint8_t kreg[2][EMU_IR_DOT_FN_OPS];
+    uint32_t nk = 0u;
+    static const uint8_t k_slots[2] = {T2_R1, T2_LR};
+
+    if (d.fchains > 2u) {
+        return KI_SKIP;
+    }
+    for (uint32_t c = 0u; c < 2u; c++) {
+        for (uint32_t i = 0u; i < EMU_IR_DOT_FN_OPS; i++) {
+            kreg[c][i] = 0xFFu;
+            if (c < d.fchains && i < d.flen[c] && map_needs_reg(d.fop[c][i], d.fimm[c][i])) {
+                if (nk == 2u) {
+                    return KI_SKIP;
+                }
+                kreg[c][i] = k_slots[nk++];
+            }
+        }
     }
 
     /* m, the iterations after this one: e + ec + m * estep == L (kernel_trip) */
@@ -1414,6 +1546,13 @@ static int emit_dot_inline(uint32_t index)
     t2_mov(T2_R2, T2_R1);
     t2_imm32(KX, 0u);
     t2_imm32(KY, 0u);
+    for (uint32_t c = 0u; c < d.fchains; c++) {
+        for (uint32_t i = 0u; i < d.flen[c]; i++) {
+            if (kreg[c][i] != 0xFFu) {
+                t2_imm32(kreg[c][i], d.fimm[c][i]); /* r1 no longer holds the count */
+            }
+        }
+    }
     const uint8_t *const top = emu_jit_here();
 
     if (!t2_ld_reg(T2_R3, KXH, KX, 2u, true) || !t2_ld_reg(T2_R12, KYH, KY, 2u, true)) {
@@ -1421,9 +1560,33 @@ static int emit_dot_inline(uint32_t index)
     }
     t2_add_imm(KX, KX, 2u); /* imm12 2: the byte itself */
     t2_add(KY, KY, KS);
-    t2_mla(T2_R0, T2_R3, T2_R12, T2_R0, false); /* MLA: no Q, unlike SMLABB */
+    if (d.fchains == 0u) {
+        t2_mla(T2_R0, T2_R3, T2_R12, T2_R0, false); /* MLA: no Q, unlike SMLABB */
+    } else {
+        /* DOT16_F: the product in r3, chain 0 into r12, chain 1 in place */
+        t2_mul(T2_R3, T2_R3, T2_R12);
+        if (d.fchains == 1u) {
+            for (uint32_t i = 0u; i < d.flen[0]; i++) {
+                emit_map_op(d.fop[0][i], d.fimm[0][i], T2_R3, T2_R3, kreg[0][i]);
+            }
+            t2_add(T2_R0, T2_R0, T2_R3);
+        } else {
+            if (d.flen[0] == 0u) {
+                t2_mov(T2_R12, T2_R3);
+            }
+            for (uint32_t i = 0u; i < d.flen[0]; i++) {
+                emit_map_op(d.fop[0][i], d.fimm[0][i], T2_R12, (i == 0u) ? T2_R3 : T2_R12,
+                            kreg[0][i]);
+            }
+            for (uint32_t i = 0u; i < d.flen[1]; i++) {
+                emit_map_op(d.fop[1][i], d.fimm[1][i], T2_R3, T2_R3, kreg[1][i]);
+            }
+            t2_mla(T2_R0, T2_R12, T2_R3, T2_R0, false);
+        }
+    }
     t2_adds_imm(T2_R2, T2_R2, minus1);
     patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_NE)), top, true);
+    t2_shift_imm(T2_LSR, T2_R1, KX, 1u); /* the count again: x moved 2 a step */
 
     /* the registers, in the C kernel's order: x, y, e, the sum */
     t2_ldr_imm(T2_R3, T2_CPU, d.xo);
@@ -2046,7 +2209,9 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
          * And a dot product only of the shape emit_dot_inline takes: the
          * call to the C kernel was no faster than the scalar loop.
          */
-        if ((aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16 && (aux & EMU_IR_KERNEL_PLAIN) == 0u) {
+        if (((aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16 ||
+             (aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16_F) &&
+            (aux & EMU_IR_KERNEL_PLAIN) == 0u) {
             return false;
         }
         return bisect_allows((uint8_t)op);
