@@ -64,7 +64,7 @@ static uint64_t ppc_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
     case PPC_GDB_MSR:
         return c->msr;
     case PPC_GDB_CR:
-        return c->cr;
+        return ppc_cr_get(c);
     case PPC_GDB_LR:
         return c->lr;
     case PPC_GDB_CTR:
@@ -103,7 +103,7 @@ static void ppc_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
         ppc_mmu_refresh(c); /* IS and DS choose the address space */
         break;
     case PPC_GDB_CR:
-        c->cr = v;
+        ppc_cr_set(c, v);
         break;
     case PPC_GDB_LR:
         c->lr = v;

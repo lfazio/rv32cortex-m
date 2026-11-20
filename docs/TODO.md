@@ -127,11 +127,11 @@ measured at.
       -- is about 27% of its translated time, and 87% of the SETFs left
       after the dead-flag pass are there for the block's exit, not for a
       load that might fault; only flags kept as operands and derived when
-      read would remove them. PowerPC's `cmpw` is 13 instructions, 4 of
-      them the CR's read-modify-write for one field and 3 the summary
-      overflow: a CR field a byte of its own would drop the first; and
-      its byte swaps are about 10%, which only RAM kept in the host's
-      order for words (an address XOR for halves and bytes) would drop.
+      read would remove them. PowerPC's `cmpw` was 13 instructions, 4 of
+      them the CR's read-modify-write for one field -- a word a field
+      now, CoreMark 6.1-6.3% faster -- and 3 the summary overflow; its
+      byte swaps are about 10%, which only RAM kept in the host's order
+      for words (an address XOR for halves and bytes) would drop.
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have. It is inlined on Thumb-2 for RV32
       (2.5-7x on driver code,
@@ -148,6 +148,11 @@ measured at.
       N6; PowerPC's dot products, byte-swapped, which the emitted loop
       declines; ARMv7-M's, whose sticky Q a kernel would compute per
       step. The copy and the fill stay off.
+- [ ] **PowerPC's interpreter 0.6-1.0% slower with CR as fields**
+      ([frontend/ppc.md](frontend/ppc.md#the-jit)): a `bc` now finds its
+      field (`bi >> 2`) and shift (`3 - (bi & 3)`) at every execution;
+      decoded once, into the decode cache's entry, it would be a load
+      and a shift as before. The JIT is 6.2-6.4% faster with them.
 - [ ] **The thrash policy's two equilibria**
       ([jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)):
       RV32 CoreMark x2000 at 32 KB on the F746 runs at 16 host cycles an

@@ -104,10 +104,11 @@
 #define PPC_TEMP_HEADROOM 96u
 
 /* Guest "registers" beyond r0-r31. */
-#define R_CR 32u
 #define R_XER 33u
 #define R_LR 34u
 #define R_CTR 35u
+#define R_CRF0 36u /* CR's eight fields, one word each: crf[] */
+#define R_CRF(f) (R_CRF0 + ((f) & 7u))
 
 #define NOT EMU_IR_NO_TEMP
 
@@ -326,9 +327,10 @@ static uint32_t ppc_reg_offset(uint32_t n)
     if (n < 32u) {
         return (uint32_t)offsetof(ppc_cpu_t, r) + n * 4u;
     }
+    if (n >= R_CRF0 && n < R_CRF0 + 8u) {
+        return (uint32_t)offsetof(ppc_cpu_t, crf) + (n - R_CRF0) * 4u;
+    }
     switch (n) {
-    case R_CR:
-        return (uint32_t)offsetof(ppc_cpu_t, cr);
     case R_XER:
         return (uint32_t)offsetof(ppc_cpu_t, xer);
     case R_LR:
@@ -350,7 +352,7 @@ const emu_ir_target_t ppc_ir_target = {
      * No EMU_IR_SETF is ever emitted, so no flag has a home: CR and XER
      * are guest registers and their bits are computed in the open.
      */
-    .flags_offset = (uint32_t)offsetof(ppc_cpu_t, cr),
+    .flags_offset = (uint32_t)offsetof(ppc_cpu_t, crf),
     .flag_bit = {0u, 0u, 0u, 0u},
     .reg_is_zero = ppc_reg_zero,
     .pc_offset = (uint32_t)offsetof(ppc_cpu_t, pc),
@@ -557,18 +559,20 @@ static void put_ca(B *b, uint16_t c01)
       OP(b, EMU_IR_OR, ANDK(b, G(b, R_XER), ~PPC_XER_CA), SHL(b, c01, 29u)));
 }
 
-/* CR bit `bi`, numbered from the left, as 0 or 1. */
+/* CR bit `bi`, numbered from the left, as 0 or 1: LT is its field's 8. */
 static uint16_t crbit(B *b, uint32_t bi)
 {
-    return ANDK(b, SHR(b, G(b, R_CR), 31u - bi), 1u);
+    return ANDK(b, SHR(b, G(b, R_CRF(bi >> 2)), 3u - (bi & 3u)), 1u);
 }
 
-/* Write a four-bit value into CR field `f`. */
+/*
+ * Write a four-bit value into CR field `f`: a store, where the field in
+ * one word was a load, a clear, a merge and the store. `v4` is at most
+ * 15 from every caller -- a field word holds nothing else.
+ */
 static void put_crf(B *b, uint32_t f, uint16_t v4)
 {
-    const uint32_t sh = 4u * (7u - f);
-
-    P(b, R_CR, OP(b, EMU_IR_OR, ANDK(b, G(b, R_CR), ~(0xFu << sh)), SHL(b, v4, sh)));
+    P(b, R_CRF(f), v4);
 }
 
 /*
@@ -644,7 +648,7 @@ static uint16_t crbit_cmp(B *b, uint32_t bi, bool set)
     for (uint32_t i = g_cmp.mark; i < b->count; i++) {
         const emu_ir_insn_t *const in = &b->insn[i];
 
-        if ((in->op == (uint8_t)EMU_IR_PUT && in->imm == R_CR) ||
+        if ((in->op == (uint8_t)EMU_IR_PUT && in->imm == R_CRF(g_cmp.crf)) ||
             in->op == (uint8_t)EMU_IR_HELPER || in->op == (uint8_t)EMU_IR_HELPER_TRAP) {
             return NOT;
         }
@@ -1109,7 +1113,7 @@ static bool lower_cr(T *t, const I *d)
     case PPC_S_CROR:
     case PPC_S_CRORC:
     case PPC_S_CRXOR: {
-        const uint32_t sh = 31u - d->rd;
+        const uint32_t sh = 3u - (d->rd & 3u); /* within its field */
         uint16_t v;
 
         if (d->ra == d->rb && (d->sem == PPC_S_CRXOR || d->sem == PPC_S_CRANDC)) {
@@ -1147,31 +1151,30 @@ static bool lower_cr(T *t, const I *d)
                 break;
             }
         }
-        P(b, R_CR, OP(b, EMU_IR_OR, ANDK(b, G(b, R_CR), ~(1u << sh)), SHL(b, v, sh)));
+        P(b, R_CRF(d->rd >> 2),
+          OP(b, EMU_IR_OR, ANDK(b, G(b, R_CRF(d->rd >> 2)), ~(1u << sh)), SHL(b, v, sh)));
         return true;
     }
     case PPC_S_MCRF:
-        put_crf(b, d->crf, ANDK(b, SHR(b, G(b, R_CR), 4u * (7u - d->crs)), 15u));
+        put_crf(b, d->crf, G(b, R_CRF(d->crs)));
         return true;
-    case PPC_S_MFCR:
-        P(b, d->rd, G(b, R_CR));
-        return true;
-    case PPC_S_MTCRF: {
-        uint32_t m = 0u;
+    case PPC_S_MFCR: {
+        /* The architectural word, CR0 on top: the eight fields put together. */
+        uint16_t v = G(b, R_CRF(7u));
 
-        for (uint32_t i = 0u; i < 8u; i++) {
-            if (((d->imm >> (7u - i)) & 1u) != 0u) {
-                m |= 0xFu << (4u * (7u - i));
-            }
+        for (uint32_t f = 7u; f-- > 0u;) {
+            v = OP(b, EMU_IR_OR, v, SHL(b, G(b, R_CRF(f)), 4u * (7u - f)));
         }
-        if (m == 0xFFFFFFFFu) {
-            P(b, R_CR, G(b, d->rd));
-        } else {
-            P(b, R_CR,
-              OP(b, EMU_IR_OR, ANDK(b, G(b, R_CR), ~m), ANDK(b, G(b, d->rd), m)));
-        }
+        P(b, d->rd, v);
         return true;
     }
+    case PPC_S_MTCRF:
+        for (uint32_t i = 0u; i < 8u; i++) {
+            if (((d->imm >> (7u - i)) & 1u) != 0u) {
+                P(b, R_CRF(i), ANDK(b, SHR(b, G(b, d->rd), 4u * (7u - i)), 15u));
+            }
+        }
+        return true;
     case PPC_S_ISEL: {
         /* Branch-free: rB, with rA's bits swapped in where the bit is set. */
         const uint16_t mask = OP(b, EMU_IR_SUB, K(b, 0u), crbit(b, d->bi));

@@ -348,7 +348,9 @@ static void compare_core(unsigned k)
         SAME_AT(r, i);
     }
     SAME(pc);
-    SAME(cr);
+    for (unsigned i = 0; i < 8u; i++) {
+        SAME_AT(crf, i); /* CR's fields, one word each */
+    }
     SAME(xer);
     SAME(lr);
     SAME(ctr);

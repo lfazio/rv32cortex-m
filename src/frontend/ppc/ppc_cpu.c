@@ -105,7 +105,7 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
      */
     memset(c->r, 0, sizeof(c->r));
     c->pc = reset_pc;
-    c->cr = 0u;
+    memset(c->crf, 0, sizeof(c->crf));
     c->xer = 0u;
     c->lr = 0u;
     c->ctr = 0u;

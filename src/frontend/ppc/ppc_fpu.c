@@ -923,7 +923,6 @@ EMU_HOT_TEXT uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd,
         const bool cl = (sem == PPC_S_EFSCMPGT || sem == PPC_S_EFSTSTGT) ? oa > ob
                         : (sem == PPC_S_EFSCMPLT || sem == PPC_S_EFSTSTLT) ? oa < ob
                                                                            : oa == ob;
-        const unsigned sh = 4u * (7u - crf);
 
         if (!test) {
             uint32_t unused = 0u;
@@ -934,7 +933,7 @@ EMU_HOT_TEXT uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd,
                 return (uint32_t)PPC_IVOR_FP_DATA;
             }
         }
-        c->cr = (c->cr & ~(0xFu << sh)) | ((cl ? PPC_CR_GT : 0u) << sh);
+        c->crf[crf & 7u] = cl ? PPC_CR_GT : 0u;
         return PPC_EXC_NONE;
     }
     case PPC_S_EFSCFSI:

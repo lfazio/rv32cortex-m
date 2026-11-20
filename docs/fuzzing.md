@@ -575,6 +575,15 @@ way, the second chain dropped, a chain taken outside in) were found in
 6 to 35 s; `test_loop_shape` holds CoreMark's map operation by
 operation.
 
+**PowerPC's CR as eight fields**: fuzz-ppc-jit compares the eight
+fields. Of six mutants, three were found by it (a bit within a field
+reversed, the CR-logical bit, mtcrf's nibble) and three were not --
+mfcr's order in the translator, the pack's, the multiple-volatile store
+of CR -- because random words rarely spell mfcr and never the VLE
+multiple-volatile forms, and CR starts at zero. isatest covers all
+three, and printed `FAIL` for them while its ctest passed: the tests
+matched only the end marker (83115b8). Found by it now.
+
 **Mutants of the lowering, one at a time** (`scripts/ir-board-mutant.sh
 FILE OLD NEW`, from a worktree): ten of the changes the dumps led to
 (2026-11-18) -- G4MH's flags without the borrow (149 inputs different)

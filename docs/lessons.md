@@ -5346,6 +5346,24 @@ session, and every one of them recurred:
   flag word was 0.62% faster than the four words. **Before a measurement
   condemns a design, read the code it was measured with.**
 
+- **A recorded trade-off is a hypothesis.** PowerPC's CR was one word
+  because "splitting it would make the common case cheap and the
+  architectural case a reassembly" -- reasoned, not measured, and the
+  cheap common case was the point: a word a field made PowerPC CoreMark
+  6.2-6.4% faster on the F746 under the JIT. The reassembly did cost,
+  in the interpreter -- not by running but by being there: the pack and
+  unpack inlined into the loop in ITCM made it 3% slower at five
+  layouts, and out of line 0.6-1.0%. **A comment that weighs two costs
+  is a measurement nobody took; and the rare case's cost may be its
+  size in the hot loop, not its time.**
+
+- **A pass pattern without a fail pattern passes a failing run.**
+  PowerPC's isatest prints its end marker whatever its checks found;
+  its two ctests matched only the marker, and with CR's fields packed in
+  the wrong order they passed with "FAIL cr7 field numbering" printed
+  above it. Three mutants survived that way. **A guest that reports
+  FAIL and then finishes needs a test that reads the FAIL.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

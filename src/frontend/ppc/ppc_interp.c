@@ -65,22 +65,40 @@ typedef ppc_insn_t I;
  * little-endian bit numbering -- puts CR0 where CR7 belongs and makes
  * every conditional branch read the wrong field.
  */
+/* `field` is three bits of the instruction and `bi` five: no masks. */
 static EMU_ALWAYS_INLINE void cr_set(ppc_cpu_t *c, uint32_t field, uint32_t v)
 {
-    const unsigned sh = 4u * (7u - field);
-
-    c->cr = (c->cr & ~(0xFu << sh)) | ((v & 0xFu) << sh);
+    c->crf[field] = v & 0xFu;
 }
 
 static EMU_ALWAYS_INLINE uint32_t cr_get(const ppc_cpu_t *c, uint32_t field)
 {
-    return (c->cr >> (4u * (7u - field))) & 0xFu;
+    return c->crf[field];
 }
 
-/* CR bit `bi`, also from the left. */
+/* CR bit `bi`, also from the left: bit 0 of a field is its LT, value 8. */
 static EMU_ALWAYS_INLINE uint32_t cr_bit(const ppc_cpu_t *c, uint32_t bi)
 {
-    return (c->cr >> (31u - bi)) & 1u;
+    return (c->crf[bi >> 2] >> (3u - (bi & 3u))) & 1u;
+}
+
+/*
+ * The architectural word and back, out of line: mfcr, mtcrf and the
+ * multiple-volatile forms are rare, and inlined they grew the loop in
+ * ITCM by 256 bytes (EMU_NOINLINE, CLAUDE.md).
+ */
+static EMU_NOINLINE uint32_t cr_word(const ppc_cpu_t *c)
+{
+    return ppc_cr_get(c);
+}
+
+static EMU_NOINLINE void cr_word_set(ppc_cpu_t *c, uint32_t v, uint32_t fields)
+{
+    for (uint32_t i = 0u; i < 8u; i++) {
+        if (((fields >> (7u - i)) & 1u) != 0u) {
+            c->crf[i] = (v >> (4u * (7u - i))) & 0xFu;
+        }
+    }
 }
 
 static EMU_ALWAYS_INLINE uint32_t so(const ppc_cpu_t *c)
@@ -261,7 +279,8 @@ static uint32_t *lmv_reg(ppc_cpu_t *c, uint32_t set, uint32_t i)
     case 0u:
         return &c->r[(i == 0u) ? 0u : i + 2u];
     case 1u: {
-        uint32_t *const k[4] = {&c->cr, &c->lr, &c->ctr, &c->xer};
+        /* CR is eight words: the caller packs it (NULL here) */
+        uint32_t *const k[4] = {NULL, &c->lr, &c->ctr, &c->xer};
         return k[i];
     }
     case 4u:
@@ -298,7 +317,8 @@ static bool exec_multi(ppc_cpu_t *c, const I *d, uint32_t pc)
         uint32_t *const r = vol ? lmv_reg(c, d->crs, i) : &c->r[d->rd + i];
 
         if (store) {
-            if ((mx = ppc_store(c, ea, 4u, *r)) != PPC_EXC_NONE) {
+            if ((mx = ppc_store(c, ea, 4u, (r != NULL) ? *r : cr_word(c))) !=
+                PPC_EXC_NONE) {
                 return data_fault(c, pc, true, mx);
             }
         } else {
@@ -307,7 +327,11 @@ static bool exec_multi(ppc_cpu_t *c, const I *d, uint32_t pc)
             if ((mx = ppc_load(c, ea, 4u, false, &v)) != PPC_EXC_NONE) {
                 return data_fault(c, pc, false, mx);
             }
-            *r = (vol && d->crs == 1u && i == 3u) ? (v & PPC_XER_IMPL) : v;
+            if (r == NULL) {
+                cr_word_set(c, v, 0xFFu);
+            } else {
+                *r = (vol && d->crs == 1u && i == 3u) ? (v & PPC_XER_IMPL) : v;
+            }
         }
     }
     return true;
@@ -647,7 +671,11 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
             t = a ^ b;
             break;
         }
-        c->cr = (c->cr & ~(1u << (31u - d->rd))) | (t << (31u - d->rd));
+        {
+            const uint32_t f = d->rd >> 2, sh = 3u - (d->rd & 3u);
+
+            c->crf[f] = (c->crf[f] & ~(1u << sh)) | (t << sh);
+        }
         break;
     }
     case PPC_S_MCRF:
@@ -658,19 +686,11 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         c->xer &= 0x0FFFFFFFu;
         break;
     case PPC_S_MFCR:
-        r[d->rd] = c->cr;
+        r[d->rd] = cr_word(c);
         break;
-    case PPC_S_MTCRF: {
-        uint32_t m = 0u;
-
-        for (uint32_t i = 0u; i < 8u; i++) {
-            if (((d->imm >> (7u - i)) & 1u) != 0u) {
-                m |= 0xFu << (4u * (7u - i));
-            }
-        }
-        c->cr = (c->cr & ~m) | (r[d->rd] & m);
+    case PPC_S_MTCRF:
+        cr_word_set(c, r[d->rd], d->imm);
         break;
-    }
     case PPC_S_ISEL:
         r[d->rd] = (cr_bit(c, d->bi) != 0u) ? base_of(c, d) : r[d->rb];
         break;

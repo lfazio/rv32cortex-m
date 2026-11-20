@@ -460,7 +460,7 @@ static void ppc_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
         const char *name;
         uint32_t v;
     } k[] = {
-        {"pc   ", c->pc},   {"msr  ", c->msr},   {"cr   ", c->cr},
+        {"pc   ", c->pc},   {"msr  ", c->msr},   {"cr   ", ppc_cr_get(c)},
         {"xer  ", c->xer},  {"lr   ", c->lr},    {"ctr  ", c->ctr},
         {"srr0 ", c->srr0}, {"srr1 ", c->srr1},  {"esr  ", c->esr},
         {"dear ", c->dear}, {"csrr0", c->csrr0}, {"spefs", c->spefscr},

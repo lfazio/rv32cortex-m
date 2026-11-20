@@ -194,6 +194,9 @@ Each has cost more than one session, and every one recurred.
 
 ### Tests that pass without testing
 
+- **A pass pattern without a fail pattern passes a failing run**: PowerPC's
+  isatest printed FAIL lines and its end marker, and its ctest matched
+  only the marker (fixed in 83115b8).
 - **"Nothing failed" also passes when nothing ran.** Assert something only
   a completed run produces (`PPC-ISATEST-END`); a capped run is a verdict
   of its own (riscv-tests reported 77/77 while 64 of them looped in their
@@ -368,6 +371,10 @@ Each has cost more than one session, and every one recurred.
   fourth decode cache for ARMv7-M was next on the list; the profile put
   decode at 11% and two per-instruction tests at 4.7%, and fixing those
   made the interpreter 3.1% faster.
+- **A recorded trade-off is a hypothesis**: PowerPC's CR was one word
+  because splitting "would make the common case cheap"; split, CoreMark
+  was 6.2% faster on the F746 under the JIT -- and the interpreter 3%
+  slower until mfcr's pack went out of the ITCM loop (0.6-1.0% left).
 - **Check the instrument can represent the difference.** The
   disassembler had no FP (reported 0 of a 60% share); the pair histogram
   read one funct7 bit; `xlat`/`interp` cannot tell a helper call from a

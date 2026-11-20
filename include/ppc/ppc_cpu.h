@@ -28,12 +28,19 @@ typedef struct ppc_cpu {
     struct emu_bus *bus;
 
     /*
-     * Condition register, held as one 32-bit word rather than eight
-     * nibbles. Reads of a single field are a shift and a mask either way,
-     * and mfcr/mtcr want the whole thing -- splitting it would make the
-     * common case cheap and the architectural case a reassembly.
+     * The condition register as its eight fields, one word each holding
+     * the field's four bits (LT GT EQ SO as 8 4 2 1) and nothing else;
+     * crf[0] is CR0, the top nibble of the architectural word, which
+     * ppc_cr_get and ppc_cr_set assemble and take apart for mfcr, mtcrf,
+     * gdb and the multiple-volatile load and store.
+     *
+     * It was one word, because "splitting it would make the common case
+     * cheap and the architectural case a reassembly". The common case is
+     * what costs: on the F746 a translated `cmpw` read the word, cleared
+     * the field, merged the new one and stored it back -- four of its
+     * thirteen host instructions -- where a field of its own is a store.
      */
-    uint32_t cr;
+    uint32_t crf[8];
     uint32_t xer;
     uint32_t lr;
     uint32_t ctr;
@@ -307,6 +314,24 @@ typedef struct ppc_cpu {
     uint32_t soc_until;
     const char *reset_by;
 } ppc_cpu_t;
+
+/* The condition register as the architecture's one word: CR0 on top. */
+static inline uint32_t ppc_cr_get(const ppc_cpu_t *c)
+{
+    uint32_t v = 0u;
+
+    for (uint32_t f = 0u; f < 8u; f++) {
+        v |= (c->crf[f] & 0xFu) << (4u * (7u - f));
+    }
+    return v;
+}
+
+static inline void ppc_cr_set(ppc_cpu_t *c, uint32_t v)
+{
+    for (uint32_t f = 0u; f < 8u; f++) {
+        c->crf[f] = (v >> (4u * (7u - f))) & 0xFu;
+    }
+}
 
 #define PPC_REQ_NONE 0u
 #define PPC_REQ_START 1u

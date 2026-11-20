@@ -941,7 +941,7 @@ static void test_e_i16_and_rotate(void)
     CHECK_EQ(reg(5), 1u | (0x1234u << 16));
     CHECK_EQ(reg(6), 0xFFFF0000u & (0x00FFu << 16));
     /* Signed compare: 7 > -2. An unsigned one would say less-than. */
-    CHECK_EQ((core()->cr >> 28) & 0xFu, (uint32_t)PPC_CR_GT);
+    CHECK_EQ(core()->crf[0], (uint32_t)PPC_CR_GT);
 
     /* rotl(0x1234, 8) = 0x123400; masked to bits 16..23 -> 0x00003400
      * ... and r9 was zero, so insert and replace agree here. */

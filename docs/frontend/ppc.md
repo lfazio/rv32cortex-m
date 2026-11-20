@@ -1247,6 +1247,29 @@ second write of the field between them, which a mutant skipping the
 check needed to be found). CoreMark on the F746 2.9% faster
 ([../backend/thumb2.md](../backend/thumb2.md#then-the-flags)).
 
+**CR as its eight fields** (2026-11-20): `crf[8]`, one word a field
+holding its four bits, where CR was one word -- "splitting it would make
+the common case cheap and the architectural case a reassembly", the old
+comment said, and the common case was the cost. A translated `cmpw`
+read CR, cleared the field, merged the new one and stored it back --
+four of its thirteen host instructions on the F746
+([../backend/thumb2.md](../backend/thumb2.md#by-mnemonic-powerpc-and-g4mh));
+now it stores the field. The architectural word is `ppc_cr_get` and
+`ppc_cr_set`, for mfcr, mtcrf, gdb, the register dump and the
+multiple-volatile load and store; a `bc` reads its field and shifts.
+And the branch's check for a write since its compare names that field,
+not all of CR. CoreMark on the F746 under the JIT **6.2% / 6.4% faster**
+(11.44 to 10.73, 11.45 to 10.72).
+
+The interpreter pays a little: a `bc` indexes its field and shifts where
+it shifted one word. First 2.8-3.3% slower, at five layouts (flash 0,
+64 and 1,588, ITCM 1 KB and 2.5 KB) -- code, not layout -- because the
+pack and unpack for mfcr, mtcrf and the multiple-volatile forms had been
+inlined into the loop in ITCM, 256 bytes of it; out of line
+(`cr_word`, `cr_word_set`) it is **0.6% / 1.0% slower** (112.09 to
+113.18, 112.29 to 112.96), the loop 128 bytes larger. The rest is the
+branch's arithmetic ([../TODO.md](../TODO.md)).
+
 ### What it still interprets
 
 `-DEMU_PAIR_STATS=ON` counts executed instructions by kind and adjacent

@@ -44,13 +44,13 @@ int main(void)
             continue;
         }
         c.spefscr = spefscr;
-        c.cr = 0u;
+        memset(c.crf, 0, sizeof(c.crf));
         c.r[3] = d;
         c.r[4] = a;
         c.r[5] = b;
         ret = ppc_fpu_exec(&c, sem, 3u, 4u, 5u, 2u);
         printf("%08x %08x %u %x\n", (unsigned)c.r[3], (unsigned)c.spefscr,
-               (ret == PPC_EXC_NONE) ? 0u : (unsigned)ret, (unsigned)((c.cr >> 20) & 15u));
+               (ret == PPC_EXC_NONE) ? 0u : (unsigned)ret, (unsigned)c.crf[2]);
     }
     return 0;
 }

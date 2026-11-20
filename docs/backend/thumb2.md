@@ -1147,8 +1147,9 @@ and 14.16), ARMv7-M, which had no SETF yet, within layout (+0.18%).
 
 **PowerPC's `cmpw` is thirteen**: the three-way compare (six), the
 summary overflow from XER (three), and the CR's read-modify-write for
-the one field it changes (four) -- one byte a field would make that a
-store. Its loads and stores swap bytes (rev, rev16: 9.7%), the price of
+the one field it changes (four). With a word a field (`crf[8]`,
+[../frontend/ppc.md](../frontend/ppc.md#the-jit)) that is a store, and
+PowerPC CoreMark is 6.1-6.3% faster. Its loads and stores swap bytes (rev, rev16: 9.7%), the price of
 a big-endian guest in little-endian RAM; and the RAM window's guard is
 6.6%.
 
