@@ -830,7 +830,8 @@ if(TARGET guest-fbtest AND EMU_GUEST_ARCH_RV32)
              COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
     set_tests_properties(guest-fbtest PROPERTIES
         LABELS fast
-        PASS_REGULAR_EXPRESSION "FBTEST-END")
+        PASS_REGULAR_EXPRESSION "FBTEST-END"
+        FAIL_REGULAR_EXPRESSION "FAIL")
 
     # The same, in a mode that is not the default.
     #
@@ -845,7 +846,8 @@ if(TARGET guest-fbtest AND EMU_GUEST_ARCH_RV32)
                      "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
     set_tests_properties(guest-fbtest-800x600 PROPERTIES
         LABELS fast
-        PASS_REGULAR_EXPRESSION "FBTEST-END")
+        PASS_REGULAR_EXPRESSION "FBTEST-END"
+        FAIL_REGULAR_EXPRESSION "FAIL")
 
     # And that a geometry the device does not have is refused rather
     # than started. Accepting it would leave the device reporting a size
@@ -876,7 +878,8 @@ if(TARGET guest-fbtest AND EMU_GUEST_ARCH_RV32)
                          "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
         set_tests_properties(guest-fbtest-jit PROPERTIES
             LABELS fast
-            PASS_REGULAR_EXPRESSION "FBTEST-END")
+            PASS_REGULAR_EXPRESSION "FBTEST-END"
+            FAIL_REGULAR_EXPRESSION "FAIL")
     endif()
 endif()
 
@@ -950,14 +953,18 @@ endif()
 # load address moved: the guest stopped after 212 instructions, printed no
 # marker, and the test passed for three commits. Requiring the line the
 # guest prints when it reaches the end makes running a precondition of
-# passing.
+# passing. And a FAIL a precondition of failing: the
+# marker is printed whatever the checks found, and with CR's fields in
+# the wrong order the guest printed "FAIL cr7 field numbering" and "FAIL
+# stmv cr first" above it, and the test passed (2026-11-20).
 if(TARGET guest-ppc-isatest AND EMU_GUEST_ARCH_PPC)
     add_test(NAME guest-ppc-isatest
              COMMAND emu-host --frontend ppc --load 0x80000000 --max-insn 200000
                      "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
     set_tests_properties(guest-ppc-isatest PROPERTIES
         LABELS fast
-        PASS_REGULAR_EXPRESSION "PPC-ISATEST-END")
+        PASS_REGULAR_EXPRESSION "PPC-ISATEST-END"
+        FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
 #
@@ -1166,7 +1173,8 @@ if(EMU_GUEST_ARCH_PPC)
                          "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
         set_tests_properties(guest-ppc-isatest-jit PROPERTIES
             LABELS fast
-            PASS_REGULAR_EXPRESSION "PPC-ISATEST-END")
+            PASS_REGULAR_EXPRESSION "PPC-ISATEST-END"
+            FAIL_REGULAR_EXPRESSION "FAIL")
     endif()
 
     #
