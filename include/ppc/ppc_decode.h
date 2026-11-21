@@ -573,6 +573,13 @@ typedef struct ppc_insn {
     uint8_t crs;      /* mcrf's source field                            */
     uint8_t bo, bi;   /* branch condition, in Book E's encoding         */
     uint8_t aa, lk;
+    /*
+     * A rotate's or shift's fields. For an instruction with a `bi` --
+     * bc, bclr, bcctr and their VLE forms, isel -- which has none, `sh`
+     * is bi's field as a byte offset into CR's fields (ppc_cpu_t::crf,
+     * 4 * (bi >> 2)) and `mb` bi's shift within it (3 - (bi & 3)),
+     * decoded once for the interpreter's bc.
+     */
     uint8_t sh, mb, me;
     uint8_t size;     /* access width in bytes                          */
     uint8_t sext;     /* a halfword load that sign-extends              */

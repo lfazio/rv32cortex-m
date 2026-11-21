@@ -24,6 +24,7 @@
  * changes the pc without retiring is a trap.
  */
 
+#include <string.h>
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_fpu.h"
@@ -80,6 +81,19 @@ static EMU_ALWAYS_INLINE uint32_t cr_get(const ppc_cpu_t *c, uint32_t field)
 static EMU_ALWAYS_INLINE uint32_t cr_bit(const ppc_cpu_t *c, uint32_t bi)
 {
     return (c->crf[bi >> 2] >> (3u - (bi & 3u))) & 1u;
+}
+
+/*
+ * The same for a decoded bi, its field's offset and shift decoded with it
+ * (ppc_insn_t's sh and mb): the field word's address one load from the
+ * entry, where `bi >> 2` was a load and a shift before it.
+ */
+static EMU_ALWAYS_INLINE uint32_t cr_bit_d(const ppc_cpu_t *c, const ppc_insn_t *d)
+{
+    uint32_t f;
+
+    memcpy(&f, (const uint8_t *)c->crf + d->sh, 4u);
+    return (f >> d->mb) & 1u;
 }
 
 /*
@@ -219,15 +233,16 @@ static EMU_ALWAYS_INLINE uint32_t target_mask(const ppc_cpu_t *c)
  * leaves CTR alone, 0x02 branches on CTR reaching zero rather than not.
  * The low bit is a prediction hint and changes nothing.
  */
-static EMU_ALWAYS_INLINE bool bo_taken(ppc_cpu_t *c, uint32_t bo, uint32_t bi)
+static EMU_ALWAYS_INLINE bool bo_taken(ppc_cpu_t *c, const ppc_insn_t *d)
 {
+    const uint32_t bo = d->bo;
     bool ctr_ok = true;
 
     if ((bo & 0x04u) == 0u) {
         c->ctr--;
         ctr_ok = ((bo & 0x02u) != 0u) ? (c->ctr == 0u) : (c->ctr != 0u);
     }
-    return ctr_ok && ((bo & 0x10u) != 0u || cr_bit(c, bi) == ((bo >> 3) & 1u));
+    return ctr_ok && ((bo & 0x10u) != 0u || cr_bit_d(c, d) == ((bo >> 3) & 1u));
 }
 
 /* ------------------------------------------------------------------ */
@@ -692,7 +707,7 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         cr_word_set(c, r[d->rd], d->imm);
         break;
     case PPC_S_ISEL:
-        r[d->rd] = (cr_bit(c, d->bi) != 0u) ? base_of(c, d) : r[d->rb];
+        r[d->rd] = (cr_bit_d(c, d) != 0u) ? base_of(c, d) : r[d->rb];
         break;
 
     /* --- memory --------------------------------------------------- */
@@ -827,7 +842,7 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         c->pc = (d->aa ? 0u : pc) + d->imm;
         return true;
     case PPC_S_BC: {
-        const bool t = bo_taken(c, d->bo, d->bi);
+        const bool t = bo_taken(c, d);
 
         if (d->lk) {
             c->lr = next;
@@ -837,7 +852,7 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
     }
     case PPC_S_BCLR: {
         const uint32_t tgt = c->lr & target_mask(c);
-        const bool t = bo_taken(c, d->bo, d->bi);
+        const bool t = bo_taken(c, d);
 
         if (d->lk) {
             c->lr = next;
@@ -849,7 +864,7 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         /* 3.16.3: BO2 = 0 decrements, and branches to the value CTR had
          * before -- read it first. */
         const uint32_t tgt = c->ctr & target_mask(c);
-        const bool t = bo_taken(c, d->bo, d->bi);
+        const bool t = bo_taken(c, d);
 
         if (d->lk) {
             c->lr = next;

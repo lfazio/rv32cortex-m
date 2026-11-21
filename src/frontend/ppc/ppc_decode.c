@@ -1331,7 +1331,7 @@ static inline void clear_insn(ppc_insn_t *out)
     w[7] = 0u;
 }
 
-void ppc_decode(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out)
+static void decode_body(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out)
 {
     clear_insn(out);
     out->len = (uint8_t)len;
@@ -1359,5 +1359,15 @@ void ppc_decode(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out)
         d_31(insn, out);
     } else if ((insn >> 26) == 4u) {
         d_4(insn, out);
+    }
+}
+
+void ppc_decode(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out)
+{
+    decode_body(insn, len, vle, out);
+    if (out->sem == (uint8_t)PPC_S_BC || out->sem == (uint8_t)PPC_S_BCLR ||
+        out->sem == (uint8_t)PPC_S_BCCTR || out->sem == (uint8_t)PPC_S_ISEL) {
+        out->sh = (uint8_t)(4u * (out->bi >> 2)); /* see ppc_insn_t: no rotate here */
+        out->mb = (uint8_t)(3u - (out->bi & 3u));
     }
 }
