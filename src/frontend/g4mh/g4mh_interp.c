@@ -810,7 +810,8 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                 /* CTPSW keeps PSW's low five bits, not the whole word. */
                 c->sr[0][G4MH_SR_CTPC] = next;
                 c->sr[0][G4MH_SR_CTPSW] = c->psw & 0x1Fu;
-                pc = ctbp + ent;
+                /* PC0 is fixed to 0 (U2B table 3.8): an odd entry is even */
+                pc = (ctbp + ent) & ~1u;
                 goto retired_insn;
             }
             if (op == 0x10u) {
@@ -2096,7 +2097,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                     c->sr[0][G4MH_SR_EIIC] = G4MH_EXC_SYSCALL + vec;
                     c->psw = (tmp & ~G4MH_PSW_UM) | G4MH_PSW_EP | G4MH_PSW_ID;
                     c->sr[0][G4MH_SR_PSW] = c->psw;
-                    pc = scbp + ent;
+                    pc = (scbp + ent) & ~1u; /* PC0 is fixed to 0, as CALLT */
                     goto retired_insn;
                 }
 

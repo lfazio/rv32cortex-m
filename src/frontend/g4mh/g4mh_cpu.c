@@ -379,7 +379,13 @@ g4mh_exc_t g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel,
          */
         return G4MH_EXC_MDP_TABLE | (e & ~0xFFFFu);
     }
-    *out = v;
+    /*
+     * Less bit 0: "PC0 ... is fixed to 0, and branching to an odd number
+     * address is disabled" (U2B hardware manual, table 3.8). An odd word
+     * here sent the core to an odd pc, which fetched across two
+     * halfwords (fuzz-g4mh-jit, interrupt-table-odd-handler).
+     */
+    *out = v & ~1u;
     return G4MH_EXC_NONE;
 }
 

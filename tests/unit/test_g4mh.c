@@ -1752,6 +1752,13 @@ static void test_irq_vector_methods(void)
     CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, handler);
 
+    /* An odd word is an even handler: the PC's bit 0 is fixed to 0
+     * (U2B table 3.8). It was taken as it stood, to an odd pc. */
+    g_ram[off] = (uint8_t)((handler & 0xFFu) | 1u);
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
+    CHECK_EQ(vec, handler);
+    g_ram[off] = (uint8_t)(handler & 0xFFu);
+
     /*
      * DV overrides the controller: the channel still asks for the table
      * and must get the direct vector anyway. Getting this backwards --
@@ -6511,7 +6518,16 @@ static void test_loop(void)
  * that half used to retire as a saturating add into r0, making the call
  * silently not happen.
  */
+static void test_callt_entry(uint16_t entry);
+
+/* Entry 81 as 80: the PC's bit 0 is fixed to 0 (U2B table 3.8). */
 static void test_callt(void)
+{
+    test_callt_entry(80u);
+    test_callt_entry(81u);
+}
+
+static void test_callt_entry(uint16_t entry)
 {
     const uint32_t ctbp = EMU_GUEST_RAM_BASE;
     uint16_t prog[64];
@@ -6531,7 +6547,7 @@ static void test_callt(void)
     while (k < 33u) {
         prog[k++] = 0u;
     }
-    prog[k++] = 80u; /* -> byte 80, hw 40    */
+    prog[k++] = entry; /* -> byte 80, hw 40    */
     while (k < 40u) {
         prog[k++] = 0u;
     }
@@ -6551,6 +6567,45 @@ static void test_callt(void)
     CHECK_EQ(reg(11), 9u); /* the target ran       */
     CHECK_EQ(reg(12), 0u); /* and the caller did not */
     CHECK_EQ(reg(13), EMU_GUEST_RAM_BASE + 12u); /* CTPC is the next insn */
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * SYSCALL's target is SCBP plus a word from its table, and the PC's bit 0
+ * is fixed to 0 (U2B table 3.8): an odd entry vectors to the even address
+ * below it. It went to the odd one. Entry 3 at SCBP + 12 is 0x41; the
+ * handler at SCBP + 0x40 is a HALT.
+ */
+static void syscall_table_setup(void)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    c->sr[1][G4MH_SR_SCBP] = EMU_GUEST_RAM_BASE + 0x800u;
+    c->sr[1][G4MH_SR_SCCFG] = 0xFFu;
+}
+
+static void test_syscall_odd_entry(void)
+{
+    static uint16_t prog[0x424];
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = 0xD7E3u; /* syscall 3: E3D76001 */
+    prog[1] = 0x0160u;
+    prog[0x80Cu / 2u] = 0x0041u; /* entry 3, SCBP + 12: odd */
+    prog[0x840u / 2u] = 0x07E0u; /* halt */
+    prog[0x842u / 2u] = SUB_HALT;
+    g_pre_run = syscall_table_setup;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why, &retired)) {
+        CHECK(false);
+        g_pre_run = NULL;
+        return;
+    }
+    g_pre_run = NULL;
+    CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_SYSCALL + 3u);
+    CHECK_EQ(((const g4mh_cpu_t *)(const void *)g_core.cpu)->pc,
+             EMU_GUEST_RAM_BASE + 0x844u); /* parked past the HALT */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -11971,6 +12026,7 @@ void test_g4mh(void)
     test_mac_bins_rotl();
     test_loop();
     test_callt();
+    test_syscall_odd_entry();
     test_muldiv();
     test_shift_three_operand();
     test_divq_divh();
