@@ -276,6 +276,17 @@ if(EMU_JIT AND Python3_EXECUTABLE)
         set_tests_properties(guest-vecround-both PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
     endif()
+    # The dot-product kernels against a 64-bit reference (dotcheck.c), on
+    # both backends: a difference prints FAIL, and the count must be 0.
+    if(TARGET guest-dotcheck AND EMU_GUEST_ARCH_RV32)
+        foreach(_j "" "--jit")
+            add_test(NAME guest-dotcheck${_j}
+                     COMMAND emu-host ${_j} "${CMAKE_BINARY_DIR}/guest/dotcheck.bin")
+            set_tests_properties(guest-dotcheck${_j} PROPERTIES LABELS fast
+                PASS_REGULAR_EXPRESSION "fails 00000000 .*DOTCHECK-END"
+                FAIL_REGULAR_EXPRESSION "FAIL n ")
+        endforeach()
+    endif()
     # The underflow edge (fpedge.c): RISC-V's flags, interpreted and under
     # the JIT -- the fifth case NX alone, tiny before rounding and not after.
     if(TARGET guest-fpedge AND RV32_EXT_F AND EMU_GUEST_ARCH_RV32)
