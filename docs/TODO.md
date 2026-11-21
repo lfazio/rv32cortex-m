@@ -163,6 +163,10 @@ measured at.
       won one regime and lost another on the host
       (`wip/jit-thrash-retry-variants`). Untried: keep the marks a retry
       replaced, and put them back when the next window compacts more.
+      At 3e0df70 the x2000 run is 26.45 (632 compactions, 67,923
+      translations) where 3fb2264 was 24.16 (516, 56,330): the blocks
+      are larger, with the emitted kernels, and the 32 KB buffer holds
+      fewer -- at the default 64 KB every CoreMark is faster.
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure.** Linking a later block's exit made all four CoreMarks
       3.6-8.0% faster at their default buffers, but without the stop
