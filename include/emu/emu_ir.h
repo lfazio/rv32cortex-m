@@ -1448,6 +1448,14 @@ typedef struct emu_ir_dot {
     uint8_t flen[2];
     uint8_t fop[2][EMU_IR_DOT_FN_OPS];
     uint32_t fimm[2][EMU_IR_DOT_FN_OPS];
+    /*
+     * A sticky bit the sum's every add ORs its signed overflow into --
+     * ARMv7-M's Q, which SMLABB sets: r[qreg] |= 1 << qbit after an add
+     * that overflowed, where `q`. A step's, not the total's: a sum that
+     * overflows and comes back still sets it.
+     */
+    bool q;
+    uint8_t qreg, qbit;
 } emu_ir_dot_t;
 
 /*
@@ -1727,7 +1735,8 @@ uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t retired);
 /*
  * EMU_IR_KERNEL's aux: the kind (EMU_IR_LOOP_*), and this bit for a dot
  * product of the shape a backend may emit in the block -- x's stride 2,
- * either element byte-swapped or not. The pass asks emu_ir_can_lower with it
+ * either element byte-swapped or not, and a sticky overflow bit only on a
+ * product summed unmapped. The pass asks emu_ir_can_lower with it
  * before inserting, so a kernel the backend would neither call nor emit
  * takes no table entry and puts no op in the block.
  */
@@ -1744,6 +1753,8 @@ typedef struct emu_ir_kernel_dot {
     uint8_t flen[2];
     uint8_t fop[2][EMU_IR_DOT_FN_OPS];
     uint32_t fimm[2][EMU_IR_DOT_FN_OPS];
+    bool q;              /* a sticky overflow bit, as emu_ir_dot_t's: */
+    uint32_t qo, qbit;   /* its register's offset and its bit */
 } emu_ir_kernel_dot_t;
 bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out);
 /* Iterations the loops a backend emitted itself ran, for the report. */
