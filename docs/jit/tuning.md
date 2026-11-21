@@ -335,6 +335,46 @@ needed -- never forgetting interpreted 80% of x2000 -- and the retry is
 what undoes it. Each alternative won one and lost the other, so the
 policy stays as measured on 2026-11-14.
 
+**A retry that keeps the better set** (2026-11-21,
+`wip/jit-thrash-retry-keep`, `-DJIT_RETRY_KEEP=1`): a hill climb.
+Each retry saves the marks it forgets; if the period after it is worse
+by an eighth, the saved marks go back and the next trial waits twice
+as long. Judged first by translations per instruction, then by host
+cycles per instruction (the TSC; CYCCNT on the board), best of three:
+
+| | default | by translations | by time |
+|---|---|---|---|
+| board tables, 32 KB: Whetstone | 0.179 s | 0.177 | 0.175 |
+| CoreMark x120 | 0.314 | 0.365 | 0.339 |
+| CoreMark x2000 | 5.20 | 7.09 | 5.44 |
+| host tables, 64 KB: CoreMark x2000 | 1.48 | 1.36 | 1.78 |
+
+Judged by translations it is never-forgotten again, by another road:
+interpreting is the one way to translate less, so the yardstick favours
+every mark, and x2000 at 32 KB interpreted 270M of its 500M instructions
+against the default's 129M. Judged by time it lost both: a trial is the
+period straight after a forget, which pays to retranslate what the
+marks had held, so it reads worse in either equilibrium; 41 of 245
+trials were undone at 32 KB. A period long enough to get past that
+would be one long enough to sit in the bad equilibrium. The policy
+stays.
+
+**What moved x2000 from 24.16 to 26.45 is the inline dot kernels**
+(2026-11-21). The same firmware, 4a8af26, with every kernel a call to
+the C routine as before d00c3e0, F746, CoreMark x2000 at 32 KB:
+
+| | host cycles / instruction | wall | translations | compactions |
+|---|---|---|---|---|
+| kernels inline, pad 0 / 64 | 26.45 / 26.45 | 60.4 s | 67,923 | 632 |
+| kernels as calls, pad 0 / 64 | 21.97 / 21.95 | 50.2 s | 47,074 | 422 |
+
+17% here, where inlining them gained 0.8-0.9% at the 64 KB default.
+A few hundred bytes of kernel do not crowd 32 KB by a third on their
+own; the likelier reading is that they tip a run already at the edge
+into the worse equilibrium above. Untried: the phase table for both
+builds (which equilibrium each sits in), and the size of a block with
+an inline kernel (`-DEMU_JIT_DUMP`).
+
 ### The hooks a block calls
 
 Every block ends in the frontend's `count` hook (retired instructions,

@@ -81,10 +81,16 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       instruction for 163M instructions and at 28-31 for the next 290M,
       the same work in every iteration. Backing off the retry, forgetting
       a quarter at a time and never forgetting each won one regime and lost
-      another (`wip/jit-thrash-retry-variants`). Untried: keep the marks a
-      retry replaced, and put them back when the next window compacts
-      more. At 3e0df70 the x2000 run is 26.45 (632 compactions) where
-      3fb2264 was 24.16 (516): the blocks with emitted kernels are larger.
+      another (`wip/jit-thrash-retry-variants`), and a hill climb keeping
+      the better mark set lost too, by translations and by time
+      (`wip/jit-thrash-retry-keep`). Left: a period that does not start at
+      a forget, or a cost model the host can reproduce. At 3e0df70 the
+      x2000 run is 26.45 (632 compactions) where 3fb2264 was 24.16 (516),
+      and the inline dot kernels are the difference: with each a call,
+      21.97 (422) at both layouts, by the wall clock too -- 17% at 32 KB
+      against their 0.9% at 64 KB. Whether that is their bytes or the
+      equilibrium they tip the run into is the next question
+      ([jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure**: without the stop before a known entry it cost RV32
       CoreMark x650 12.5% at 32 KB, G4MH's 5.7% and RV32 Whetstone 18%

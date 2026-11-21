@@ -356,6 +356,54 @@ needed them in the test. fuzz-g4mh-jit, five minutes twice, no
 divergence, and it finds a LOOP without its flags and a swapped
 extension in seconds.
 
+### The flags split from the PSW: a design (2026-11-21)
+
+**What it costs now.** A flag-setting G4MH instruction whose flags are
+live -- at a block's exit nearly always (87% of the SETFs the dead-flag
+pass leaves in CoreMark, counted on the host) -- is a SETF: the
+operation recomputed with ADDS or SUBS, MRS, the PSW loaded, Z,S and
+OV,CY moved in with two UBFX/BFI pairs (an EOR for a subtract's borrow),
+and the PSW stored. About eight instructions; with the PSW's loads,
+more than a quarter of G4MH CoreMark's translated time on the F746
+([../backend/thumb2.md](../backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)).
+The read-modify-write is there because the PSW holds the interrupt
+disable, the mode and the rest, which the flags must not touch.
+
+**The design.** What ARMv7-M does with xPSR
+([armv7m.md](armv7m.md#the-jit), `jit_nzcv`): while translated code
+runs, Z, S, OV and CY live in a word of their own, `jit_flags`, in the
+APSR's layout and holding nothing else, and the PSW's four bits are
+stale. Two parts:
+
+- **A, for both ISAs: SETF without the read-modify-write.** A target
+  property, `flags_alone`, says the flag word holds the four flags and
+  nothing else. Where all four are live, Thumb-2's SETF is then SUBS,
+  MRS, an EOR for G4MH's borrow, an AND with 0xF0000000 and the store:
+  four or five instructions. ARMv7-M's `jit_nzcv` has the property
+  already, so A is measurable alone.
+- **B, G4MH's flags out of the PSW.** `g4mh_flags_pack` and `_unpack`,
+  with a `jit_split` saying which copy is current, at each crossing
+  between translated code and C. That's ARMv7-M's list: `bind` (unpack), the
+  interpreter fallback (pack in, `after_interp` unpacks), interrupt
+  entry (EIPSW saves the PSW), the helpers that read or write the PSW,
+  the run wrapper's exit, gdb, and the fuzz harness's compare (the PSW
+  packed, as `diff_state_bytes` covers it). SAT stays in the PSW, set
+  by the saturating operations outside SETF.
+
+**What it should be worth**, by the profile: the PSW's load and both
+UBFX/BFI pairs gone from every SETF. That's three to four of eight
+instructions, so perhaps 10% of G4MH's translated time and 5% of its
+CoreMark, which the board decides. **Risks**, from ARMv7-M's: a
+crossing left unpacked, which reads stale flags in C. The interrupt
+path is the one a JIT test reaches least (`test_g4mh`'s EI cases, and
+fuzz-g4mh-jit's interrupts, which take one between blocks). And the
+read-modify-write is still needed where only some flags are live.
+
+**How it is checked**: fuzz-g4mh-jit and fuzz-ir (a `flags_alone`
+target), mutants of each crossing (a pack removed is a stale PSW), the
+CC-RH JIT test, the G4MH guests on the F746, and CoreMark at two
+layouts.
+
 ## The peripheral window
 
 **Inlined under the JIT once armed**, as RV32's and ARMv7-M's are:
