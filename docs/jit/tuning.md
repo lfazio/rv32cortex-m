@@ -336,7 +336,7 @@ what undoes it. Each alternative won one and lost the other, so the
 policy stays as measured on 2026-11-14.
 
 **A retry that keeps the better set** (2026-11-21,
-`wip/jit-thrash-retry-keep`, `-DJIT_RETRY_KEEP=1`): a hill climb.
+`wip/jit-thrash-retry-keep`, its `JIT_RETRY_KEEP` switch): a hill climb.
 Each retry saves the marks it forgets; if the period after it is worse
 by an eighth, the saved marks go back and the next trial waits twice
 as long. Judged first by translations per instruction, then by host
