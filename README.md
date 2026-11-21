@@ -580,6 +580,18 @@ gdb-multiarch build/f746/src/platform/stm32f746/emu-stm32f746.elf \
   -ex 'target extended-remote :3333'
 ```
 
+Or under [gdbtrace](https://github.com/lfazio/gdbtrace), a Trace32-style
+debugger on gdb, checked out beside this tree: run-control, the
+STM32F746's peripherals decoded from ST's SVD (STM32CubeIDE's, found
+where it installs), FreeRTOS's tasks, and memory read while the
+firmware runs. It loads the ELF, attaching under reset; `EMU_PROBE`
+picks the board's ST-LINK, and gdbtrace's options follow the build
+directory (`--no-load`, `--script F --batch`):
+
+```sh
+scripts/gdbtrace-f746.sh build/f746
+```
+
 That debugs the *emulator*. To debug the **guest**, use the built-in RSP
 stub: `emu-host --gdb`, then `target remote :1234`. It serves all four
 frontends, and `scripts/gdb-check.sh` attaches a real gdb to each. Two
