@@ -148,13 +148,23 @@ static void before_run(fz_side_t *run)
     }
 }
 
+/*
+ * Translated code keeps Z, S, OV and CY in a word of their own and PSW's
+ * copy stale; the frontend's run op packs them on the way out, and this
+ * does what it does, so the comparison reads one PSW.
+ */
+static void after_run(emu_cpu_t *cpu)
+{
+    g4mh_flags_pack((g4mh_cpu_t *)(void *)cpu);
+}
+
 static const fz_target_t g_target = {
     .name = "fuzz-g4mh-jit",
     .active = &g4mh_backend,
     .budget = 20000u,
     .slice = 1024u,
     .before_run = before_run,
-    .after_run = NULL,
+    .after_run = after_run,
     .dump = dump_program,
 };
 

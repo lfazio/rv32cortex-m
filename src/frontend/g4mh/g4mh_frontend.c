@@ -300,6 +300,13 @@ static emu_run_reason_t g4mh_ops_run(emu_cpu_t *cpu, uint32_t budget,
     const uint64_t before = c->retired;
     const emu_run_reason_t why = g4mh_backend->run(cpu, budget, retired);
 
+    /*
+     * Whatever ran, PSW is whole again before anything outside looks --
+     * the status line, a state dump, a debugger, a platform writing it.
+     * A no-op after the interpreter, which never splits the flags.
+     */
+    g4mh_flags_pack(c);
+
     if (EMU_UNLIKELY(c->pm_active) && c->retired > before) {
         g4mh_pm_tick(c, (uint32_t)(c->retired - before));
     }

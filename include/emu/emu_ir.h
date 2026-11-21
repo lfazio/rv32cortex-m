@@ -1637,6 +1637,14 @@ typedef struct emu_ir_target {
      */
     bool flags_arm_carry;
 
+    /*
+     * The word holds the four flags and nothing else: every bit outside
+     * flag_bit is 0, always -- a promise the frontend keeps (ARMv7-M's
+     * jit_nzcv), which lets a SETF defining all four store them without
+     * reading the word first.
+     */
+    bool flags_alone;
+
     /* Guest register `n` reads as zero and ignores writes. */
     bool (*reg_is_zero)(uint32_t n);
 

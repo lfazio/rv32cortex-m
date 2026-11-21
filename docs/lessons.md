@@ -5408,6 +5408,20 @@ session, and every one of them recurred:
   and the board run different optimisers; a figure that should have
   moved and did not is read in the board's own counters first.**
 
+- **A mutant of one half of a pair can disable the other.** G4MH's
+  flags are packed into the PSW before a helper and unpacked after,
+  and the unpack does nothing when the flags are already apart. Removing
+  the pack around SET1 therefore removed the unpack too: what was lost
+  was not the flags the helper read but the Z it wrote. The test
+  written for the pack -- CY from a compare before SET1 must survive it
+  -- passed against that mutant; a branch on Z straight after SET1
+  failed it. And the run wrapper's pack could not be seen by any test
+  that ended at a HALT, because the interpreter packs before running
+  one: it took a run stopped by its budget inside a translated loop.
+  **Test a crossing from both sides -- what the C reads and what it
+  writes -- and end the test where only the crossing can have put the
+  value.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

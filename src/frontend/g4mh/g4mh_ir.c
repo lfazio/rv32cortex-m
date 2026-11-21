@@ -106,7 +106,10 @@ static const uint8_t k_g4mh_cond[16] = {
 static void ir_raise(g4mh_cpu_t *c, g4mh_exc_t e)
 {
     c->ir_traps++;
+    /* The exception saves PSW in EIPSW or FEPSW: the flags go back first. */
+    g4mh_flags_pack(c);
     g4mh_cpu_exception(c, e, c->pc);
+    g4mh_flags_unpack(c);
 }
 
 /*
@@ -228,9 +231,12 @@ static uint32_t g4mh_ir_adf_helper(emu_cpu_t *cpu, uint32_t insn,
     const uint16_t w1 = (uint16_t)(insn >> 16);
 
     (void)unused;
+    /* reads the condition and writes all four: through PSW, as C does */
+    g4mh_flags_pack((g4mh_cpu_t *)cpu);
     g4mh_adf((g4mh_cpu_t *)cpu, g4mh_reg1(w0), g4mh_reg2(w0),
              ((uint32_t)w1 >> 11) & 0x1Fu,
              ((((uint32_t)w1 & 0x07FFu) >> 1) & 0xFu));
+    g4mh_flags_unpack((g4mh_cpu_t *)cpu);
     return 0u;
 }
 
@@ -289,10 +295,12 @@ static uint32_t g4mh_ir_fpu_helper(emu_cpu_t *cpu, uint32_t insn,
     {
         const uint16_t w0 = (uint16_t)insn;
         const uint16_t w1 = (uint16_t)(insn >> 16);
-        const g4mh_exc_t e =
-            g4mh_fpu_exec(c, (uint32_t)w1 & 0x07FFu, g4mh_reg1(w0),
-                          g4mh_reg2(w0), ((uint32_t)w1 >> 11) & 0x1Fu);
+        g4mh_exc_t e;
 
+        g4mh_flags_pack(c); /* TRFSR writes Z */
+        e = g4mh_fpu_exec(c, (uint32_t)w1 & 0x07FFu, g4mh_reg1(w0),
+                          g4mh_reg2(w0), ((uint32_t)w1 >> 11) & 0x1Fu);
+        g4mh_flags_unpack(c);
         if (e == G4MH_EXC_NONE) {
             return 0u;
         }
@@ -366,8 +374,11 @@ static uint32_t g4mh_ir_bitop_helper(emu_cpu_t *cpu, uint32_t adr,
                                      uint32_t op_bit)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
-    const g4mh_exc_t e = g4mh_bitop(c, (op_bit >> 3) & 3u, adr, op_bit & 7u);
+    g4mh_exc_t e;
 
+    g4mh_flags_pack(c); /* each of the four writes Z */
+    e = g4mh_bitop(c, (op_bit >> 3) & 3u, adr, op_bit & 7u);
+    g4mh_flags_unpack(c);
     if (e == G4MH_EXC_NONE) {
         return 0u;
     }
@@ -424,6 +435,9 @@ static uint32_t g4mh_ir_fxu48_helper(emu_cpu_t *cpu, uint32_t insn,
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 #if G4MH_EXT_FXU
+    /* No flags to pack: the 48-bit forms read PSW's CU1 alone (TRFSRV,
+     * which writes Z, is 32-bit and comes through the FPU's helper), and
+     * a fault packs them in ir_raise. */
     const g4mh_exc_t e = g4mh_fxu_exec48(c, insn & 0xFFFFu, insn >> 16, w2);
 
     if (e == G4MH_EXC_NONE) {
@@ -528,13 +542,15 @@ static void lower_bitop(emu_ir_block_t *b, uint32_t pc, uint32_t sel,
 
 const emu_ir_target_t g4mh_ir_target = {
     .reg_offset = g4mh_reg_offset,
-    .flags_offset = (uint32_t)offsetof(g4mh_cpu_t, psw),
+    .flags_offset = (uint32_t)offsetof(g4mh_cpu_t, jit_flags),
     /*
-     * The IR's neutral flags mapped onto PSW. Order is Z, S, V, C, which
-     * is the order of EMU_IR_F_* and *not* the order of the bits in PSW
-     * -- the array is indexed by the IR's bit position, not the guest's.
+     * The IR's neutral flags mapped onto jit_flags, the APSR's places and
+     * nothing else (g4mh_cpu.h). Order is Z, S, V, C, which is the order
+     * of EMU_IR_F_*. CY is a borrow after a subtract, which ARM's C is
+     * not, so flags_arm_carry stays false.
      */
-    .flag_bit = {G4MH_PSW_Z, G4MH_PSW_S, G4MH_PSW_OV, G4MH_PSW_CY},
+    .flag_bit = {1u << 30, 1u << 31, 1u << 28, 1u << 29},
+    .flags_alone = true,
     .reg_is_zero = g4mh_reg_zero,
     .pc_offset = (uint32_t)offsetof(g4mh_cpu_t, pc),
     .helpers = g4mh_ir_helpers,
@@ -2028,7 +2044,9 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
      */
     if (g4mh_cpu_pending_fe(c)) {
         c->state = EMU_STATE_RUNNING;
+        g4mh_flags_pack(c); /* FEPSW is PSW, flags and all */
         (void)g4mh_cpu_take_fe(c, c->pc);
+        g4mh_flags_unpack(c);
         return true;
     }
 
@@ -2055,7 +2073,9 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
      * to it after the interpreter had them; the bank would have been the
      * fourth.
      */
+    g4mh_flags_pack(c); /* EIPSW is PSW, flags and all */
     g4mh_cpu_take_eiint(c, (uint32_t)ch, ipri, c->pc);
+    g4mh_flags_unpack(c);
     return true;
 }
 
@@ -2097,6 +2117,7 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     }
     /* A platform may have written PSW between slices. */
     g4mh_jit_ctx_refresh(c);
+    g4mh_flags_unpack(c); /* the run wrapper packed on the way out */
     out->pc = &c->pc;
     out->state = &c->state;
     out->context = &c->jit_ctx;
@@ -2113,14 +2134,33 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 static void g4mh_jit_after_interp(emu_cpu_t *cpu)
 {
     g4mh_jit_ctx_refresh((g4mh_cpu_t *)cpu);
+    g4mh_flags_unpack((g4mh_cpu_t *)cpu); /* and the flags, see below */
 }
+
+/*
+ * The interpreter, as the framework calls it for what a block declines:
+ * the flags into PSW first, since the interpreter knows no other copy;
+ * after_interp unpacks them once the batch is done -- ARMv7-M's
+ * a7_interp_run.
+ */
+static emu_run_reason_t g4mh_interp_run_for_jit(emu_cpu_t *cpu, uint32_t budget,
+                                                uint32_t *retired)
+{
+    g4mh_flags_pack((g4mh_cpu_t *)cpu);
+    return g4mh_backend_interp.run(cpu, budget, retired);
+}
+
+static const emu_backend_t g4mh_interp_for_jit = {
+    .name = "interp",
+    .run = g4mh_interp_run_for_jit,
+};
 
 const emu_ir_frontend_t g4mh_ir_frontend = {
     .name = "g4mh",
     .translate = g4mh_ir_translate,
     .target = &g4mh_ir_target,
     .bind = g4mh_jit_bind,
-    .interp = &g4mh_backend_interp,
+    .interp = &g4mh_interp_for_jit,
     .is_idle = g4mh_jit_is_idle,
     .wake = g4mh_jit_wake,
     .take_irq = g4mh_jit_take_irq,
@@ -2128,6 +2168,6 @@ const emu_ir_frontend_t g4mh_ir_frontend = {
     .count = g4mh_jit_count,
     .after_interp = g4mh_jit_after_interp,
     .code_bytes = G4MH_JIT_CODE_BYTES,
-    /* r[0..31], pc and psw. */
-    .diff_state_bytes = (uint32_t)offsetof(g4mh_cpu_t, psw) + 4u,
+    /* r[0..31], pc, psw and the flags beside it */
+    .diff_state_bytes = (uint32_t)offsetof(g4mh_cpu_t, jit_flags) + 4u,
 };

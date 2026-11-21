@@ -537,7 +537,11 @@ forwarding that after a result's own flags EQ, NE, MI and PL are the
 result against zero (`tst; bne`). On the F746 it was 1.6-2.0% *slower*
 at first; with SETF taking its operands where they are, not copied into
 r0 and r1, CoreMark is **0.62% faster** than the four words at both
-layouts (11.27 to 11.20), Dhrystone 0.3%.
+layouts (11.27 to 11.20), Dhrystone 0.3%. And since the word holds the
+flags alone (`flags_alone`), a SETF defining all four stores the APSR's
+top nibble without reading the word first -- SUBS, MRS, AND, store:
+CoreMark **6.1% faster** again (11.19 to 10.51, both layouts; G4MH's
+flags took the same design, [g4mh.md](g4mh.md#the-flags-apart-from-the-psw-2026-11-21)).
 
 What a block may assume, and what invalidates it:
 

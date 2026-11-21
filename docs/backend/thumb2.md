@@ -1137,7 +1137,12 @@ on the host, 392 SETFs survive the dead-flag pass in CoreMark's blocks
 and only 52 of them for a load or store that might fault after them;
 the rest are live at the block's exit, where an interrupt may read the
 PSW. So moving them into the slow paths of accesses would save little;
-only flags kept as their operands and derived when read would.
+only flags kept as their operands and derived when read would. What
+was done instead is ARMv7-M's: the flags in a word of their own while
+translated code runs, so a SETF is SUBS, MRS, an EOR for the borrow, an
+AND and a store (`flags_alone`) -- G4MH CoreMark **11.3-11.5% faster**,
+ARMv7-M's 6.6-7.1%
+([../frontend/g4mh.md](../frontend/g4mh.md#the-flags-apart-from-the-psw-2026-11-21)).
 
 What the dump did show was two `mov`s before each `adds`: the SETF
 lowering copied its operands into r0 and r1 whether or not they were

@@ -571,7 +571,15 @@ meaning) -- none, one chain or two multiplied, up to four of the
 fourteen operations each, shifts past 31 and constants with no
 immediate form among them -- and the order of the two factors, on a
 bit of the trip byte nothing read (ARMv7-M's `mla` puts y first, which
-the recogniser refused). Four mutants of the C kernel's map and the
+the recogniser refused).
+
+**A flag word that holds the flags alone** (`flags_alone`): fuzz-ir has
+eight more targets, k_targets[16..23], ARMv7-M's shape and G4MH's (the
+APSR's places, a borrow for C), chosen on a bit of `cfg2` no regression
+input with either layout sets -- `vmems-stride-in-a-moved-register`
+keeps its register on the flag word. On those the word starts with the
+flags alone and `h_poke` keeps it so: the promise the target makes. The
+G4MH fuzzers pack the flags after a run, as the frontend's run op does. Four mutants of the C kernel's map and the
 recogniser's chain (a shift masked to four bits, a rotate the wrong
 way, the second chain dropped, a chain taken outside in) were found in
 6 to 35 s; `test_loop_shape` holds CoreMark's map operation by

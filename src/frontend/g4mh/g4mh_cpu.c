@@ -54,6 +54,7 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
      */
     c->psw = G4MH_PSW_ID;
     c->sr[0][G4MH_SR_PSW] = c->psw;
+    c->jit_split = false; /* PSW is the copy now (g4mh_flags_pack) */
 
     /*
      * SPID from the core id, so MPIDn discriminates between PEs rather

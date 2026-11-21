@@ -242,6 +242,11 @@ Each has cost more than one session, and every one recurred.
   arrived at +8, and an unrelated exception reaching the same handler
   passed three versions of one test -- and where it stopped: FXE without
   its vector ran NOPs into another HALT.
+- **A crossing is tested from both sides, and where only it can have
+  put the value**: removing G4MH's flag pack around SET1 also disabled
+  the unpack, so the Z it wrote was lost, not the CY it read; and no test
+  ending at a HALT could see the run wrapper's pack, because the
+  interpreter packs first (`test_jit_flags_*`).
 - **A coverage instrument must get past the gate it measures behind**:
   out of reset CU0 is clear, every FP instruction was UCPOP, counted as
   executed, and two declined ones sat in a 251/251

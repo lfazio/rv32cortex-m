@@ -2783,8 +2783,10 @@ const emu_backend_t *g4mh_backend = &g4mh_backend_interp;
 /* One instruction whatever the backend; see emu_backend_t::step. */
 emu_run_reason_t g4mh_step(g4mh_cpu_t *c)
 {
-    if (g4mh_backend->step != NULL) {
-        return g4mh_backend->step((emu_cpu_t *)c);
-    }
-    return g4mh_backend->run((emu_cpu_t *)c, 1u, NULL);
+    const emu_run_reason_t why = (g4mh_backend->step != NULL)
+                                     ? g4mh_backend->step((emu_cpu_t *)c)
+                                     : g4mh_backend->run((emu_cpu_t *)c, 1u, NULL);
+
+    g4mh_flags_pack(c); /* as the run op: PSW whole for whoever stepped */
+    return why;
 }
