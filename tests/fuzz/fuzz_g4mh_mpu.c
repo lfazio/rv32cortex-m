@@ -1069,6 +1069,7 @@ static void run_side(side_t *sd, uint32_t pc, uint32_t psw,
 
     c->pc = pc;
     c->psw = psw;
+    c->jit_split = false; /* PSW is the copy (jit_flags): bind unpacks it */
     c->sr[0][G4MH_SR_PSW] = psw;
     c->sr[0][G4MH_SR_FEPC] = SENT_FEPC;
     c->sr[0][G4MH_SR_FEPSW] = SENT_FEPSW;
@@ -1094,6 +1095,7 @@ static void run_side(side_t *sd, uint32_t pc, uint32_t psw,
             break;
         }
     }
+    g4mh_flags_pack(c); /* as the frontend's run op does on the way out */
     emu_jit_get_stats(&after);
     if (sd == &g_side[1]) {
         g_st.translations += after.translations - before.translations;

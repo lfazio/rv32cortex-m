@@ -221,6 +221,8 @@ static uint32_t h_mix(emu_cpu_t *cpu, uint32_t a, uint32_t b, uint32_t aux)
     return a * 31u + b + aux;
 }
 
+static const emu_ir_target_t *g_tgt; /* this input's, for h_vmems and h_poke */
+
 static uint32_t h_peek(emu_cpu_t *cpu, uint32_t a, uint32_t b)
 {
     fcpu_t *const c = (fcpu_t *)(void *)cpu;
@@ -237,7 +239,8 @@ static uint32_t h_poke(emu_cpu_t *cpu, uint32_t a, uint32_t b)
     g_st.helpers++;
     c->hlog = (c->hlog ^ 0x55u ^ a) * 0x01000193u;
     c->r[a & 15u] = b;
-    c->flags ^= (b ^ (b >> 28)) & 0xF000000Fu;
+    /* the flag word's own bits only, where the target says it holds no other */
+    c->flags ^= (b ^ (b >> 28)) & ((g_tgt != NULL && g_tgt->flags_alone) ? 0xF0000000u : 0xF000000Fu);
     return a ^ b;
 }
 
@@ -301,8 +304,6 @@ static uint32_t h_vmem(emu_cpu_t *cpu, uint32_t c, uint32_t addr, uint32_t vl)
  * and reads rs2 -- which the generator wrote just before. Not logged,
  * as h_vmem is not.
  */
-static const emu_ir_target_t *g_tgt; /* this input's, for h_vmems */
-
 static uint32_t h_vmems(emu_cpu_t *cpu, uint32_t imm, uint32_t addr,
                         uint32_t vl)
 {
@@ -450,11 +451,11 @@ static uint32_t off_vreg(uint32_t n)
  * guest register that is the flag word -- SETF and GETCOND beside GET and
  * PUT of the same word, which three passes must see as one thing.
  */
-#define TGT_ARM(ro, rz)                                                        \
+#define TGT_ARM(ro, rz, alone)                                                 \
     {                                                                          \
         .reg_offset = (ro), .flags_offset = offsetof(fcpu_t, flags),          \
         .flag_bit = {1u << 30, 1u << 31, 1u << 28, 1u << 29},                  \
-        .flags_arm_carry = true, .reg_is_zero = (rz),                          \
+        .flags_arm_carry = true, .flags_alone = (alone), .reg_is_zero = (rz),  \
         .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
         .helper_count = 6u, .load = f_load, .store = f_store,                  \
         .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
@@ -462,11 +463,36 @@ static uint32_t off_vreg(uint32_t n)
         .vfop = f_vfop,                                                        \
     }
 
-static const emu_ir_target_t k_targets[16] = {
+/*
+ * G4MH's: the APSR's places, a borrow for C, and a word that holds the
+ * flags alone (flags_alone) -- jit_flags.
+ */
+#define TGT_G4(ro, rz)                                                         \
+    {                                                                          \
+        .reg_offset = (ro), .flags_offset = offsetof(fcpu_t, flags),          \
+        .flag_bit = {1u << 30, 1u << 31, 1u << 28, 1u << 29},                  \
+        .flags_alone = true, .reg_is_zero = (rz),                              \
+        .pc_offset = offsetof(fcpu_t, pc), .helpers = k_helpers,               \
+        .helper_count = 6u, .load = f_load, .store = f_store,                  \
+        .freg_offset = off_freg, .fp_flags = f_fp_flags,                       \
+        .vreg_offset = off_vreg, .vsat_offset = offsetof(fcpu_t, vsat),       \
+        .vfop = f_vfop,                                                        \
+    }
+
+static const emu_ir_target_t k_targets[24] = {
     TGT_FLAGS(off_reg, NULL), TGT_FLAGS(off_reg, zero_r0),
     TGT_FLAGS(off_reg_pc, NULL), TGT_FLAGS(off_reg_pc, zero_r0),
-    TGT_ARM(off_reg_fl, NULL), TGT_ARM(off_reg_fl, zero_r0),
-    TGT_ARM(off_reg_pc_fl, NULL), TGT_ARM(off_reg_pc_fl, zero_r0)};
+    TGT_ARM(off_reg_fl, NULL, false), TGT_ARM(off_reg_fl, zero_r0, false),
+    TGT_ARM(off_reg_pc_fl, NULL, false), TGT_ARM(off_reg_pc_fl, zero_r0, false),
+    /*
+     * A word that holds the flags alone (flags_alone): no register reaches
+     * it, and it starts with nothing else in it -- ARMv7-M's jit_nzcv,
+     * then G4MH's jit_flags.
+     */
+    TGT_ARM(off_reg, NULL, true), TGT_ARM(off_reg, zero_r0, true),
+    TGT_ARM(off_reg_pc, NULL, true), TGT_ARM(off_reg_pc, zero_r0, true),
+    TGT_G4(off_reg, NULL), TGT_G4(off_reg, zero_r0),
+    TGT_G4(off_reg_pc, NULL), TGT_G4(off_reg_pc, zero_r0)};
 
 /* ------------------------------------------------------------------ */
 /* Reading the input                                                   */
@@ -1431,8 +1457,17 @@ static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
      * ARM layout, so none changed meaning.
      */
     const bool arm = (cfg2 % 3u) == 1u && ((cfg2 / 3u) & 1u) != 0u;
+    /*
+     * And the word alone, ARM's or G4MH's, on the next bit, which no
+     * regression input with either layout sets: vmems-stride-in-a-moved-
+     * register keeps its register on the flag word.
+     */
+    const bool alone = (cfg2 % 3u) == 1u && ((cfg2 / 6u) & 1u) != 0u;
     const emu_ir_target_t *const t =
-        arm ? &k_targets[12u + (cfg & 3u)] : &k_targets[(cfg & 3u) * 3u + (cfg2 % 3u)];
+        (arm && alone) ? &k_targets[16u + (cfg & 3u)]
+        : arm          ? &k_targets[12u + (cfg & 3u)]
+        : alone        ? &k_targets[20u + (cfg & 3u)]
+                       : &k_targets[(cfg & 3u) * 3u + (cfg2 % 3u)];
 
     g_tgt = t;
 
@@ -1441,6 +1476,9 @@ static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
         c->r[i] = interesting(byte(in));
     }
     c->flags = word(in);
+    if (t->flags_alone) { /* the promise flags_alone makes */
+        c->flags &= t->flag_bit[0] | t->flag_bit[1] | t->flag_bit[2] | t->flag_bit[3];
+    }
     c->pc = START_PC;
     for (uint32_t i = 0; i < 8u; i++) {
         c->f[i] = interesting_f(byte(in));

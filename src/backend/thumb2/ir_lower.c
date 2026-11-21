@@ -2340,6 +2340,28 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     t2_mrs_apsr(SETF_PSR);
 
     /*
+     * A word that holds nothing but the four, all of them live, in the
+     * APSR's own places: the APSR is the word, less Q and GE and with a
+     * subtract's C made a borrow -- no load, no bit-field moves
+     * (flags_alone). A shift's C comes from `b`, not the APSR.
+     */
+    if (t->flags_alone && (in->live & EMU_IR_F_ALL) == EMU_IR_F_ALL &&
+        t->flag_bit[0] == (1u << 30) && t->flag_bit[1] == (1u << 31) &&
+        t->flag_bit[2] == (1u << 28) && t->flag_bit[3] == (1u << 29) &&
+        src != EMU_IR_FS_SHIFT && src != EMU_IR_FS_ZS) {
+        uint16_t imm;
+
+        if (src == EMU_IR_FS_SUB && !t->flags_arm_carry) {
+            (void)t2_expand_imm(0x20000000u, &imm); /* one byte, rotated: encodes */
+            t2_eor_imm(SETF_PSR, SETF_PSR, imm);
+        }
+        (void)t2_expand_imm(0xF0000000u, &imm);
+        t2_and_imm(SETF_PSR, SETF_PSR, imm);
+        t2_str_imm(SETF_PSR, T2_CPU, t->flags_offset);
+        return;
+    }
+
+    /*
      * Into the guest's flag word in place, a run of flags at a time:
      * read-modify-write, because the word holds more than these four
      * bits -- G4MH's PSW carries the interrupt-disable and privilege

@@ -67,6 +67,11 @@ static uint64_t g4mh_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
      * flags from whenever it was last refreshed.
      */
     if (n < G4MH_GDB_PC) {
+        if ((n - G4MH_GDB_SR_BASE) == G4MH_SR_PSW) {
+            /* with the flags translated code may hold apart (jit_flags);
+             * the run op packs them, so this is that copy, read-only */
+            return g4mh_flags_packed(c);
+        }
         return g4mh_sr_read(c, 0u, n - G4MH_GDB_SR_BASE);
     }
     if (n == G4MH_GDB_PC) {
@@ -94,6 +99,7 @@ static void g4mh_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
          */
         if ((n - G4MH_GDB_SR_BASE) == G4MH_SR_PSW) {
             c->psw = v;
+            c->jit_split = false; /* PSW is the copy: bind unpacks it */
         }
     } else if (n == G4MH_GDB_PC) {
         c->pc = v & ~1u; /* see g4mh_gdb_pc_set */

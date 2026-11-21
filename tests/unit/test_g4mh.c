@@ -2544,6 +2544,109 @@ static void test_step_is_one_instruction(void)
     CHECK_EQ(reg(14), 5u);
     g_force_backend = NULL;
 }
+
+/*
+ * The flags translated code keeps apart from PSW (jit_flags) are back in
+ * PSW when a run returns: the frontend's run op packs them. Every other
+ * test here ends at a HALT, which the interpreter runs after packing, so
+ * none could see that pack missing; this one stops on its budget in a
+ * translated loop, nothing interpreted after the compare.
+ *
+ *   mov 3, r10; mov 5, r11; cmp r11, r10 (3 - 5: S and CY); br .
+ */
+static void test_jit_flags_whole_after_a_budget_stop(void)
+{
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 3, 10), F2(OP_MOVI, 5, 11), F1(OP_CMP, 11, 10),
+        BCOND(0x5u, 0),
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_jit_stats_t before, after;
+        emu_run_reason_t why;
+        uint32_t retired = 0u;
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_jit : &g4mh_backend_interp;
+        emu_jit_get_stats(&before);
+        if (!load_and_run(prog, 4u, 5000u, &why, &retired)) {
+            CHECK(false);
+            break;
+        }
+        emu_jit_get_stats(&after);
+        const g4mh_cpu_t *const c = (const g4mh_cpu_t *)(const void *)g_core.cpu;
+
+        CHECK_EQ((uint32_t)why, (uint32_t)EMU_RUN_BUDGET);
+        CHECK_EQ(c->psw & G4MH_PSW_FLAGS, G4MH_PSW_S | G4MH_PSW_CY);
+        if (pass == 0u) { /* and it was translated code that set them */
+            CHECK(after.translations > before.translations);
+            CHECK_EQ(after.interp_fallbacks - before.interp_fallbacks, 0u);
+        }
+    }
+    g_force_backend = NULL;
+}
+
+/*
+ * After an exception raised from a translated block, the handler's own
+ * translated code sets the flags, and the HALT after it -- interpreted --
+ * must see them: the raise packs the flags for FEPSW and unpacks them
+ * after, or the handler's compare goes to a copy nothing reads again.
+ *
+ *   mov 3, r10; mov 5, r11; cmp r11, r10 (S, CY); ld.w 16[r6], r7 (MDP)
+ *   at 0x90, the MDP handler: cmp r10, r10 (Z); halt
+ */
+static void flags_raise_setup(void)
+{
+    ((g4mh_cpu_t *)(void *)g_core.cpu)->r[6] = 0x70000000u; /* unmapped */
+}
+
+static void test_jit_flags_across_a_raise(void)
+{
+    uint16_t prog[0x70];
+    static const unsigned slot[5] = {0x40u, 0x60u, 0x80u, 0xA0u, 0xC0u};
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = F2(OP_MOVI, 3, 10);
+    prog[1] = F2(OP_MOVI, 5, 11);
+    prog[2] = F1(OP_CMP, 11, 10);
+    prog[3] = 0x3F26u; /* ld.w 16[r6], r7 */
+    prog[4] = 0x0011u;
+    prog[5] = 0x07E0u;
+    prog[6] = SUB_HALT;
+    for (unsigned i = 0; i < 5u; i++) { /* every other handler halts */
+        prog[slot[i] / 2u] = 0x07E0u;
+        prog[slot[i] / 2u + 1u] = SUB_HALT;
+    }
+    prog[0x90u / 2u] = F1(OP_CMP, 10, 10);
+    prog[0x92u / 2u] = 0x07E0u;
+    prog[0x94u / 2u] = SUB_HALT;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_jit_stats_t before, after;
+        emu_run_reason_t why;
+        uint32_t retired = 0u;
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_jit : &g4mh_backend_interp;
+        g_pre_run = flags_raise_setup;
+        emu_jit_get_stats(&before);
+        if (!load_and_run(prog, 0x70u, 64u, &why, &retired)) {
+            CHECK(false);
+            break;
+        }
+        emu_jit_get_stats(&after);
+        const g4mh_cpu_t *const c = (const g4mh_cpu_t *)(const void *)g_core.cpu;
+
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC) & 0xFFFFu, G4MH_EXC_MDP);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_FLAGS, G4MH_PSW_S | G4MH_PSW_CY);
+        CHECK_EQ(c->psw & G4MH_PSW_FLAGS, G4MH_PSW_Z);
+        CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0x96u); /* parked past the HALT */
+        if (pass == 0u) { /* both compares translated: the HALT alone not */
+            CHECK(after.translations >= before.translations + 2u);
+            CHECK_EQ(after.interp_fallbacks - before.interp_fallbacks, 1u);
+        }
+    }
+    g_pre_run = NULL;
+    g_force_backend = NULL;
+}
 #endif
 
 /*
@@ -12073,6 +12176,8 @@ void test_g4mh(void)
 #if EMU_HAVE_JIT
     test_ir_backend_is_used();
     test_step_is_one_instruction();
+    test_jit_flags_whole_after_a_budget_stop();
+    test_jit_flags_across_a_raise();
 #endif
     test_system_registers();
     test_reserved_instruction();
