@@ -9,10 +9,12 @@
 #
 #   scripts/gdbtrace-f746.sh [BUILD] [gdbtrace options...]
 #
-# BUILD is a configured F746 build directory (default build/f746, as the
-# README's firmware recipe makes it); its ELF is loaded -- flashed -- when
-# gdbtrace connects, unless --no-load is given. Anything after BUILD goes
-# to gdbtrace: --no-load, --rtos, --script FILE --batch, ...
+# BUILD is an F746 build directory (default build/f746). It is brought up
+# to date first -- configured by the README's firmware recipe if it has
+# never been, built either way -- so the ELF loaded is this tree's, not a
+# stale one; and that ELF is flashed when gdbtrace connects, unless
+# --no-load is given. Anything after BUILD goes to gdbtrace: --no-load,
+# --rtos, --script FILE --batch, ...
 #
 # This debugs the *emulator*. To debug the guest, the firmware's own RSP
 # stub is the way (docs/gdb.md).
@@ -32,14 +34,27 @@ GT=$(CDPATH='' cd -- "$GT" 2>/dev/null && pwd) || {
     exit 2
 }
 
-BUILD=build/f746
+BUILD=$ROOT/build/f746
 case "${1:-}" in
 -*|"") ;;
 *) BUILD=$1; shift ;;
 esac
+if [ ! -f "$BUILD/CMakeCache.txt" ]; then
+    echo "gdbtrace-f746: configuring $BUILD (README.md, Firmware)"
+    cmake -S "$ROOT" -B "$BUILD" -DEMU_PLATFORM=stm32f746 \
+        -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/arm-none-eabi.cmake" >/dev/null || {
+        echo "gdbtrace-f746: configure failed: cmake -S $ROOT -B $BUILD -DEMU_PLATFORM=stm32f746 ..." >&2
+        exit 1
+    }
+fi
+echo "gdbtrace-f746: building $BUILD"
+cmake --build "$BUILD" -j >/dev/null || {
+    echo "gdbtrace-f746: build failed: cmake --build $BUILD" >&2
+    exit 1
+}
 ELF=$BUILD/src/platform/stm32f746/emu-stm32f746.elf
 [ -f "$ELF" ] || {
-    echo "gdbtrace-f746: no firmware at $ELF (README.md, Firmware)" >&2
+    echo "gdbtrace-f746: $BUILD built no $ELF -- is it an F746 build?" >&2
     exit 2
 }
 
