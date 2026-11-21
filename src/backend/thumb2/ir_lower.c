@@ -1388,7 +1388,36 @@ static void emit_map_op(uint8_t op, uint32_t imm, uint32_t rd, uint32_t rs, uint
     }
 }
 
-static bool have_mve(void);
+/*
+ * MVE (Helium), where the core has it -- the N6's Cortex-M55: 16 bytes an
+ * instruction where the DSP extension has 4, every element width for the
+ * multiply and the shifts, and the same tail window. Built where the
+ * compiler targets it, used where MVFR1 says the core implements it (read
+ * once; the M7's MVFR1 has 0 there). The unmasked single-width operations
+ * and the whole-group copies; the rest keeps the DSP lowering.
+ */
+#if defined(__ARM_FEATURE_MVE)
+#define T2_HAVE_MVE 1
+#else
+#define T2_HAVE_MVE 0
+#endif
+
+#if T2_HAVE_MVE
+static bool have_mve(void)
+{
+    static int8_t s_mve = -1;
+
+    if (s_mve < 0) {
+        s_mve = (int8_t)((((*(volatile const uint32_t *)0xE000EF44u) >> 8) & 0xFu) != 0u);
+    }
+    return s_mve > 0;
+}
+#else
+static bool have_mve(void)
+{
+    return false;
+}
+#endif
 
 static int emit_dot_inline(uint32_t index)
 {
@@ -2023,36 +2052,6 @@ static bool vop_lowerable(uint8_t aux)
     }
 }
 
-/*
- * MVE (Helium), where the core has it -- the N6's Cortex-M55: 16 bytes an
- * instruction where the DSP extension has 4, every element width for the
- * multiply and the shifts, and the same tail window. Built where the
- * compiler targets it, used where MVFR1 says the core implements it (read
- * once; the M7's MVFR1 has 0 there). The unmasked single-width operations
- * and the whole-group copies; the rest keeps the DSP lowering.
- */
-#if defined(__ARM_FEATURE_MVE)
-#define T2_HAVE_MVE 1
-#else
-#define T2_HAVE_MVE 0
-#endif
-
-#if T2_HAVE_MVE
-static bool have_mve(void)
-{
-    static int8_t s_mve = -1;
-
-    if (s_mve < 0) {
-        s_mve = (int8_t)((((*(volatile const uint32_t *)0xE000EF44u) >> 8) & 0xFu) != 0u);
-    }
-    return s_mve > 0;
-}
-#else
-static bool have_mve(void)
-{
-    return false;
-}
-#endif
 
 /* The unmasked operations MVE lowers; the averages under rnu and rdn. */
 static bool vop_mve(uint32_t op, uint32_t sew, uint32_t rm)
