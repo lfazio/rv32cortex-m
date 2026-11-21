@@ -60,6 +60,23 @@ typedef struct g4mh_cpu {
     uint32_t psw;
 
     /*
+     * Z, S, OV and CY while translated code runs, in the APSR's places
+     * (S 31, Z 30, CY 29, OV 28) and nothing else, so a Thumb-2 SETF is
+     * SUBS, MRS, an EOR for the borrow, an AND and one store
+     * (emu_ir_target_t::flags_alone) where it was a read-modify-write of
+     * PSW, which holds the mode and the interrupt state the flags must
+     * not touch. `jit_split` says which copy is current: set, this is and
+     * PSW's four bits are stale; clear, PSW is. Every path from
+     * translated code into C that reads or writes the flags packs first
+     * and unpacks after -- g4mh_flags_pack -- and the interpreter never
+     * sees the split form. ARMv7-M's jit_nzcv is the same design.
+     *
+     * Right after psw: emu_ir_frontend_t::diff_state_bytes covers both.
+     */
+    uint32_t jit_flags;
+    bool jit_split;
+
+    /*
      * The system register file, as banks of 32 indexed by selID. Held as a
      * plain array rather than as named fields because LDSR and STSR name
      * registers by number, so every access would otherwise be a switch;
@@ -274,6 +291,46 @@ static inline void g4mh_jit_gen_bump(void)
 }
 
 /* Recompute the JIT's context from PSW and the PE; see jit_ctx. */
+/*
+ * The flags, from the split form translated code keeps into PSW, and
+ * back (see jit_flags). Both are no-ops when the form they would produce
+ * is already the current one, so a caller need not know which it is.
+ */
+static inline uint32_t g4mh_flags_packed(const g4mh_cpu_t *c)
+{
+    const uint32_t f = c->jit_flags;
+
+    if (!c->jit_split) {
+        return c->psw;
+    }
+    return (c->psw & ~G4MH_PSW_FLAGS) | (((f >> 30) & 1u) ? G4MH_PSW_Z : 0u) |
+           (((f >> 31) & 1u) ? G4MH_PSW_S : 0u) |
+           (((f >> 28) & 1u) ? G4MH_PSW_OV : 0u) |
+           (((f >> 29) & 1u) ? G4MH_PSW_CY : 0u);
+}
+
+static inline void g4mh_flags_pack(g4mh_cpu_t *c)
+{
+    if (c->jit_split) {
+        c->psw = g4mh_flags_packed(c);
+        c->jit_split = false;
+    }
+}
+
+static inline void g4mh_flags_unpack(g4mh_cpu_t *c)
+{
+    if (!c->jit_split) {
+        const uint32_t p = c->psw;
+
+        /* nothing outside the four, ever: flags_alone is a promise */
+        c->jit_flags = ((p & G4MH_PSW_Z) ? (1u << 30) : 0u) |
+                       ((p & G4MH_PSW_S) ? (1u << 31) : 0u) |
+                       ((p & G4MH_PSW_OV) ? (1u << 28) : 0u) |
+                       ((p & G4MH_PSW_CY) ? (1u << 29) : 0u);
+        c->jit_split = true;
+    }
+}
+
 static inline void g4mh_jit_ctx_refresh(g4mh_cpu_t *c)
 {
     c->jit_ctx = ((c->psw & G4MH_PSW_UM) != 0u) ? 1u : 0u;

@@ -356,53 +356,65 @@ needed them in the test. fuzz-g4mh-jit, five minutes twice, no
 divergence, and it finds a LOOP without its flags and a swapped
 extension in seconds.
 
-### The flags split from the PSW: a design (2026-11-21)
+### The flags apart from the PSW (2026-11-21)
 
-**What it costs now.** A flag-setting G4MH instruction whose flags are
-live -- at a block's exit nearly always (87% of the SETFs the dead-flag
-pass leaves in CoreMark, counted on the host) -- is a SETF: the
-operation recomputed with ADDS or SUBS, MRS, the PSW loaded, Z,S and
-OV,CY moved in with two UBFX/BFI pairs (an EOR for a subtract's borrow),
-and the PSW stored. About eight instructions; with the PSW's loads,
-more than a quarter of G4MH CoreMark's translated time on the F746
+**What it cost.** A flag-setting instruction whose flags are live -- at
+a block's exit nearly always (87% of the SETFs the dead-flag pass
+leaves in CoreMark, counted on the host) -- was a SETF: the operation
+recomputed with ADDS or SUBS, MRS, the PSW loaded, Z,S and OV,CY moved
+in with two UBFX/BFI pairs (an EOR for a subtract's borrow), and the PSW
+stored. About eight instructions; with the PSW's loads, more than a
+quarter of CoreMark's translated time on the F746
 ([../backend/thumb2.md](../backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)).
-The read-modify-write is there because the PSW holds the interrupt
-disable, the mode and the rest, which the flags must not touch.
+The read-modify-write was there because the PSW holds the interrupt
+disable and the mode, which the flags must not touch.
 
-**The design.** What ARMv7-M does with xPSR
-([armv7m.md](armv7m.md#the-jit), `jit_nzcv`): while translated code
-runs, Z, S, OV and CY live in a word of their own, `jit_flags`, in the
-APSR's layout and holding nothing else, and the PSW's four bits are
-stale. Two parts:
+**What it is now** -- ARMv7-M's design for xPSR
+([armv7m.md](armv7m.md#the-jit)), in two parts:
 
-- **A, for both ISAs: SETF without the read-modify-write.** A target
+- **SETF without the read-modify-write, for both ISAs.** A target
   property, `flags_alone`, says the flag word holds the four flags and
-  nothing else. Where all four are live, Thumb-2's SETF is then SUBS,
-  MRS, an EOR for G4MH's borrow, an AND with 0xF0000000 and the store:
-  four or five instructions. ARMv7-M's `jit_nzcv` has the property
-  already, so A is measurable alone.
-- **B, G4MH's flags out of the PSW.** `g4mh_flags_pack` and `_unpack`,
-  with a `jit_split` saying which copy is current, at each crossing
-  between translated code and C. That's ARMv7-M's list: `bind` (unpack), the
-  interpreter fallback (pack in, `after_interp` unpacks), interrupt
-  entry (EIPSW saves the PSW), the helpers that read or write the PSW,
-  the run wrapper's exit, gdb, and the fuzz harness's compare (the PSW
-  packed, as `diff_state_bytes` covers it). SAT stays in the PSW, set
-  by the saturating operations outside SETF.
+  nothing else. Where all four are live, Thumb-2's SETF is SUBS, MRS, an
+  EOR for a borrow, an AND with 0xF0000000 and the store. ARMv7-M's
+  `jit_nzcv` had the property already: its CoreMark on the F746
+  **6.1% faster** at both layouts (11.19 to 10.51).
+- **G4MH's flags out of the PSW.** While translated code runs, Z, S, OV
+  and CY live in `jit_flags`, in the APSR's places and nothing else, and
+  `jit_split` says which copy is current. `g4mh_flags_pack` and
+  `_unpack` sit at each crossing between translated code and C: `bind`
+  unpacks; the interpreter fallback packs (`g4mh_interp_for_jit`) and
+  `after_interp` unpacks; `ir_raise` packs for FEPSW/EIPSW and unpacks
+  after; interrupt entry likewise; the helpers that compute flags (ADF,
+  the bit operations, the FPU's -- TRFSR writes Z) pack and unpack
+  around the C; the run and step wrappers pack on the way out; gdb reads
+  a packed view, and a PSW written by gdb or a reset clears `jit_split`.
+  SAT stays in the PSW: the saturating forms are declined. The 48-bit
+  FXU forms read PSW's CU1 alone and need nothing.
 
-**What it should be worth**, by the profile: the PSW's load and both
-UBFX/BFI pairs gone from every SETF. That's three to four of eight
-instructions, so perhaps 10% of G4MH's translated time and 5% of its
-CoreMark, which the board decides. **Risks**, from ARMv7-M's: a
-crossing left unpacked, which reads stale flags in C. The interrupt
-path is the one a JIT test reaches least (`test_g4mh`'s EI cases, and
-fuzz-g4mh-jit's interrupts, which take one between blocks). And the
-read-modify-write is still needed where only some flags are live.
+| F746, CoreMark under the JIT | before | after | |
+|---|---|---|---|
+| G4MH, pad 0 / 64 | 14.21 / 14.20 | 12.57 / 12.60 | **-11.54% / -11.27%** |
+| ARMv7-M, pad 0 / 64 | 11.12 / 11.05 | 10.33 / 10.32 | **-7.10% / -6.61%** |
+| RV32, PowerPC | | | 0.00 to -0.28%: layout |
 
-**How it is checked**: fuzz-g4mh-jit and fuzz-ir (a `flags_alone`
-target), mutants of each crossing (a pack removed is a stale PSW), the
-CC-RH JIT test, the G4MH guests on the F746, and CoreMark at two
-layouts.
+The estimate was about 5%; the PSW's loads were a larger part of the
+translated time than the SETFs' own instructions.
+
+**How it is checked.** Every crossing was removed in turn
+(`unit-mutant.sh`, `fuzz-mutant.sh`), and each is caught by a test
+written for it or by a fuzzer:
+`test_jit_flags_whole_after_a_budget_stop` (the run wrapper: every
+other test ends at an interpreted HALT, which packs first),
+`test_jit_flags_across_a_raise` (FEPSW, and a handler's own flags),
+`test_jit_flags_across_a_bitop_helper` (the MPU's path: SET1's Z must
+reach translated code and CY survive it), fuzz-g4mh-jit and -mpu for the
+ADF, FPU, interrupt and raise crossings. Two are not, by construction:
+FE-level interrupt entry (FEINT and FENMI come from timers and pins,
+between slices, where the PSW is current) and the step wrapper (a step
+is interpreted). On the F746 the fuzz-ir corpus, 19,188 inputs through
+the Thumb-2 lowering, none different; the G4MH guest and both ARMv7-M
+guests print the same with the same retired counts, and `mmiobench`
+differs only in its timings.
 
 ## The peripheral window
 

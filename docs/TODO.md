@@ -63,11 +63,10 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       the OR into xPSR, the overflow tracked in the C kernel and the
       emitted loop (SMLABB with Q cleared before, read after), and a
       fuzz-ir generator; Helium's `VMLADAVA` on the N6.
-- [ ] **G4MH's flags** ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
-      SETF is about 27% of its translated time, and 87% of the SETFs left
-      after the dead-flag pass are there for the block's exit, not for a
-      load that might fault. Only flags kept as operands and derived when
-      read would remove them.
+- [ ] **G4MH's arithmetic after the flags**: with SETF a store, profile
+      G4MH CoreMark's translated time by host mnemonic again
+      ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh))
+      and take what is largest.
 - [ ] **PowerPC's arithmetic, what is left**: a `cmpw`'s summary
       overflow from XER (3 of its instructions), and byte swaps for a
       big-endian guest in little-endian RAM, about 10% of its translated
