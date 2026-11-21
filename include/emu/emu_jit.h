@@ -233,6 +233,7 @@ typedef struct emu_jit_stats {
     uint32_t thrashed;
     uint32_t thrash_cached;
     uint32_t thrash_retries;
+    uint32_t thrash_undone; /* EXPERIMENT: trials undone */
     /*
      * Blocks retired by emu_jit_invalidate_page rather than by a flush.
      * Beside `flushes` for the same reason `cached` sits beside

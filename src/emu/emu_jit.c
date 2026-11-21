@@ -738,6 +738,22 @@ static uint32_t g_thrash_evictions = EMU_JIT_THRASH_EVICTIONS;
  * forgotten. */
 static EMU_PER_CORE uint32_t g_thrash_interps;
 
+#if defined(JIT_RETRY_KEEP) && JIT_RETRY_KEEP
+static EMU_PER_CORE uint64_t g_done_total; /* instructions emu_jit_run ran */
+static EMU_PER_CORE uint64_t g_period_xlat64; /* the clock at the period's start */
+static EMU_PER_CORE uint64_t g_cyc_total;
+static EMU_PER_CORE uint32_t g_cyc_last;
+static EMU_PER_CORE bool g_trial;
+static EMU_PER_CORE uint64_t g_settled_cost; /* cycles * 1024 / instruction */
+#define JIT_KEPT 64u
+static EMU_PER_CORE struct {
+    uint32_t pc, context;
+} g_kept[JIT_KEPT];
+static EMU_PER_CORE uint32_t g_nkept;
+static EMU_PER_CORE uint64_t g_period_done;
+static EMU_PER_CORE uint32_t g_retry_at = EMU_JIT_THRASH_RETRY;
+#endif
+
 /* Marks this compaction may still make: EMU_JIT_THRASH_MARKS each. */
 static EMU_PER_CORE uint32_t g_thrash_marks_left;
 
@@ -918,6 +934,11 @@ void emu_jit_flush(void)
     ibtc_reset();
     g_stats.flushes++;
     neg_invalidate();
+#if defined(JIT_RETRY_KEEP) && JIT_RETRY_KEEP
+    g_trial = false; /* a new program: nothing to compare with */
+    g_nkept = 0u;
+    g_retry_at = EMU_JIT_THRASH_RETRY;
+#endif
 }
 
 void emu_jit_flush_all(void)
@@ -1909,6 +1930,76 @@ static EMU_NOINLINE emu_run_reason_t interp_to_jump(emu_cpu_t *cpu,
     return r;
 }
 
+#if defined(JIT_RETRY_KEEP) && JIT_RETRY_KEEP
+/*
+ * EXPERIMENT: a retry that keeps the better of two mark sets. Each retry
+ * compares the period just ended -- translations per instruction -- with
+ * the one before; worse by more than an eighth, it puts back the marks it
+ * forgot last time instead of forgetting these, and waits twice as long
+ * before the next; otherwise it saves these as the set to return to.
+ */
+/* the time-based hill climb's clock: the TSC, or CYCCNT accumulated */
+
+static uint64_t retry_clock(void)
+{
+#if defined(__x86_64__)
+    return __builtin_ia32_rdtsc();
+#elif defined(__ARM_ARCH_7EM__)
+    const uint32_t n = *(volatile uint32_t *)0xE0001004u; /* DWT CYCCNT */
+
+    g_cyc_total += (uint32_t)(n - g_cyc_last);
+    g_cyc_last = n;
+    return g_cyc_total;
+#else
+    return 0u;
+#endif
+}
+
+static void keep_marks(void)
+{
+    g_nkept = 0u;
+    for (uint32_t s = 0u; s < JIT_NEG_SIZE && g_nkept < JIT_KEPT; s++) {
+        if ((g_neg[s].tag >> 8) == g_neg_epoch && (g_neg[s].tag & 0xFFu) == JIT_SEEN_THRASH) {
+            g_kept[g_nkept].pc = g_neg[s].pc;
+            g_kept[g_nkept].context = g_neg[s].context;
+            g_nkept++;
+        }
+    }
+}
+
+static EMU_NOINLINE void thrash_retry(uint64_t insns)
+{
+    const uint64_t now = retry_clock();
+    const uint64_t d = insns - g_period_done;
+    const uint64_t cost = (d != 0u) ? ((now - g_period_xlat64) << 10) / d : 0u;
+
+    if (g_trial) {
+        g_trial = false;
+        if (cost * 8u > g_settled_cost * 9u) { /* worse by an eighth: undo */
+            neg_invalidate();
+            for (uint32_t i = 0u; i < g_nkept; i++) {
+                const uint32_t s = neg_slot(g_kept[i].pc, g_kept[i].context);
+
+                seen_set(s, g_kept[i].pc, g_kept[i].context, JIT_SEEN_THRASH);
+            }
+            if (g_retry_at <= (EMU_JIT_THRASH_RETRY << 6)) {
+                g_retry_at *= 2u;
+            }
+            g_stats.thrash_undone++;
+        } else {
+            g_retry_at = EMU_JIT_THRASH_RETRY; /* kept: the new marks stay */
+        }
+    } else {
+        g_settled_cost = cost;
+        keep_marks();
+        neg_invalidate();
+        g_trial = true; /* a trial is the base length */
+    }
+    g_period_done = insns;
+    g_period_xlat64 = now;
+}
+#endif
+
 static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
                                            const emu_jit_ops_t *ops,
                                            const uint32_t *pcp, uint32_t *done,
@@ -1921,11 +2012,19 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
      * again. All the marks go together, by the epoch, as a flush takes
      * them.
      */
+#if defined(JIT_RETRY_KEEP) && JIT_RETRY_KEEP
+    if (++g_thrash_interps >= (g_trial ? EMU_JIT_THRASH_RETRY : g_retry_at)) {
+        g_thrash_interps = 0u;
+        g_stats.thrash_retries++;
+        thrash_retry(g_done_total + *done);
+    }
+#else
     if (++g_thrash_interps >= EMU_JIT_THRASH_RETRY) {
         g_thrash_interps = 0u;
         g_stats.thrash_retries++;
         neg_invalidate();
     }
+#endif
     return interp_to_jump(cpu, ops, pcp, done, budget, slot);
 }
 
@@ -2253,6 +2352,10 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     /* Counted by the stub, where a stats struct is out of reach. */
     g_stats.ibtc_hits += emu_jit_ibtc_state.hits;
     emu_jit_ibtc_state.hits = 0u;
+#if defined(JIT_RETRY_KEEP) && JIT_RETRY_KEEP
+    g_done_total += done;
+    (void)retry_clock(); /* CYCCNT accumulated once a slice: wrap-correct */
+#endif
 
     if (retired != NULL) {
         *retired = done;
