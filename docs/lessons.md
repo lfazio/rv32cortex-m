@@ -5372,6 +5372,23 @@ session, and every one of them recurred:
   the docs was real. **Link each board's matrix rows, not the
   configuration a measurement used.**
 
+- **A limit fixed twice by hand is a limit waiting for its third.** The
+  console formats into 192 bytes and vsnprintf cuts the rest in
+  silence. The banner was cut once the ISA string grew, the `-- ir --`
+  report once it grew three counters; each time the call was split and
+  the limit stayed a thing to remember. The third was the JIT
+  statistics' interp, declined and blk entr lines, one call: a CoreMark
+  x2000 run at 32 KB reached 129,471,838 interpreted instructions, the
+  call 192 characters, and its last newline went -- the thrash line
+  printed on the end of the blk entr line, where a grep for `^  thrash`
+  found nothing and read as a run that never thrashed. That was nearly
+  the conclusion of an experiment. The console now ends a cut line with
+  `[cut]`, and `scripts/check-console-width.py` (ctest `console-width`)
+  computes each literal format's widest output -- ten characters a
+  `%u` -- against the buffer's size read from `emu_console.c`; it found
+  a second call that could reach 195. **When a limit has been hit
+  twice, compute it, and make the third time loud.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

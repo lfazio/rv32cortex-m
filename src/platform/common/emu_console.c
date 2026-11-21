@@ -13,6 +13,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 /*
  * One byte out, and one in. **The only place that knows where the
@@ -83,18 +84,27 @@ const char *emu_u64_str(char *buf, unsigned long long v)
 void emu_console_printf(const char *fmt, ...)
 {
     /*
-     * 192 bytes: the longest thing printed through here is a stats line,
-     * and a fixed buffer makes the worst case visible rather than
-     * depending on what a caller happens to pass. It is on the stack
-     * because this is called from the run loop and from fatal paths, and
-     * a static would make two of those reentrant against each other.
+     * 192 bytes, on the stack because this is called from the run loop
+     * and from fatal paths, and a static would make two of those
+     * reentrant against each other. A fixed buffer does not make the
+     * worst case visible by itself: vsnprintf cut the JIT statistics'
+     * last newline in silence, and the next line read as part of it.
+     * So a cut says so, and ends its line; and
+     * scripts/check-console-width.py (a ctest) holds every literal
+     * format's widest output to this size.
      */
     char buf[192];
     va_list ap;
+    int n;
 
     va_start(ap, fmt);
-    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
+    n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        static const char cut[] = "[cut]\n";
+
+        memcpy(buf + sizeof(buf) - sizeof(cut), cut, sizeof(cut));
+    }
     emu_console_puts(buf);
 }
 

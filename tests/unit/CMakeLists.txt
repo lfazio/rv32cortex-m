@@ -570,6 +570,13 @@ if(Python3_FOUND)
              COMMAND ${Python3_EXECUTABLE}
                      ${CMAKE_SOURCE_DIR}/scripts/sm4-affine.py --check)
     set_tests_properties(sm4-affine PROPERTIES LABELS "fast")
+    # Every console format's widest output fits the console's buffer:
+    # vsnprintf cuts the rest, its last newline with it.
+    add_test(NAME console-width
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_SOURCE_DIR}/scripts/check-console-width.py)
+    set_tests_properties(console-width PROPERTIES LABELS "fast"
+        PASS_REGULAR_EXPRESSION ", 0 over [0-9]+")
 endif()
 
 #

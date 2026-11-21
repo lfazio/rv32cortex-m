@@ -118,16 +118,22 @@ bool emu_print_jit_stats(void)
      * looks like -- and a cache that never hits is indistinguishable
      * from one that does not pay unless both are printed.
      */
-    emu_console_printf("  interp   %u instructions fell back (cold %u)\n"
-                       "  declined %u (cached %u) overflow %u\n"
-                       "  blk entr %u  links %u (missed %u, no slot %u)  "
-                       "entry stops %u  ibtc %u\n",
-                       (unsigned)js.interp_fallbacks, (unsigned)js.cold,
+    /*
+     * A line a call: the console's buffer holds 191 characters, and these
+     * three were one call until a long run's counts cut its last newline
+     * and glued the thrash line onto the blk entr line
+     * (scripts/check-console-width.py).
+     */
+    emu_console_printf("  interp   %u instructions fell back (cold %u)\n",
+                       (unsigned)js.interp_fallbacks, (unsigned)js.cold);
+    emu_console_printf("  declined %u (cached %u) overflow %u\n",
                        (unsigned)js.declined, (unsigned)js.declined_cached,
-                       (unsigned)js.overflowed, (unsigned)js.block_entries,
-                       (unsigned)js.links, (unsigned)js.link_missed,
-                       (unsigned)js.no_chain_slot, (unsigned)js.entry_stops,
-                       (unsigned)js.ibtc_hits);
+                       (unsigned)js.overflowed);
+    emu_console_printf("  blk entr %u  links %u (missed %u, no slot %u)  "
+                       "entry stops %u  ibtc %u\n",
+                       (unsigned)js.block_entries, (unsigned)js.links,
+                       (unsigned)js.link_missed, (unsigned)js.no_chain_slot,
+                       (unsigned)js.entry_stops, (unsigned)js.ibtc_hits);
     /*
      * The thrash fallback, beside the same counts for a declined pc: a
      * hot set larger than the buffer shows as pcs given up on and their

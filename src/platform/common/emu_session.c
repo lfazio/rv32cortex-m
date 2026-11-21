@@ -517,11 +517,12 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
         if (tot.span != 0u) {
             emu_console_printf(
                 "  overlap      %u of %u blocks share guest code with a "
-                "resident one, %u began inside one;\n"
-                "               %u of %u guest bytes, about %u host bytes\n",
+                "resident one, %u began inside one;\n",
                 (unsigned)tot.overlapped, (unsigned)tot.spanned,
-                (unsigned)tot.partway, (unsigned)tot.dup, (unsigned)tot.span,
-                (unsigned)tot.dup_code);
+                (unsigned)tot.partway);
+            emu_console_printf(
+                "               %u of %u guest bytes, about %u host bytes\n",
+                (unsigned)tot.dup, (unsigned)tot.span, (unsigned)tot.dup_code);
         }
     }
 #endif

@@ -83,6 +83,7 @@ What belongs here is only what the recipes do not say:
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
 ./scripts/report-figures.sh     # figures, with the cache vars that set them
 ./scripts/check-doc-flags.sh    # every -D flag in the docs exists
+./scripts/check-console-width.py # every console format fits its buffer
 ./scripts/run-probe.py PROBE.S  # emulator vs Sail and Spike, for what no
                                 # suite covers; scripts/fetch-spike.sh first
 ./scripts/gdb-check.sh BUILD    # a real gdb against each frontend's stub
@@ -947,8 +948,12 @@ sixteen defects the first time anything fuzzed them.
   (`emu_bus_add` took a region past 4 GB for one ending below its base).
 - **A buffer sized for the configuration a test had** is too small for
   the one that ships (the console's 192 bytes cut the banner once the
-  ISA string grew by the crypto extensions, and then the `-- ir --`
-  report, one format string, once it grew three counters): `qSupported` fitted test_gdb's (no description)
+  ISA string grew by the crypto extensions, then the `-- ir --`
+  report, one format string, once it grew three counters, and then the
+  JIT statistics once a long run's counts reached ten digits -- the
+  thrash line read as part of the one before; a cut says `[cut]` now,
+  and `console-width` computes every format's widest): `qSupported`
+  fitted test_gdb's (no description)
   and gdb-check's (no flash), and every board, which has both, wrote 12
   bytes past it.
 - **Two clients of one resource need an owner**: TFTP and gdb shared
