@@ -955,6 +955,43 @@ void t2_vstr_narrow(uint32_t sew, uint32_t qd, uint32_t rn, uint32_t off)
     }
 }
 
+/*
+ * The Helium dot product's five (emit_dot_inline), each held to the
+ * assembler by t2-check-encodings: VLDRH.16 Qd, [Rn, #off] (eight
+ * halfwords, off even and below 256); the gather VLDRH.U16 Qd, [Rn, Qm]
+ * (eight halfwords at Rn plus each lane's unsigned 16-bit byte offset);
+ * VIDUP.U16 Qd, Rn, #imm (Rn + i * imm; Rn even, imm 1, 2, 4 or 8, and
+ * Rn written back); VMUL.I16 Qd, Qn, Rm; VMLAVA.S16 Rda, Qn, Qm (Rda +=
+ * the eight products' sum, modulo 2^32; Rda even).
+ */
+void t2_vldrh16(uint32_t qd, uint32_t rn, uint32_t off)
+{
+    t2_emit32((uint16_t)(0xED90u | rn), (uint16_t)((qd << 13) | 0x1E80u | ((off >> 1) & 0x7Fu)));
+}
+
+void t2_vldrh16_gather(uint32_t qd, uint32_t rn, uint32_t qm)
+{
+    t2_emit32((uint16_t)(0xFC90u | rn), (uint16_t)((qd << 13) | 0x0E90u | (qm << 1)));
+}
+
+void t2_vidup16(uint32_t qd, uint32_t rn, uint32_t imm)
+{
+    const uint32_t c = (imm == 8u) ? 3u : (imm == 4u) ? 2u : (imm == 2u) ? 1u : 0u;
+
+    t2_emit32((uint16_t)(0xEE11u | (rn & 0xEu)),
+              (uint16_t)((qd << 13) | 0x0F6Eu | ((c >> 1) << 7) | (c & 1u)));
+}
+
+void t2_vmul16_scalar(uint32_t qd, uint32_t qn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xEE11u | (qn << 1)), (uint16_t)((qd << 13) | 0x1E60u | rm));
+}
+
+void t2_vmlava16(uint32_t rda, uint32_t qn, uint32_t qm)
+{
+    t2_emit32((uint16_t)(0xEEF0u | (qn << 1)), (uint16_t)(((rda >> 1) << 13) | 0x0E20u | (qm << 1)));
+}
+
 /* VCMP.I<size> NE, Qn, Qm: P0's bytes set where the lanes differ. */
 void t2_vcmp_ne(uint32_t sew, uint32_t qn, uint32_t qm)
 {

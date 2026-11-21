@@ -243,6 +243,23 @@ vrshl.s32 q0, q0, q1
 vrshl.u16 q2, q3, q1
 vcmp.i32  ne, q0, q1
 vcmp.i16  ne, q2, q3
+vldrh.u16 q0, [r3, #0]
+vldrh.u16 q3, [r7, #8]
+vldrh.u16 q7, [r12, #254]
+vldrh.u16 q1, [r12, q2]
+vldrh.u16 q5, [r2, q6]
+vldrh.u16 q0, [lr, q1]
+vidup.u16 q2, r0, #1
+vidup.u16 q1, r4, #2
+vidup.u16 q6, r10, #8
+vidup.u16 q0, r2, #4
+vmul.i16  q2, q2, r1
+vmul.i16  q1, q3, r12
+vmul.i16  q7, q0, lr
+vmlava.s16 r0, q0, q1
+vmlava.s16 r2, q3, q4
+vmlava.s16 r12, q7, q0
+vmlava.s16 r6, q1, q2
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -543,6 +560,23 @@ int main(void)
     t2_mve3(T2_MVE_VRSHL_HI | T2_MVE_U | T2_MVE_SZ(1), T2_MVE_VRSHL_LO, 2u, 1u, 3u);
     t2_vcmp_ne(2u, 0u, 1u);
     t2_vcmp_ne(1u, 2u, 3u);
+    t2_vldrh16(0u, 3u, 0u);
+    t2_vldrh16(3u, 7u, 8u);
+    t2_vldrh16(7u, 12u, 254u);
+    t2_vldrh16_gather(1u, 12u, 2u);
+    t2_vldrh16_gather(5u, 2u, 6u);
+    t2_vldrh16_gather(0u, 14u, 1u);
+    t2_vidup16(2u, 0u, 1u);
+    t2_vidup16(1u, 4u, 2u);
+    t2_vidup16(6u, 10u, 8u);
+    t2_vidup16(0u, 2u, 4u);
+    t2_vmul16_scalar(2u, 2u, 1u);
+    t2_vmul16_scalar(1u, 3u, 12u);
+    t2_vmul16_scalar(7u, 0u, 14u);
+    t2_vmlava16(0u, 0u, 1u);
+    t2_vmlava16(2u, 3u, 4u);
+    t2_vmlava16(12u, 7u, 0u);
+    t2_vmlava16(6u, 1u, 2u);
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);
     }
