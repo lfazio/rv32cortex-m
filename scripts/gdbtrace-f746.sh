@@ -11,10 +11,21 @@
 #
 # BUILD is an F746 build directory (default build/f746). It is brought up
 # to date first -- configured by the README's firmware recipe if it has
-# never been, built either way -- so the ELF loaded is this tree's, not a
-# stale one; and that ELF is flashed when gdbtrace connects, unless
-# --no-load is given. Anything after BUILD goes to gdbtrace: --no-load,
-# --rtos, --script FILE --batch, ...
+# never been, built either way -- so the ELF is this tree's, not a stale
+# one; and gdbtrace programs it when it connects (--program: reset,
+# write, verify, reset, the core stopped at the reset vector). Anything
+# after BUILD goes to gdbtrace:
+#
+#   --no-load          attach to the firmware already there, programming
+#                      nothing
+#   --go               run it once programmed
+#   --batch            no window: with --script FILE, run the script;
+#                      without, program and quit -- a flasher, rc 1 if the
+#                      verification fails (with --go, left running)
+#   --rtos, --swo-config, ...
+#
+# In the window, after rebuilding (cmake --build build/f746), Ctrl+R
+# reprograms the same ELF without leaving the session.
 #
 # This debugs the *emulator*. To debug the guest, the firmware's own RSP
 # stub is the way (docs/gdb.md).
@@ -83,9 +94,17 @@ fi
 export STLINK_SERIAL
 
 ELF=$(CDPATH='' cd -- "$(dirname -- "$ELF")" && pwd)/$(basename -- "$ELF")
+
+# Programmed and verified at connection, unless the caller attaches with
+# --no-load to what is already running.
+PROGRAM="--program"
+for a in "$@"; do
+    case $a in --no-load) PROGRAM= ;; esac
+done
+
 mkdir -p "$ROOT/build"
 export PYTHONPATH="$GT${PYTHONPATH:+:$PYTHONPATH}"
-# shellcheck disable=SC2086 # SVD_ARG is empty or two words
-exec "$PY" -m gdbtrace "$ELF" \
+# shellcheck disable=SC2086 # SVD_ARG and PROGRAM are empty or words
+exec "$PY" -m gdbtrace $PROGRAM "$ELF" \
     --openocd "$GT/configs/nucleo-f746zg.cfg" $SVD_ARG \
     --cpu-hz 216000000 --layout "$ROOT/build/gdbtrace-layout.json" "$@"

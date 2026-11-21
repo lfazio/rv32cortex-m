@@ -585,12 +585,15 @@ debugger on gdb, checked out beside this tree: run-control, the
 STM32F746's peripherals decoded from ST's SVD (STM32CubeIDE's, found
 where it installs), FreeRTOS's tasks, and memory read while the
 firmware runs. It configures and builds `build/f746` if needed -- and
-rebuilds it anyway, so what it loads is this tree's -- then loads the
-ELF, attaching under reset; `EMU_PROBE` picks the board's ST-LINK, and
-gdbtrace's options follow (`--no-load`, `--script F --batch`):
+rebuilds it anyway, so what it programs is this tree's -- then programs
+and verifies the ELF, attaching under reset, and stops at the reset
+vector; after a rebuild, Ctrl+R in the window programs it again.
+`EMU_PROBE` picks the board's ST-LINK, and gdbtrace's options follow:
 
 ```sh
-scripts/gdbtrace-f746.sh            # or: scripts/gdbtrace-f746.sh BUILD [options]
+scripts/gdbtrace-f746.sh                  # program, verify, debug
+scripts/gdbtrace-f746.sh --no-load        # attach to what is running
+scripts/gdbtrace-f746.sh --batch --go     # a flasher: program, verify, run, quit
 ```
 
 That debugs the *emulator*. To debug the **guest**, use the built-in RSP
