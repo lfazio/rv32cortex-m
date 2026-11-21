@@ -2333,6 +2333,18 @@ static bool setf_wants(const emu_ir_insn_t *in, const emu_ir_target_t *t,
     return (in->live & (1u << f)) != 0u && t->flag_bit[f] != 0u;
 }
 
+/*
+ * The SETF whose ADD or SUB the instruction before it already computed
+ * flag-setting (ADDS, SUBS): set by the body loop, which sees both, and
+ * taken by emit_setf, which then reads the APSR as that left it instead
+ * of recomputing the operation -- one instruction a SETF, which with the
+ * MRS, the mask and the store had been the most of G4MH's translated
+ * time once its flags had a word of their own. Nothing emitted between
+ * the two writes the flags: the result's slot store and a literal pool's
+ * branch do not.
+ */
+static EMU_PER_CORE const emu_ir_insn_t *g_setf_fused;
+
 static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const emu_ir_flagsrc_t src = (emu_ir_flagsrc_t)in->aux;
@@ -2353,8 +2365,13 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * which the sequence writes -- r1 or allocated -- and `a` may be r0,
      * its scratch, because nothing reads it after the ADDS.
      */
-    const uint32_t ra = use_reg(in->a, SETF_A);
-    const uint32_t rb = (arith || src == EMU_IR_FS_SHIFT) ? use_reg(in->b, SETF_B) : SETF_B;
+    const bool fused = g_setf_fused == in;
+
+    g_setf_fused = NULL;
+    /* fused: the operands are not read again, and use_reg may emit a MOVS */
+    const uint32_t ra = fused ? SETF_A : use_reg(in->a, SETF_A);
+    const uint32_t rb =
+        (!fused && (arith || src == EMU_IR_FS_SHIFT)) ? use_reg(in->b, SETF_B) : SETF_B;
 
     /*
      * The IR hands over the *operands* for ADD and SUB -- carry and
@@ -2365,7 +2382,9 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * MRS immediately after, with nothing between that could disturb
      * what was just set.
      */
-    if (src == EMU_IR_FS_ADD) {
+    if (fused) {
+        /* the APSR is the operation's own: ADDS or SUBS just before */
+    } else if (src == EMU_IR_FS_ADD) {
         t2_adds(SETF_RES, ra, rb);
     } else if (src == EMU_IR_FS_SUB) {
         t2_subs(SETF_RES, ra, rb);
@@ -4253,10 +4272,18 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_ADD:
-            t2_add(rd, ra, rb);
+            if (g_setf_fused != NULL) {
+                t2_adds(rd, ra, rb); /* the flags its SETF reads next */
+            } else {
+                t2_add(rd, ra, rb);
+            }
             break;
         case EMU_IR_SUB:
-            t2_sub(rd, ra, rb);
+            if (g_setf_fused != NULL) {
+                t2_subs(rd, ra, rb);
+            } else {
+                t2_sub(rd, ra, rb);
+            }
             break;
         case EMU_IR_AND:
             t2_and(rd, ra, rb);
@@ -5533,6 +5560,34 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 #if EMU_JIT_BYTE_STATS
         uint8_t *const at = emu_jit_here();
 #endif
+        /*
+         * An ADD or SUB whose SETF, of the same kind and the same two
+         * operands, comes next -- past the PUTs between, which are stores:
+         * the translators put the result before they set the flags, and
+         * looking at the next live instruction alone matched 2 of G4MH
+         * CoreMark's 392 SETFs, where past PUTs it matches 208.
+         * Computed flag-setting, and the SETF told so (g_setf_fused).
+         */
+        if (g_setf_fused != &b->insn[i] && b->insn[i].op != (uint8_t)EMU_IR_PUT) {
+            g_setf_fused = NULL; /* kept, past the result's PUTs, into the SETF it names */
+        }
+        if (b->insn[i].op == (uint8_t)EMU_IR_ADD || b->insn[i].op == (uint8_t)EMU_IR_SUB) {
+            uint32_t j = i + 1u;
+
+            /* a PUT of the result only: another value may need a MOVS */
+            while (j < b->count &&
+                   (b->insn[j].dead || (b->insn[j].op == (uint8_t)EMU_IR_PUT &&
+                                        b->insn[j].a == b->insn[i].dst))) {
+                j++;
+            }
+            if (j < b->count && b->insn[j].op == (uint8_t)EMU_IR_SETF && b->insn[j].live != 0u &&
+                b->insn[j].aux == (uint8_t)((b->insn[i].op == (uint8_t)EMU_IR_ADD)
+                                                ? EMU_IR_FS_ADD
+                                                : EMU_IR_FS_SUB) &&
+                b->insn[j].a == b->insn[i].a && b->insn[j].b == b->insn[i].b) {
+                g_setf_fused = &b->insn[j];
+            }
+        }
         if (!lower_one(&b->insn[i], t)) {
             emu_ir_note_refused(b->insn[i].op, b->insn[i].aux);
             return false;
