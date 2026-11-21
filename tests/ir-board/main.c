@@ -19,6 +19,8 @@
  *   IR-BOARD-END
  */
 
+#include "emu/emu_ir.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -109,6 +111,7 @@ int main(void)
     uint32_t n = 0u;
 
     uart_init();
+    emu_ir_kernel_inline_min = 0u; /* the emitted loop, in this 32 KB too */
     for (const uint8_t *q = p;;) {
         const uint32_t len = (uint32_t)q[0] | ((uint32_t)q[1] << 8);
 

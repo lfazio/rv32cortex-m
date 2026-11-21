@@ -213,6 +213,7 @@ void emu_ir_kernel_reset(void)
 }
 
 uint32_t emu_ir_kernel_inline_iters;
+uint32_t emu_ir_kernel_inline_min = 65536u;
 
 bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out)
 {

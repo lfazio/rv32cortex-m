@@ -2289,11 +2289,18 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
          * host check passed (they lower on x86-64).
          *
          * And a dot product only of the shape emit_dot_inline takes: the
-         * call to the C kernel was no faster than the scalar loop.
+         * call to the C kernel was no faster than the scalar loop. Only
+         * where the buffer has room for its bytes, either
+         * (emu_ir_kernel_inline_min).
          */
         if (((aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16 ||
              (aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16_F) &&
             (aux & EMU_IR_KERNEL_PLAIN) == 0u) {
+            return false;
+        }
+        if (((aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16 ||
+             (aux & 0x7Fu) == (uint8_t)EMU_IR_LOOP_DOT16_F) &&
+            emu_jit_code_bytes() < emu_ir_kernel_inline_min) {
             return false;
         }
         return bisect_allows((uint8_t)op);

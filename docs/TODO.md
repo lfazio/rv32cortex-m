@@ -79,12 +79,11 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       the better mark set lost too, by translations and by time
       (`wip/jit-thrash-retry-keep`). Left: a period that does not start at
       a forget, or a cost model the host can reproduce. At 3e0df70 the
-      x2000 run is 26.45 (632 compactions) where 3fb2264 was 24.16 (516),
-      and the inline dot kernels are the difference: with each a call,
-      21.97 (422) at both layouts, by the wall clock too -- 17% at 32 KB
-      against their 0.9% at 64 KB. Whether that is their bytes or the
-      equilibrium they tip the run into is the next question
-      ([jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
+      x2000 run was 26.45 where 3fb2264 was 24.16: the inline dot
+      kernels' bytes, now emitted only in a 64 KB buffer (24.46 with
+      the rule; [jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
+      Left: confirm the rule on the F446, whose default buffer is 32 KB
+      (not attached on 2026-11-21).
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure**: without the stop before a known entry it cost RV32
       CoreMark x650 12.5% at 32 KB, G4MH's 5.7% and RV32 Whetstone 18%

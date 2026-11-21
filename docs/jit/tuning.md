@@ -369,11 +369,26 @@ the C routine as before d00c3e0, F746, CoreMark x2000 at 32 KB:
 | kernels as calls, pad 0 / 64 | 21.97 / 21.95 | 50.2 s | 47,074 | 422 |
 
 17% here, where inlining them gained 0.8-0.9% at the 64 KB default.
-A few hundred bytes of kernel do not crowd 32 KB by a third on their
-own; the likelier reading is that they tip a run already at the edge
-into the worse equilibrium above. Untried: the phase table for both
-builds (which equilibrium each sits in), and the size of a block with
-an inline kernel (`-DEMU_JIT_DUMP`).
+
+It is their bytes, not an equilibrium the run tips into: the phase
+tables (the same cuts as above) show the inline build compacting twice
+as often from the first 50M instructions -- 52 against 28, 59 against
+29 -- and a JIT dump puts about 300 bytes on each block that holds a
+kernel, 1,810 bytes in all. At 32 KB, RV32 CoreMark, host cycles an
+instruction:
+
+| | kernels inline | as calls | none, the scalar body | with the rule below |
+|---|---|---|---|---|
+| x120 | 20.59 | 17.41 | 15.68 | **15.75** |
+| x2000 | 26.30 | 22.05 | 24.19 | **24.46** |
+| x120 at 64 KB | **8.92** | | 9.07 | 8.91 (inline) |
+
+**So a dot product is emitted inline only where the buffer has 64 KB**
+(`emu_ir_kernel_inline_min`, read against `emu_jit_code_bytes`); below,
+Thumb-2 declines the kernel and the loop keeps its scalar body. The
+F446's default buffer is 32 KB; the board was not attached to confirm
+it there. The corpus replay sets the threshold to 0, so it still tests
+the emitted loop in its own 32 KB.
 
 ### The hooks a block calls
 

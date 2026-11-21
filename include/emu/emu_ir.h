@@ -1768,6 +1768,17 @@ bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out);
 /* Iterations the loops a backend emitted itself ran, for the report. */
 extern uint32_t emu_ir_kernel_inline_iters;
 /*
+ * A dot product is emitted in its block only where the code buffer holds
+ * this many bytes (emu_jit_code_bytes); below, a backend that emits them
+ * declines the kernel and the loop keeps its scalar body. Each costs a
+ * block about 300 bytes, and in 32 KB that doubled the compactions: RV32
+ * CoreMark x120 on the F746 ran at 20.59 host cycles an instruction with
+ * them, 15.68 without, where at 64 KB they gain 1.7% (docs/jit/tuning.md).
+ * The board's corpus replay sets it to 0, to test the emitted loop in its
+ * own 32 KB.
+ */
+extern uint32_t emu_ir_kernel_inline_min;
+/*
  * The kinds the JIT gives a kernel, a bit each (1u << EMU_IR_LOOP_*).
  * Copy to the NUL and the 16-bit dot product by default -- the second
  * only where the backend emits it or calls it (EMU_IR_KERNEL_PLAIN) --

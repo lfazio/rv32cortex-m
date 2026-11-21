@@ -710,6 +710,8 @@ typedef struct emu_jit_ops {
  * the first init.
  */
 bool emu_jit_init(uint32_t bytes);
+/* The code buffer's size, as emu_jit_init or emu_jit_set_buffer gave it; 0 before. */
+uint32_t emu_jit_code_bytes(void);
 void emu_jit_set_buffer(void *mem, uint32_t bytes);
 
 /*

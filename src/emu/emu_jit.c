@@ -295,6 +295,11 @@ static void register_core(void)
 /* Code buffer                                                         */
 /* ------------------------------------------------------------------ */
 
+uint32_t emu_jit_code_bytes(void)
+{
+    return g_code_size;
+}
+
 void emu_jit_set_buffer(void *mem, uint32_t bytes)
 {
     g_code = (uint8_t *)mem;
