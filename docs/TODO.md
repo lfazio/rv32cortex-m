@@ -176,6 +176,22 @@ From the last measurements in [linux.md](linux.md).
 ## PowerPC
 
 - [ ] Implement vectorial extensions
+- [ ] **SPE, the Signal Processing Engine** -- the e200's SIMD: each
+      64-bit GPR as two 32-bit lanes (`ev*`: arithmetic, logic, shifts,
+      merges, 64-bit loads and stores such as `evldd`/`evstdd`, the
+      fixed-point multiply-accumulates into the 64-bit ACC with
+      saturation and overflow in SPEFSCR), and the EFPU's vector half
+      (`evfs*`). Today `ev*` raises SPE-unavailable while MSR[SPE] is
+      clear and illegal-instruction once it is set
+      ([frontend/ppc.md](frontend/ppc.md)). It needs the upper halves
+      and ACC in the core state and in gdb's register set, the `ev`
+      opcode space checked against binutils (`-mspe`), the interpreter,
+      the JIT (two 32-bit operations a lane pair, the M7's DSP where it
+      fits, MVE on the N6), and a guest using clang's SPE intrinsics
+      against a reference -- no compiler here emits SPE on its own (GCC
+      dropped it in 9; clang only for its vector types). And first the
+      question of which core: the e200z759n3 manual this frontend follows
+      gives EFPU2 alone, the MPC5675K's lists SPE beside it.
 - [ ] **Anything to compare it with.** No e200 is attached and no
       other emulator is consulted, so a shared misreading of the manual
       is invisible to every check there is. The only second document,
