@@ -51,6 +51,7 @@ instead, and the run is whatever follows. Its console is the ST-LINK
 V3's first interface. Needs pyserial, and probe-rs for the others.
 """
 
+import re
 import os
 import subprocess
 import sys
@@ -66,6 +67,18 @@ CHIPS = {
     "stm32f446": "STM32F446RETx",
 }
 BAUD = 921600
+
+
+# A run's banner, by its shape: "emu: <what> on <part> @ <N> MHz". Any
+# line beginning "emu: " was taken for one, and a capped run's "emu:
+# instruction cap reached" became the last banner -- everything before
+# it, the real banner included, was dropped from the capture as an
+# earlier run's, and the run was refused as two (BANNERS 2).
+BANNER = re.compile(rb"\nemu: [^\r\n]* on [^\r\n]* @ [0-9]+ MHz")
+
+
+def banners(buf):
+    return [m.start() for m in BANNER.finditer(buf)]
 
 
 def cache_var(build, name):
@@ -168,7 +181,8 @@ def main():
             # finishes that first run meanwhile: its result, with its
             # banner cleared from the line, ended a capture one second
             # after the real run's banner (RV32 CoreMark, 1.75 s).
-            last = buf.rfind(b"\nemu: ")
+            b = banners(buf)
+            last = b[-1] if b else -1
             if (last >= 0 and buf.find(b"emu-result", last) >= 0 and
                     time.time() + 1.0 < end):
                 end = time.time() + 1.0
@@ -195,13 +209,13 @@ def main():
     done = buf.find(b"-- done --", start if start >= 0 else 0)
     # What came before the last banner was a run the flash started, not
     # this one: dropped, so its figures are not read as this run's.
-    head = buf.rfind(b"\nemu: ")
+    b = banners(buf)
+    head = b[-1] if b else -1
     if head > 0 and buf[:head].strip():
         print("EARLIER %d bytes before the banner dropped: a run the flash "
               "target started" % head)
-    if buf.count(b"\nemu: ") != 1:
-        print("BANNERS %d -- expected exactly one run in the capture" %
-              buf.count(b"\nemu: "))
+    if len(b) != 1:
+        print("BANNERS %d -- expected exactly one run in the capture" % len(b))
     if start >= 0 and done >= 0:
         print("WALL %.2f s from the banner to done" %
               (when(done) - when(start)))

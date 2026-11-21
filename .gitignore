@@ -49,3 +49,6 @@ boot/initramfs/init
 
 # Python bytecode from the test scripts that import each other.
 __pycache__/
+
+# Quake's game data: id Software's, not this repository's to ship
+*.pak

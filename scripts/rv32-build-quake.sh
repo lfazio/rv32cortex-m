@@ -47,6 +47,14 @@ if [ ! -f "$PAK" ]; then
     echo "rv32-build-quake: no game data at $PAK" >&2
     exit 2
 fi
+# The file's own signature: a download that saved a web page instead
+# builds, links and runs, and Quake stops at "is not a packfile" with
+# no frame drawn -- no window, and nothing in the build said why.
+if [ "$(head -c 4 "$PAK")" != "PACK" ]; then
+    echo "rv32-build-quake: $PAK is not a Quake PAK (it does not begin with PACK)" >&2
+    echo "                  the shareware pak0.pak is 18,689,235 bytes; was a web page saved?" >&2
+    exit 2
+fi
 PAK=$(CDPATH='' cd -- "$(dirname -- "$PAK")" && pwd)/$(basename -- "$PAK")
 
 if [ -z "${EMU_SDL:-}" ]; then

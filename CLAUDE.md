@@ -901,7 +901,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   (`fpccr-writable`).
 - **A word a tool searches the console for is reserved**: a report line
   ending "the backend emitted" became the run's banner to board-run.py
-  (the last "backend "), and an A/B lost its only row that mattered.
+  (the last "backend "), and an A/B lost its only row that mattered; a
+  capped run's "emu: instruction cap reached" was taken for a second
+  banner, and every capped capture was refused. It matches a banner's
+  whole shape now (`BANNER`, "emu: ... on ... @ N MHz").
 - **Read the peripheral before suspecting the code**: a UART configured,
   enabled and muxed with nothing arriving is a wire.
 - **Diff the code memory against the image** when code misbehaves on
