@@ -76,8 +76,8 @@ came to document an `RV32_PLATFORM` option that has never existed.
 What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # 510/510; EMU_EXTRA_ARGS=--jit for the JIT
-./scripts/run-arch-test.sh --misaligned  # 523/523: the *default* build
+./scripts/run-arch-test.sh      # 544/544; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-arch-test.sh --misaligned  # 557/557: the *default* build
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
                                 # adding --jit> for the JIT -- it takes no flag
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
@@ -1026,6 +1026,11 @@ sixteen defects the first time anything fuzzed them.
   one fixed (the F446's guest staging).
 - **`set_image` runs on a reload, never on the first start**: per-image
   state comes through `emu_boot_info_t`.
+- **A signal-driven scheduler's tick reaches whatever its thread
+  calls**: the host's FreeRTOS POSIX port sends the task thread SIGALRM
+  every millisecond, and SDL on Wayland died of it ("connection closed by
+  server") where X11 did not -- a ten-line SDL program with the same tick
+  failed alike. SDL runs with the port's signals blocked (`sdl_enter`).
 - **gdb's protocol fails by hanging, and its register layout is not
   ours to choose** ([docs/gdb.md](docs/gdb.md)): a bad checksum is retried
   silently, `c`/`s` are answered only when the guest stops, ^C is a bare

@@ -5422,6 +5422,21 @@ session, and every one of them recurred:
   writes -- and end the test where only the crossing can have put the
   value.**
 
+- **A signal-driven scheduler's tick reaches whatever its thread
+  calls.** Quake on RV32 opened no window under Wayland: SDL printed
+  "Wayland display connection closed by server (fatal)" and the protocol
+  trace showed no error from the compositor, only the connection ending
+  10 ms after the window was made. Draining SDL's events between frames
+  as well as at them changed nothing. A ten-line SDL program opened its
+  window on the same desktop; given a 1 kHz SIGALRM, as the host's
+  FreeRTOS POSIX port sends the running task's thread, it failed
+  identically, with SA_RESTART or without, and with the signal blocked
+  around its SDL calls it drew all sixty frames. The emulator's guest
+  runs in such a task, and the display is called from it. **When a
+  library fails only inside the emulator, rebuild the emulator's
+  conditions around a minimal user of the library -- its threads, its
+  signals -- before reading the library.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

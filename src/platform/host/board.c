@@ -515,9 +515,12 @@ static void console_pump(void)
  * here and in the board's copy behind an #if, which made a build option
  * look like a property of the machine.
  */
+void host_display_poll(void);
+
 void board_poll(void)
 {
     console_pump();
+    host_display_poll(); /* the window's events, between frames too */
 }
 
 /* ------------------------------------------------------------------ */

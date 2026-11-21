@@ -35,7 +35,38 @@
 #if EMU_SDL
 
 #include <SDL3/SDL.h>
+#include <pthread.h>
+#include <signal.h>
 #include <string.h>
+
+/*
+ * **SDL runs with the FreeRTOS port's signals blocked.** The host's
+ * scheduler is signal-driven -- the upstream POSIX port sends the running
+ * task's thread SIGALRM every tick, the multicore one SIGUSR2 to yield --
+ * and that thread is the one calling SDL. Under Wayland that was fatal:
+ * "Wayland display connection closed by server", the window gone before
+ * the first frame, on GNOME; X11 was unaffected. A ten-line SDL program
+ * given a 1 kHz SIGALRM fails the same way, with SA_RESTART or without,
+ * and draws all its frames with the signal blocked around its SDL calls.
+ * So each entry into SDL holds them off and lets them in after: a tick
+ * waits for one present at most. Threads SDL and Mesa start inherit the
+ * mask and never take one.
+ */
+static void sdl_enter(sigset_t *old)
+{
+    sigset_t s;
+
+    sigemptyset(&s);
+    sigaddset(&s, SIGALRM);
+    sigaddset(&s, SIGUSR1);
+    sigaddset(&s, SIGUSR2);
+    (void)pthread_sigmask(SIG_BLOCK, &s, old);
+}
+
+static void sdl_leave(const sigset_t *old)
+{
+    (void)pthread_sigmask(SIG_SETMASK, old, NULL);
+}
 
 static struct {
     /*
@@ -58,6 +89,7 @@ static struct {
     uint32_t cached[EMU_FB_PALETTE_ENTRIES];
     bool cached_valid;
     bool failed;
+    uint64_t pumped_ns; /* SDL_GetTicksNS at the last drain of the queue */
 } g_disp;
 
 /*
@@ -310,6 +342,7 @@ static void pump_events(void)
     emu_input_t *const mouse = board_mouse();
     SDL_Event e;
 
+    g_disp.pumped_ns = SDL_GetTicksNS();
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_EVENT_QUIT:
@@ -430,13 +463,8 @@ static void pump_events(void)
     }
 }
 
-void host_display_present(void *ctx, const emu_fb_frame_t *f)
+static void present(const emu_fb_frame_t *f)
 {
-    (void)ctx;
-
-    if (g_disp.failed) {
-        return;
-    }
     if (!ensure_window(f)) {
         return;
     }
@@ -457,8 +485,45 @@ void host_display_present(void *ctx, const emu_fb_frame_t *f)
     SDL_RenderPresent(g_disp.renderer);
 }
 
+void host_display_present(void *ctx, const emu_fb_frame_t *f)
+{
+    sigset_t old;
+
+    (void)ctx;
+    if (g_disp.failed) {
+        return;
+    }
+    sdl_enter(&old);
+    present(f);
+    sdl_leave(&old);
+}
+
+/*
+ * Between slices, from board_poll: the queue drained every 10 ms whether
+ * or not the guest presents. Draining it at presents alone left it
+ * unread for as long as a guest went without a frame -- Quake loading a
+ * level takes seconds -- and a Wayland compositor closes a client whose
+ * events it cannot deliver: "Wayland display connection closed by
+ * server", fatal, in the middle of a run.
+ */
+void host_display_poll(void)
+{
+    sigset_t old;
+
+    if (g_disp.window == NULL || g_disp.failed ||
+        SDL_GetTicksNS() - g_disp.pumped_ns < 10000000u) {
+        return;
+    }
+    sdl_enter(&old);
+    pump_events();
+    sdl_leave(&old);
+}
+
 void host_display_shutdown(void)
 {
+    sigset_t old;
+
+    sdl_enter(&old);
     if (g_disp.texture != NULL) {
         SDL_DestroyTexture(g_disp.texture);
     }
@@ -473,6 +538,7 @@ void host_display_shutdown(void)
         SDL_Quit();
     }
     memset(&g_disp, 0, sizeof(g_disp));
+    sdl_leave(&old);
 }
 
 #else /* !EMU_SDL */
@@ -487,6 +553,10 @@ void host_display_present(void *ctx, const emu_fb_frame_t *f)
 {
     (void)ctx;
     (void)f;
+}
+
+void host_display_poll(void)
+{
 }
 
 void host_display_shutdown(void)

@@ -73,6 +73,20 @@ because the device above must build and be testable on a host
 that has neither -- which is how the F746 gets a framebuffer at
 all.
 
+**SDL runs with the scheduler's signals blocked** (2026-11-21). The
+host's FreeRTOS port is signal-driven -- the upstream POSIX port sends
+the running task's thread SIGALRM every tick, the multicore one SIGUSR2
+to yield -- and that thread is the one calling SDL. Under Wayland on
+GNOME, Quake's window never appeared: "Wayland display connection closed
+by server (fatal)", with no protocol error before it, where X11
+(`SDL_VIDEO_DRIVER=x11`) worked. A ten-line SDL program with a 1 kHz
+SIGALRM fails the same way, with `SA_RESTART` or without, and draws all
+its frames with the signal blocked around its SDL calls; so every entry
+into SDL is bracketed (`sdl_enter`, `sdl_leave`), and a tick waits for
+one present at most. The window's events are also drained every 10 ms
+between slices (`host_display_poll`), not only at a present: Quake
+loading a level presents nothing for seconds.
+
 **Input**, keyboard and mouse, from SDL events. Two devices and
 not one: a host binds a separate evdev to each, and a combined
 descriptor claiming both is not what any driver expects. There
