@@ -1144,6 +1144,21 @@ AND and a store (`flags_alone`) -- G4MH CoreMark **11.3-11.5% faster**,
 ARMv7-M's 6.6-7.1%
 ([../frontend/g4mh.md](../frontend/g4mh.md#the-flags-apart-from-the-psw-2026-11-21)).
 
+Profiled again after that (G4MH CoreMark, 655 samples in translated
+code), the SETF is still the most of it: `add` 11.0%, `and` 10.7%,
+`sub` 8.9%, `eor` 8.7%, `mrs` 7.8%, `str` 8.5% -- the operation and its
+recompute, the mask, the borrow, the APSR. **Computing the operation
+flag-setting for its SETF, measured and not kept** (2026-11-21,
+`wip/setf-fuse`): an ADD or SUB whose SETF of the same kind and
+operands follows becomes ADDS or SUBS, and the SETF skips its own.
+Looking at the next live instruction it fused 2 of the 392 SETFs --
+the translators PUT the result in between -- and past those PUTs 208;
+on the F746 G4MH CoreMark moved +0.24% / +0.16% and ARMv7-M's was
+2.85% / 3.54% *slower*, which was not run down. What is left of the
+SETF is the mask and the borrow, and a word allowed bits beyond the
+four would drop the mask -- at the price of every reader and both
+fuzz harnesses masking them.
+
 What the dump did show was two `mov`s before each `adds`: the SETF
 lowering copied its operands into r0 and r1 whether or not they were
 already in allocated registers. Taking them where they are (`use_reg`)

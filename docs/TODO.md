@@ -56,10 +56,12 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       (`wip/ppc-bc-decoded-field`). Untried: a `bc` handler per field,
       its word at a constant offset as CR's was; or a PC profile of
       both builds (`-DEMU_PC_PROFILE`) to see which lines grew.
-- [ ] **G4MH's arithmetic after the flags**: with SETF a store, profile
-      G4MH CoreMark's translated time by host mnemonic again
-      ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh))
-      and take what is largest.
+- [ ] **G4MH's arithmetic after the flags**: profiled, the SETF is still
+      the most of it (add, and, sub, eor, mrs: 47% of the samples);
+      reusing the operation's flags was not worth it
+      ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)).
+      Left: the mask (a flag word allowed junk beyond the four, every
+      reader and both fuzz harnesses masking) and the borrow's EOR.
 - [ ] **PowerPC's arithmetic, what is left**: a `cmpw`'s summary
       overflow from XER (3 of its instructions), and byte swaps for a
       big-endian guest in little-endian RAM, about 10% of its translated
@@ -91,6 +93,15 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       state, but whatever retention does wrong with more chained blocks
       may cost the stop's figures too
       ([backend/thumb2.md](backend/thumb2.md#what-a-block-shares-with-the-blocks-already-there)).
+      Measured in the shipped state (with the stop, 2026-11-21), F746 at
+      32 KB, the link search limited to the called block against it:
+      CoreMark x120 22.65 against 15.75 -- the fix 30% better -- but
+      x2000 21.49 against 24.46 -- 12% worse -- and Whetstone 42.02
+      against 41.31. On the host at the board's tables, 70% of
+      CoreMark's evictions (86% of Whetstone's) are translated again
+      within two compactions, linking or not: the working set cycles
+      through a buffer too small for it. The long run is where the fix
+      costs, which is where the two equilibria live.
 - [ ] **At 8 KB the JIT is still slower than the interpreter** on
       Whetstone (8.67 s against 6.23), most of it interpreted (8.6M of
       10.7M instructions); never forgetting the thrash marks helped there
