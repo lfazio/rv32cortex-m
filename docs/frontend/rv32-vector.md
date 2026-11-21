@@ -323,7 +323,17 @@ the translator declines -- was interpreted with it, the declined pc's
 batch carrying on past the `vsetivli`, so the block that held the
 operation began without it. Both printed RISC-V's flags on the board,
 which read as a lowering without the deviation until the helper's calls
-were counted ([TODO](../TODO.md)).
+were counted.
+
+**A guard for vtype, measured and not kept** (2026-11-18). A guard at a
+block's first vector instruction -- vtype read and compared with the
+translation's, a side exit where they differ -- would let a block that
+begins after its `vsetvli` (a declined CSR write's batch, a `vsetvli`
+a compiler hoisted out of the loop) lower its vector instructions. With
+it written, the vector helper's calls under the JIT on coremark-v,
+vecbench, vfbench, vecops, vecfp, vecmask, vecround and fpedge-v were
+the same but for vecfp's 70 to 64, and host instructions rose by the
+guard's cost. Real code does not begin blocks there often enough.
 
 **On the N6, Helium** (MVE, the M55's 128-bit unit) lowers the unmasked
 single-width operations and the whole-group copies 16 bytes an
