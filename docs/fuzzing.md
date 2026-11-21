@@ -569,7 +569,9 @@ fuzz-armv7m-jit in 5 to 11 s.
 drew before maps existed (an input ending there reads 0 and keeps its
 meaning) -- none, one chain or two multiplied, up to four of the
 fourteen operations each, shifts past 31 and constants with no
-immediate form among them. Four mutants of the C kernel's map and the
+immediate form among them -- and the order of the two factors, on a
+bit of the trip byte nothing read (ARMv7-M's `mla` puts y first, which
+the recogniser refused). Four mutants of the C kernel's map and the
 recogniser's chain (a shift masked to four bits, a rotate the wrong
 way, the second chain dropped, a chain taken outside in) were found in
 6 to 35 s; `test_loop_shape` holds CoreMark's map operation by

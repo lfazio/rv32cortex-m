@@ -1263,9 +1263,10 @@ static bool loop_back(uint32_t target_pc)
  * A 16-bit dot product's kernel emitted in the block (EMU_IR_KERNEL),
  * where the call to emu_ir_kernel_run cost about what CoreMark's six
  * iterations an entry saved. The same decisions as that function, on the
- * cases it is worth emitting for -- x's stride 2, neither element swapped,
- * y's stride within 0x8000 so nothing below overflows 32 bits -- and
- * otherwise the call: declining is always correct, since the scalar body
+ * cases it is worth emitting for -- x's stride 2, either element
+ * big-endian (LDRH and REVSH, PowerPC's) or not, y's stride within 0x8000
+ * so nothing below overflows 32 bits -- and otherwise the scalar body:
+ * declining is always correct, since the scalar body
  * then runs the iterations and ends in the same state. fuzz-ir's corpus
  * on the board compares this with that function (scripts/ir-board.sh).
  *
@@ -1399,7 +1400,7 @@ static int emit_dot_inline(uint32_t index)
                              (d.lo == EMU_IR_KERNEL_NO_REG) ? 0u : d.lo,
                              (d.so == EMU_IR_KERNEL_NO_REG) ? 0u : d.so};
 
-    if (d.xstride != 2 || d.xswap || d.yswap || (s != 1u && s != 2u && s != 4u) ||
+    if (d.xstride != 2 || (s != 1u && s != 2u && s != 4u) ||
         d.insns == 0u || d.insns > EMU_JIT_LOOP_CAP || d.size < 2u || d.size > 0x7FFFFFFFu ||
         d.ysshift > 31u) {
         return KI_SKIP;
@@ -1555,8 +1556,15 @@ static int emit_dot_inline(uint32_t index)
     }
     const uint8_t *const top = emu_jit_here();
 
-    if (!t2_ld_reg(T2_R3, KXH, KX, 2u, true) || !t2_ld_reg(T2_R12, KYH, KY, 2u, true)) {
+    /* A big-endian element (PowerPC's) is LDRH and REVSH, a little-endian one LDRSH. */
+    if (!t2_ld_reg(T2_R3, KXH, KX, 2u, !d.xswap) || !t2_ld_reg(T2_R12, KYH, KY, 2u, !d.yswap)) {
         return KI_FAIL;
+    }
+    if (d.xswap) {
+        t2_revsh(T2_R3, T2_R3);
+    }
+    if (d.yswap) {
+        t2_revsh(T2_R12, T2_R12);
     }
     t2_add_imm(KX, KX, 2u); /* imm12 2: the byte itself */
     t2_add(KY, KY, KS);

@@ -1727,7 +1727,7 @@ uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t retired);
 /*
  * EMU_IR_KERNEL's aux: the kind (EMU_IR_LOOP_*), and this bit for a dot
  * product of the shape a backend may emit in the block -- x's stride 2,
- * neither element byte-swapped. The pass asks emu_ir_can_lower with it
+ * either element byte-swapped or not. The pass asks emu_ir_can_lower with it
  * before inserting, so a kernel the backend would neither call nor emit
  * takes no table entry and puts no op in the block.
  */

@@ -56,11 +56,13 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       (`wip/ppc-bc-decoded-field`). Untried: a `bc` handler per field,
       its word at a constant offset as CR's was; or a PC profile of
       both builds (`-DEMU_PC_PROFILE`) to see which lines grew.
-- [ ] **The dot-product kernels on the other frontends**
-      ([jit/autovectorisation.md](jit/autovectorisation.md)): PowerPC's,
-      byte-swapped, which the emitted loop declines; ARMv7-M's, which the
-      recogniser refuses (its sticky Q a kernel would compute per step);
-      Helium's `VMLADAVA` on the N6.
+- [ ] **The dot-product kernels left**
+      ([jit/autovectorisation.md](jit/autovectorisation.md)): ARMv7-M's
+      `smlabb` loops (3.3% of its CoreMark samples), whose sticky Q a
+      kernel would have to compute per step -- a recogniser pattern for
+      the OR into xPSR, the overflow tracked in the C kernel and the
+      emitted loop (SMLABB with Q cleared before, read after), and a
+      fuzz-ir generator; Helium's `VMLADAVA` on the N6.
 - [ ] **G4MH's flags** ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
       SETF is about 27% of its translated time, and 87% of the SETFs left
       after the dead-flag pass are there for the block's exit, not for a

@@ -1302,7 +1302,8 @@ static void build_dot(in_t *in, fcpu_t *c)
 {
     const uint32_t f = byte(in);
     const uint32_t xo = byte(in), yo = byte(in);
-    const uint32_t trip = 1u + (byte(in) & 63u);
+    const uint32_t tb = byte(in);
+    const uint32_t trip = 1u + (tb & 63u);
     const uint32_t ys = byte(in);
     const int32_t xstep = (f & 0x10u) ? -2 : 2;
     const uint32_t xoff = (uint32_t)(int32_t)(int8_t)(xo & 0x86u); /* 0, 2, 4, 6, -128... */
@@ -1338,7 +1339,9 @@ static void build_dot(in_t *in, fcpu_t *c)
     }
     emu_ir_put(&g_built, 2u, ty2);
 
-    const uint16_t p = E(EMU_IR_MUL, 0u, lx, ly, 0u, 0u);
+    /* the constant-stride factor first or second (ARMv7-M's smulbb has it second) */
+    const uint16_t p = (tb & 0x40u) ? E(EMU_IR_MUL, 0u, ly, lx, 0u, 0u)
+                                    : E(EMU_IR_MUL, 0u, lx, ly, 0u, 0u);
 
     emu_ir_put(&g_built, 6u, p); /* a register each iteration writes */
     emu_ir_put(&g_built, 3u, E(EMU_IR_ADD, 0u, emu_ir_get(&g_built, 3u), dot_map(in, p), 0u, 0u));

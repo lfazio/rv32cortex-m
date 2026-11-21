@@ -4,8 +4,9 @@
 P3 built -- four kernels -- and measured: strcpy's copy to the NUL kept,
 Dhrystone 19-20% faster for RV32 on the F746 and 19% on the N6, 15% for
 ARMv7-M; the dot product on since 2026-11-20, emitted in the block on
-Thumb-2 (RV32 CoreMark 0.89% faster); the copy and the fill not paying
-on the F746, off by default.** Every phase ends
+Thumb-2 (RV32 CoreMark 0.89% faster), PowerPC's and ARMv7-M's mapped
+one since 2026-11-21 (1.5% and 1.2-1.7%); the copy and the fill not
+paying on the F746, off by default.** Every phase ends
 in a measurement that decides whether the next one starts, because this
 is the kind of feature that reads as obviously worth it and then is not
 (the loop register cache, [../backend/thumb2.md](../backend/thumb2.md#a-loops-guest-registers-in-host-ones-measured-not-kept),
@@ -270,8 +271,8 @@ element swapped -- and y's stride within 0x8000, so nothing overflows
 32 bits where the C kernel uses 64; anything else the scalar body runs,
 which ends in the same state. The pass asks first (`EMU_IR_KERNEL_PLAIN`
 in the op's aux), so a dot product the backend would neither emit nor
-call -- PowerPC's, byte-swapped -- gets no kernel, no table entry and no
-op.
+call -- PowerPC's, byte-swapped, until 2026-11-21 -- gets no kernel, no
+table entry and no op.
 x86-64 still calls the C function, the IR interpreter too, so the
 board's replay of fuzz-ir's corpus compares the emitted loop with it.
 
@@ -309,6 +310,30 @@ trees at 14.38 and 14.39, and moving the old tree's ITCM by 1 KB alone
 took it to 14.46, where the new one had measured. And the ITCM has
 under 1 KB left in a G4MH firmware: the same pad did not link the new
 tree (`.itcm` 0x88 bytes past its region), nor 2 KB the old.
+
+**PowerPC's and ARMv7-M's** (2026-11-21). PowerPC's elements are
+big-endian halfwords: the emitted loop loads them with LDRH and swaps
+them with REVSH (`t2_revsh`, in `t2-check-encodings`), and the pass now
+marks a swapped element PLAIN. ARMv7-M's DOT16_F failed the recogniser
+on the order of its factors -- `mla` multiplies y by x, and the
+recogniser took the first as the one walking by a constant; it tries
+both now (`test_ir`'s `LB_YX`; fuzz-ir draws the order). That made its
+kernel on the host and **none on the F746**: MAC fusion ran before the
+loop shape, Thumb-2 lowers a MAC and x86-64 does not, so on the board
+the loop's MUL and ADD were one MAC by the time the recogniser looked.
+`pass_mac` runs after it now. RV32's and PowerPC's loops never fused --
+their product is also written to a register -- which is why only
+ARMv7-M's went missing.
+
+| F746, CoreMark under the JIT | before | after | |
+|---|---|---|---|
+| PowerPC, pad 0 / 64 (REVSH, against 4a8af26) | 10.86 / 10.85 | 10.69 / 10.69 | **-1.57% / -1.47%**, 3 kernels, 182,159 iterations inline |
+| ARMv7-M, pad 0 / 64 (pass order, against the above) | 11.24 / 11.18 | 11.05 / 11.05 | **-1.69% / -1.16%**, 1 kernel, 493,773 iterations inline |
+| RV32, G4MH | | | +0.0 to +0.3%, the same kernels: layout |
+
+ARMv7-M's other two dot loops (`smlabb`, 0.7% and 2.6% of its samples)
+still have no kernel: SMLABB sets Q on overflow, a sticky bit the
+recogniser reads as the loop's but no kernel computes.
 
 **P3 -- copies and fills. strcpy's kept.** The byte loops get the same
 call: copy to the NUL (strcpy), copy and fill counted (memcpy, memset),

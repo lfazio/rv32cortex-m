@@ -577,6 +577,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **A list of exceptions fails open**: the dead-value pass removed a
   load nothing read -- an APLIC claim. It is a list of pure operations
   now.
+- **A pass gated on the backend changes the IR every later pass reads**:
+  Thumb-2 fuses MUL and ADD into a MAC and x86-64 does not, so the loop
+  recogniser behind it made ARMv7-M's kernel on the host and none on
+  the F746 (`pass_mac` runs after it now). Read the board's `kernels`
+  line; the host's cannot stand for it.
 - **An IR pass must honour every guest invariant the lowerings do**
   (`pass_reg_traffic` forwarded x0). A checker comparing two consumers
   of one bad input validates the consumers.

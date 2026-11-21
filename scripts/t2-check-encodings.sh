@@ -151,6 +151,8 @@ mla     r2, lr, r12, r2
 mul     lr, lr, r1
 asr.w   lr, r0, #16
 lsr.w   r12, r1, #16
+revsh.w r3, r12
+revsh.w lr, r0
 vfma.f32  s0, s1, s2
 vadd.f32  s1, s3, s5
 vsub.f32  s3, s0, s1
@@ -441,6 +443,9 @@ int main(void)
     t2_mul(14u, 14u, 1u);
     t2_shift_imm(T2_ASR, 14u, 0u, 16u);
     t2_shift_imm(T2_LSR, 12u, 1u, 16u);
+    /* A big-endian element of the emitted dot product: high registers both ways. */
+    t2_revsh(3u, 12u);
+    t2_revsh(14u, 0u);
 
     /*
      * VFP, with odd registers in every field: the D, N and M bits are

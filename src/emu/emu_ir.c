@@ -2538,28 +2538,46 @@ static void lk_dot(const emu_ir_block_t *b, emu_ir_loop_t *out, uint8_t acc, uin
     if (m == NULL || m->op != (uint8_t)EMU_IR_MUL) {
         return;
     }
-    const emu_ir_insn_t *const lx = lk_elem_load(b, m->a, &d->xswap);
-    const emu_ir_insn_t *const ly = lk_elem_load(b, m->b, &d->yswap);
+    const emu_ir_insn_t *lx = lk_elem_load(b, m->a, &d->xswap);
+    const emu_ir_insn_t *ly = lk_elem_load(b, m->b, &d->yswap);
 
     if (lx == NULL || ly == NULL) {
         return;
     }
-    const lk_t ax = lk_of(lx->a), ay = lk_of(ly->a);
+    lk_t ax = lk_of(lx->a), ay = lk_of(ly->a);
 
     if (ax.kind != LK_AFF || ay.kind != LK_AFF || ax.reg == ay.reg) {
         return;
+    }
+
+    uint8_t sreg, sshift;
+    int32_t k;
+
+    /*
+     * x is the element that walks by a constant: the product's first
+     * factor, or its second where only that one does -- ARMv7-M's
+     * `smulbb sl, r2` multiplies the strided column by the row.
+     */
+    if (!lk_step(b, get[ax.reg], put[ax.reg], &k, &sreg, &sshift) || sreg != 0xFFu) {
+        const emu_ir_insn_t *const lt = lx;
+        const lk_t at = ax;
+        const bool st = d->xswap;
+
+        lx = ly;
+        ly = lt;
+        ax = ay;
+        ay = at;
+        d->xswap = d->yswap;
+        d->yswap = st;
     }
     d->xreg = ax.reg;
     d->yreg = ay.reg;
     d->xoff = (int32_t)(ax.off + lx->imm);
     d->yoff = (int32_t)(ay.off + ly->imm);
 
-    uint8_t sreg, sshift;
-    int32_t k;
-
     if (!lk_step(b, get[d->xreg], put[d->xreg], &d->xstride, &sreg, &sshift) ||
         sreg != 0xFFu) {
-        return; /* x walks by a constant */
+        return; /* neither walks by a constant */
     }
     if (!lk_step(b, get[d->yreg], put[d->yreg], &k, &d->ysreg, &d->ysshift)) {
         return;
@@ -3114,9 +3132,7 @@ static void loop_kernel(emu_ir_block_t *b, const emu_ir_target_t *t, const emu_i
                        lp->copy.ok;
 
     const uint8_t aux =
-        (uint8_t)(lp->kind | ((dot && lp->dot.xstride == 2 && !lp->dot.xswap && !lp->dot.yswap)
-                                  ? EMU_IR_KERNEL_PLAIN
-                                  : 0u));
+        (uint8_t)(lp->kind | ((dot && lp->dot.xstride == 2) ? EMU_IR_KERNEL_PLAIN : 0u));
 
     if (t == NULL || (!dot && !bytes) || (emu_ir_kernel_kinds & (1u << lp->kind)) == 0u ||
         !b->has_fast || b->count + 1u > EMU_IR_MAX_INSNS ||
@@ -3175,10 +3191,8 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_fuse(b, stats);
     pass_dead_puts(b, t, stats);
     pass_dead_values(b, stats);
-    pass_mac(b, stats);
     pass_merge_retire(b, stats);
     pass_tail_exit(b, stats);
-    pass_count_uses(b, stats);
 #if EMU_IR_LOOP_SHAPE
     {
         emu_ir_loop_t lp;
@@ -3189,6 +3203,14 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
         }
     }
 #endif
+    /*
+     * After the loop shape, which looks for a MUL and the ADD it feeds:
+     * fused first, ARMv7-M's `mla` loops were a MAC wherever the backend
+     * lowers one -- Thumb-2, not x86-64 -- and the F746 made none of the
+     * kernels the host made. The body a kernel leaves is fused as any.
+     */
+    pass_mac(b, stats);
+    pass_count_uses(b, stats);
 
     emu_lock(&g_opt_lock);
     g_opt_totals.blocks++;

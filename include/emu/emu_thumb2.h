@@ -135,6 +135,7 @@ void t2_udiv(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_mls(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra);
 
 void t2_rev(uint32_t rd, uint32_t rm);
+void t2_revsh(uint32_t rd, uint32_t rm); /* a big-endian halfword, sign-extended */
 /* The DSP extension's SIMD within a register (encode.c). */
 #define T2_PAR_ADD8 0u
 #define T2_PAR_ADD16 1u

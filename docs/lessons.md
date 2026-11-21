@@ -5389,6 +5389,25 @@ session, and every one of them recurred:
   a second call that could reach 195. **When a limit has been hit
   twice, compute it, and make the third time loud.**
 
+- **A pass gated on the backend changes the IR every later pass
+  reads.** ARMv7-M's mapped dot product, made recognisable by trying
+  both factor orders, became a kernel on the host -- 98,031 iterations
+  -- and the F746 board A/B came back flat, with no `kernels` line in
+  the capture at all. On the host's report `mac 0`, on the board's
+  `mac 7`: `pass_mac` asks the backend whether it lowers a MAC, x86-64
+  says no and Thumb-2 yes, and it ran before the loop recogniser, which
+  looks for the MUL and the ADD that MAC replaces. ARMv7-M's `mla`
+  leaves its product nowhere else, so its multiply had one use and was
+  fused; RV32's and PowerPC's also write the product to a register,
+  so theirs never were, and every check of the kernels so far -- all on
+  those two -- had passed. With `pass_mac` after the recogniser the
+  board made the kernel, 493,773 iterations inline, CoreMark 1.2-1.7%
+  faster. A host run built with the board's JIT sizes still made it,
+  which ruled out block boundaries before the two reports were read side
+  by side. **Every capability query in a shared pass is a place the host
+  and the board run different optimisers; a figure that should have
+  moved and did not is read in the board's own counters first.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
