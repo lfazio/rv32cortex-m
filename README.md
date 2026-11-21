@@ -10,7 +10,7 @@ backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
 (a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **510/510** -- **523/523** for the default build, whose misaligned
+at **544/544** -- **557/557** for the default build, whose misaligned
 accesses complete and so qualify for four more suites -- and the
 Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host. The RV32 core implements the **RVI20U32** profile
@@ -72,11 +72,34 @@ Three axes, independent of each other:
 
 ## Building
 
+### Prerequisites
+
+Debian or Ubuntu package names. Only the first row is required: each of
+the others adds a part, and the build skips that part, saying so, when
+the tool is missing.
+
+| for | install |
+|---|---|
+| the host runner and its tests | `cmake`, `gcc`, `python3` |
+| RV32 guest images | `gcc-riscv64-unknown-elf`, `picolibc-riscv64-unknown-elf` |
+| ARMv7-M guests, and every firmware | `gcc-arm-none-eabi`, `picolibc-arm-none-eabi` |
+| PowerPC guests | `gcc-powerpc64-linux-gnu`; `clang` for the FP unit's builds |
+| flashing a Nucleo board | `probe-rs` (`cargo install probe-rs-tools`); the N6 also needs STM32CubeIDE |
+| DOOM's host stage | `gcc-multilib` (it runs `gcc -m32`) |
+| a window for DOOM and Quake | `libsdl3-dev`; without it a run has no window, and `--fb-dump` writes the last frame |
+| Linux | `gcc-riscv64-linux-gnu`, `dtc`, `cpio` |
+| fuzzing | `clang` |
+| debugging | `gdb-multiarch` |
+| G4MH guests | Renesas CC-RH ([docs/renesas/Dockerfile](docs/renesas/Dockerfile)); the committed images run without it |
+
+The RISC-V suites fetch Sail, and `scripts/fetch-spike.sh` builds
+Spike, into `build/`.
+
 ### Host — development and both test suites
 
 ```sh
 cmake -B build/host -DEMU_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
-cmake --build build/host
+cmake --build build/host -j
 ctest --test-dir build/host -L fast
 ```
 
@@ -155,7 +178,7 @@ and the boards do not. A PowerPC firmware takes `-DPPC_GUEST=` instead
 
 | Option | Default | Effect |
 |---|---|---|
-| `EMU_JIT` | `ON` | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
+| `EMU_JIT` | `ON`; `OFF` on an F446 with G4MH | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
 | `EMU_JIT_CODE_BYTES` | per board | Code cache, on a microcontroller: on the F746 64 KB, or 96 KB with PowerPC or ARMv7-M compiled in (and 64 again with G4MH); 128 on the N6; 32 on the F446. **The dominant performance term, and a threshold rather than a dial**: below a guest's translated working set the JIT is *slower* than the interpreter -- see [docs/jit/tuning.md](docs/jit/tuning.md). A host has 64 MB. |
 | `EMU_JIT_LOOP_CAP` | `128` | Guest instructions per block entry: an interrupt-latency knob, not a throughput one. |
 | `EMU_NET` | `ON` on the F746, `OFF` elsewhere | lwIP over PPP (or SLIP, `EMU_NET_LINK`) on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
@@ -193,12 +216,15 @@ device layer (register definitions, `startup_stm32f446xx.s`,
 `system_stm32f4xx.c`) and the STM32Cube HAL for clock, GPIO and USART bring-up.
 Nothing reimplements a peripheral the vendor already supports.
 
-These are fetched at configure time from ST's modular repositories. To build
-offline, point at local checkouts named `cmsis_core`, `cmsis_device_f4` and
-`stm32f4xx_hal_driver`:
+These are fetched at configure time from ST's modular repositories, and
+lwIP from its own when the network is on (the F746's default). To build
+offline, point at a directory of local checkouts named `cmsis_core`,
+`cmsis_device_<family>` and `stm32<family>xx_hal_driver` -- `f4`, `f7`
+or `n6`; the names are this build's, underscored, even where ST's N6
+repositories use hyphens -- and `lwip`:
 
 ```sh
-cmake -B build/stm32f446 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
+cmake -B build/f746 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
 ```
 
 ---
@@ -208,13 +234,15 @@ cmake -B build/stm32f446 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
 ```sh
 ./build/host/emu-host build/host/guest/isatest.bin
 ./build/host/emu-host --jit --quiet build/host/guest/isatest.bin
-./build/host/emu-host --frontend g4mh guest.bin
+./build/host/emu-host --frontend g4mh --load 0x80000000 tests/guest/g4mh/guest.bin
 ./build/host/emu-host --jit build/host/guest/ppc-coremark.elf
 ```
 
 `emu-host` picks a frontend from `--frontend`, else from the image's ELF
 `e_machine`, else the first compiled in. A flat binary says nothing about
-its architecture, so it gets the default. `--jit` selects the translating
+its architecture, so it gets the default -- nor about its address: the
+G4MH guests are linked for 0x80000000, and loaded anywhere else they run
+without printing. `--jit` selects the translating
 backend for any frontend; without it, the interpreter.
 
 Read the report at the end of a run before believing it. It says how
@@ -308,6 +336,11 @@ That is `tests/guest/quake.cmake` with `EMU_QUAKE=ON`, `QUAKE_PAK`,
 `EMU_GUEST_ROM_MIB=32` and `EMU_GUEST_RAM_KIB=32768`, the same arguments
 as the other two frontends' scripts; `QUAKE_BUILD` picks the directory.
 
+The scripts check that the file is a PAK -- the shareware one is
+18,689,235 bytes and begins with `PACK` -- because a download that saved
+a web page instead builds, links and runs, and Quake stops at "is not a
+packfile" without drawing a frame, so no window opens.
+
 Neither size is optional. The PAK is 18.7 MiB and lands in `.rodata`,
 so the default 16 MiB flash window cannot hold the image; and Quake's
 heap is a 16 MiB static array, so `.bss` comes to about 17.5 MiB. The
@@ -348,8 +381,17 @@ belonging to another board, and this one has no audio device.
 ### Linux
 
 Linux 6.12 boots on the RV32 frontend, through OpenSBI, with Sv32
-paging and userspace in U-mode. Two targets, because there are two
-different guests behind the same kernel:
+paging and userspace in U-mode. Neither is fetched by the build: the
+first command clones OpenSBI and boots it alone, the second the kernel,
+once.
+
+```sh
+./scripts/run-opensbi.sh                         # OpenSBI, into build/opensbi
+git clone --depth 1 --branch v6.12 https://github.com/torvalds/linux.git build/linux/linux
+```
+
+Then two targets, because there are two different guests behind the
+same kernel:
 
 ```sh
 cmake --build build/host --target linux         # built-in initramfs
@@ -484,8 +526,8 @@ Figures and what they have already disproved are in
 ### Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, 510/510
-./scripts/run-arch-test.sh --misaligned  # the default build: 523/523
+./scripts/run-arch-test.sh      # official riscv-arch-test, 544/544
+./scripts/run-arch-test.sh --misaligned  # the default build: 557/557
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/fetch-spike.sh && ./scripts/run-probe.py tests/arch-test/probes/zalasr.S
                                 # a probe against Sail and Spike, where no suite exists
@@ -563,16 +605,16 @@ include/emu/      the frontend contract, and the ISA-agnostic runtime's API
 include/<isa>/    one frontend's headers: rv32, g4mh, ppc, armv7m
 src/emu/          bus, passthrough, console, ELF loader, gdb stub, registry;
                   the IR, the JIT framework and the glue between them
-src/backend/      IR -> host code: thumb2/, x86_64/, and an IR interpreter
+src/backend/      IR -> host code: thumb2/, x86_64/; common/, the IR interpreter
 src/frontend/
   rv32/           hart, CSRs, PMP, Sv32, decoder, interpreter, translator,
-                  CLINT, APLIC
+                  CLINT, APLIC; softfloat/, Berkeley SoftFloat, which every
+                  frontend's FP unit uses
   g4mh/           core, decoder, interpreter, translator, MPU, INTC, timers
   ppc/            core, decoder, disassembler, interpreter, translator,
                   the embedded FP unit, the MMU
   armv7m/         core, decoder, disassembler, interpreter, translator,
                   exceptions, NVIC
-  softfloat/      Berkeley SoftFloat: every frontend's FP unit
 src/platform/
   common/         the session and run loop every platform shares
   host/           native runner (frontend-neutral)

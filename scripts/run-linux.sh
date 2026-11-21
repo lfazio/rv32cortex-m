@@ -217,8 +217,27 @@ EOF
 # the kernel
 # ---------------------------------------------------------------------
 echo "==> kernel"
+#
+# **A fresh tree starts from rv32_defconfig.** olddefconfig with no
+# .config takes the architecture's default, and RISC-V's is 64-bit: a
+# fresh clone built an rv64 kernel, which this core cannot run, and it
+# hung after OpenSBI without printing a line for 20e9 instructions. The
+# tree that had always booted had been given a 32-bit .config by hand,
+# once, and nothing said so. A 64-bit .config is refused, not rebuilt.
+#
+if [ ! -f "$SRC/.config" ]; then
+    echo "    no .config: rv32_defconfig"
+    make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" rv32_defconfig \
+        >"$WORK/kbuild.log" 2>&1 ||
+        { echo "error: rv32_defconfig failed; see $WORK/kbuild.log" >&2; exit 1; }
+fi
+if grep -q '^CONFIG_64BIT=y' "$SRC/.config"; then
+    echo "error: $SRC/.config is a 64-bit kernel, which RV32 cannot run;" >&2
+    echo "       remove it (a fresh one is rv32_defconfig) or make rv32_defconfig" >&2
+    exit 1
+fi
 make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" \
-    -j"$(nproc)" olddefconfig >"$WORK/kbuild.log" 2>&1 ||
+    -j"$(nproc)" olddefconfig >>"$WORK/kbuild.log" 2>&1 ||
     { echo "error: kernel configure failed; see $WORK/kbuild.log" >&2; exit 1; }
 
 #
@@ -279,8 +298,18 @@ else
     "$SRC/scripts/config" --file "$SRC/.config" --enable CONFIG_RISCV_ISA_ZBB
 fi
 
+#
+# And settle what those edits made new: an initramfs source brings
+# INITRAMFS_ROOT_UID and _GID with it, and the build's own syncconfig
+# *asks* for a NEW symbol -- on a fresh tree it waited at the prompt
+# for an hour. The tree that had always worked had answered it once, by
+# hand. No stdin either, so a prompt fails rather than waits.
+#
+make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" olddefconfig \
+    </dev/null >>"$WORK/kbuild.log" 2>&1 ||
+    { echo "error: kernel configure failed; see $WORK/kbuild.log" >&2; exit 1; }
 make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" -j"$(nproc)" \
-    >>"$WORK/kbuild.log" 2>&1 ||
+    </dev/null >>"$WORK/kbuild.log" 2>&1 ||
     { echo "error: kernel build failed; see $WORK/kbuild.log" >&2; exit 1; }
 
 IMAGE=$SRC/arch/riscv/boot/Image

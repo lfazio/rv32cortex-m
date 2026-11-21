@@ -5437,6 +5437,20 @@ session, and every one of them recurred:
   conditions around a minimal user of the library -- its threads, its
   signals -- before reading the library.**
 
+- **A recipe that works only in the tree it was written in has a step
+  nobody wrote down.** The README's Linux targets, run from a fresh
+  clone, built a kernel that hung after OpenSBI without printing a line
+  for 20e9 instructions; the same emulator booted the old tree's kernel
+  in 118M. The old tree had been given a 32-bit `.config` by hand, once,
+  and `olddefconfig` on a fresh one takes RISC-V's default, rv64. With
+  `rv32_defconfig` the build then stopped at a Kconfig prompt for an
+  hour: the script's own edits to `.config` brought in a NEW symbol the
+  old tree had answered by hand too. The same pass found the README's
+  G4MH run line naming a file that does not exist and leaving out the
+  load address it needs, its arch-test counts two suites behind, and no
+  list of what to install. **Validate a recipe from a fresh checkout, as
+  written, before calling it documentation.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
