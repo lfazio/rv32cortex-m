@@ -728,6 +728,12 @@ void t2_rev16(uint32_t rd, uint32_t rm)
     t2_emit32((uint16_t)(0xFA90u | rm), (uint16_t)(0xF090u | (rd << 8) | rm));
 }
 
+/* REVSH.W: the low halfword's bytes swapped, sign-extended (a big-endian int16). */
+void t2_revsh(uint32_t rd, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFA90u | rm), (uint16_t)(0xF0B0u | (rd << 8) | rm));
+}
+
 void t2_rbit(uint32_t rd, uint32_t rm)
 {
     t2_emit32((uint16_t)(0xFA90u | rm), (uint16_t)(0xF0A0u | (rd << 8) | rm));

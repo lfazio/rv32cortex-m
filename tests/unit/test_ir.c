@@ -1171,6 +1171,7 @@ enum {
     LB_NONE, LB_STORE, LB_ADDR, LB_EXIT, LB_CARRIED, LB_CALL, LB_SIDE,
     LB_UNSIGNED, LB_NOLOOP,
     LB_BITEXTRACT, /* not a break: CoreMark's mapped product, a DOT16_F */
+    LB_YX,         /* not a break: the strided factor first, as ARMv7-M's smulbb */
 };
 
 static void loop_dot_block(uint32_t brk)
@@ -1195,7 +1196,8 @@ static void loop_dot_block(uint32_t brk)
     const uint16_t s2 = emu_ir_emit(b, EMU_IR_SHLI, 0u, s, EMU_IR_NO_TEMP, 1u, 0u);
 
     emu_ir_put(b, 12u, emu_ir_alu(b, EMU_IR_ADD, s2, p));
-    const uint16_t m = emu_ir_alu(b, EMU_IR_MUL, x, y);
+    const uint16_t m = (brk == LB_YX) ? emu_ir_alu(b, EMU_IR_MUL, y, x)
+                                      : emu_ir_alu(b, EMU_IR_MUL, x, y);
     const uint16_t acc = emu_ir_get(b, 16u);
     uint16_t term = m;
 
@@ -1294,6 +1296,15 @@ static void test_loop_shape(void)
         CHECK(emu_ir_loop_shape(&g_b, &lp));
         CHECK_EQ(lp.kind, k[i].want);
     }
+
+    /* The factors the other way round: x is still the one stepping by 2. */
+    loop_dot_block(LB_YX);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_DOT16);
+    CHECK(lp.dot.ok);
+    CHECK_EQ(lp.dot.xreg, 15u);
+    CHECK_EQ(lp.dot.yreg, 12u);
+    CHECK_EQ((uint32_t)lp.dot.xstride, 2u);
 
     /* The mapped product: its map, each chain from the product outward. */
     loop_dot_block(LB_BITEXTRACT);
