@@ -133,9 +133,9 @@ bool emu_print_jit_stats(void)
      * hot set larger than the buffer shows as pcs given up on and their
      * dispatches interpreted, where it used to show only as compactions.
      */
-    emu_console_printf("  thrash   %u (cached %u, retries %u)\n",
+    emu_console_printf("  thrash   %u (cached %u, retries %u, undone %u)\n",
                        (unsigned)js.thrashed, (unsigned)js.thrash_cached,
-                       (unsigned)js.thrash_retries);
+                       (unsigned)js.thrash_retries, (unsigned)js.thrash_undone);
 #if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
     {
         /* docs/jit/autovectorisation.md: a kernel that never runs reads 0 */
