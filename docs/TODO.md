@@ -57,12 +57,10 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       its word at a constant offset as CR's was; or a PC profile of
       both builds (`-DEMU_PC_PROFILE`) to see which lines grew.
 - [ ] **The dot-product kernels left**
-      ([jit/autovectorisation.md](jit/autovectorisation.md)): ARMv7-M's
-      `smlabb` loops (3.3% of its CoreMark samples), whose sticky Q a
-      kernel would have to compute per step -- a recogniser pattern for
-      the OR into xPSR, the overflow tracked in the C kernel and the
-      emitted loop (SMLABB with Q cleared before, read after), and a
-      fuzz-ir generator; Helium's `VMLADAVA` on the N6.
+      ([jit/autovectorisation.md](jit/autovectorisation.md)): Helium's
+      `VMLADAVA` on the N6, which needs MVE's contiguous and gather
+      `VLDRH`, `VIDUP`, a multiply by scalar and `VMLADAVA` encoded, and
+      the corpus replay (`ir-board.sh`, F746-only) on the N6 to test it.
 - [ ] **G4MH's arithmetic after the flags**: with SETF a store, profile
       G4MH CoreMark's translated time by host mnemonic again
       ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh))

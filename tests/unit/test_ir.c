@@ -1172,6 +1172,8 @@ enum {
     LB_UNSIGNED, LB_NOLOOP,
     LB_BITEXTRACT, /* not a break: CoreMark's mapped product, a DOT16_F */
     LB_YX,         /* not a break: the strided factor first, as ARMv7-M's smulbb */
+    LB_Q,          /* not a break: ARMv7-M's smlabb, its overflow ORed into Q (r17) */
+    LB_QBAD,       /* a sticky OR of a bit that is not the overflow's */
 };
 
 static void loop_dot_block(uint32_t brk)
@@ -1211,7 +1213,20 @@ static void loop_dot_block(uint32_t brk)
 
         term = emu_ir_alu(b, EMU_IR_MUL, h, l);
     }
-    emu_ir_put(b, 16u, emu_ir_alu(b, EMU_IR_ADD, acc, term));
+    const uint16_t res = emu_ir_alu(b, EMU_IR_ADD, acc, term);
+
+    emu_ir_put(b, 16u, res);
+    if (brk == LB_Q || brk == LB_QBAD) { /* armv7m_ir.c's set_q, Q at bit 27 */
+        const uint16_t q = emu_ir_get(b, 17u);
+        const uint16_t v = emu_ir_alu(b, EMU_IR_AND, emu_ir_alu(b, EMU_IR_XOR, term, res),
+                                      emu_ir_alu(b, EMU_IR_XOR, acc, res));
+        const uint16_t sh = emu_ir_emit(b, EMU_IR_SHRI, 0u, v, EMU_IR_NO_TEMP, 4u, 0u);
+
+        emu_ir_put(b, 17u, emu_ir_alu(b, EMU_IR_OR, q,
+                                      emu_ir_alu(b, EMU_IR_AND, sh,
+                                                 emu_ir_const(b, (brk == LB_Q) ? 1u << 27
+                                                                               : 1u << 26))));
+    }
     if (brk == LB_STORE) {
         (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, false), a, m, 0x40u, 0u);
     }
@@ -1276,6 +1291,66 @@ static void test_kernel_table_full(void)
     CHECK_EQ(emu_ir_kernel_add(&d, &g_fake_target, &w), 0u); /* room again */
     emu_ir_kernel_reset();
 }
+
+/*
+ * The C kernel with a sticky Q: its adds one at a time from the sum's own
+ * value. 0x7FFF0000 + 0x3FFF0001 overflows, - 0x3FFF0001 overflows back,
+ * and + 1 does not: the total is one past where it began, which a check
+ * of the total cannot see, nor one of the last step, and SMLABB's Q
+ * does. Then from 0, where nothing overflows, and the same loop without
+ * `q`, which must leave r4 alone.
+ */
+static void test_kernel_sticky_q(void)
+{
+    static uint8_t ram[64];
+    static fake_cpu_t c;
+    const emu_ir_fastmem_t w = {.base = 0x1000u, .size = sizeof(ram), .host = ram};
+    static const int16_t xs[4] = {0x7FFF, -0x7FFF, 1, 0}, ys[4] = {0x7FFF, 0x7FFF, 1, 0};
+    emu_ir_dot_t d;
+
+    memset(ram, 0, sizeof(ram));
+    for (uint32_t i = 0; i < 4u; i++) {
+        memcpy(&ram[2u * i], &xs[i], 2u);
+        memcpy(&ram[16u + 2u * i], &ys[i], 2u);
+    }
+    memset(&d, 0, sizeof(d));
+    d.ok = true;
+    d.xreg = 1u;
+    d.yreg = 2u;
+    d.ereg = 1u;
+    d.acc = 3u;
+    d.lreg = 0xFFu;
+    d.lconst = 0x1008u; /* four elements: on while r1 + 2 != 0x1008 */
+    d.ec = 2;
+    d.ysreg = 0xFFu;
+    d.ysconst = 2;
+    d.xstride = 2;
+    d.estep = 2;
+    d.insns = 6u;
+    d.q = true;
+    d.qreg = 4u;
+    d.qbit = 27u;
+
+    for (uint32_t k = 0; k < 3u; k++) {
+        const uint32_t acc0 = (k == 1u) ? 0u : 0x7FFF0000u;
+
+        d.q = k != 2u;
+        emu_ir_kernel_reset();
+        const uint32_t ix = emu_ir_kernel_add(&d, &g_fake_target, &w);
+
+        memset(&c, 0, sizeof(c));
+        c.r[1] = 0x1000u;
+        c.r[2] = 0x1010u;
+        c.r[3] = acc0;
+        c.r[4] = 0x01000000u; /* the word's other bits stay */
+        CHECK_EQ(emu_ir_kernel_run((emu_cpu_t *)(void *)&c, ix, 0u), 18u); /* three, the last left */
+        CHECK_EQ(c.r[1], 0x1006u);
+        CHECK_EQ(c.r[2], 0x1016u);
+        CHECK_EQ(c.r[3], acc0 + 1u); /* +p - p + 1 */
+        CHECK_EQ(c.r[4], (k == 0u) ? 0x09000000u : 0x01000000u);
+    }
+    emu_ir_kernel_reset();
+}
 #endif
 
 static void test_loop_shape(void)
@@ -1305,6 +1380,23 @@ static void test_loop_shape(void)
     CHECK_EQ(lp.dot.xreg, 15u);
     CHECK_EQ(lp.dot.yreg, 12u);
     CHECK_EQ((uint32_t)lp.dot.xstride, 2u);
+
+    /* SMLABB's Q: the sum's overflow, a step's, ORed into r17's bit 27 */
+    loop_dot_block(LB_Q);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_DOT16);
+    CHECK(lp.dot.ok);
+    CHECK(lp.dot.q);
+    CHECK_EQ(lp.dot.qreg, 17u);
+    CHECK_EQ(lp.dot.qbit, 27u);
+    loop_dot_block(LB_QBAD); /* bit 26 of the word whose bit 31 overflowed */
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK_EQ(lp.kind, EMU_IR_LOOP_DOT16);
+    CHECK(!lp.dot.ok);
+    loop_dot_block(LB_NONE);
+    CHECK(emu_ir_loop_shape(&g_b, &lp));
+    CHECK(lp.dot.ok);
+    CHECK(!lp.dot.q);
 
     /* The mapped product: its map, each chain from the product outward. */
     loop_dot_block(LB_BITEXTRACT);
@@ -4655,6 +4747,7 @@ void test_ir(void)
     test_loop_shape_bytes();
 #if defined(EMU_IR_LOOP_SHAPE) && EMU_IR_LOOP_SHAPE
     test_kernel_table_full();
+    test_kernel_sticky_q();
 #endif
     test_flags_live_out();
     test_redundant_get_elided();

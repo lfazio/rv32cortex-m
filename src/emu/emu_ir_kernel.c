@@ -42,6 +42,8 @@ typedef struct {
     uint32_t vconst;
     int32_t xoff, yoff, xstride, ysconst, estep, ec;
     uint32_t lconst, ysshift, insns;
+    uint32_t qo, qbit; /* the sticky overflow bit, where q */
+    bool q;
     uint32_t base, size;
     const uint8_t *host;
     /* the image window, read-only: a byte loop's source may be there
@@ -98,6 +100,11 @@ uint32_t emu_ir_kernel_add(const emu_ir_dot_t *d, const emu_ir_target_t *t,
     memcpy(k.flen, d->flen, sizeof(k.flen));
     memcpy(k.fop, d->fop, sizeof(k.fop));
     memcpy(k.fimm, d->fimm, sizeof(k.fimm));
+    k.q = d->q;
+    if (d->q) {
+        k.qo = t->reg_offset(d->qreg);
+        k.qbit = d->qbit;
+    }
     return kernel_insert(&k);
 }
 
@@ -238,6 +245,9 @@ bool emu_ir_kernel_dot(uint32_t index, emu_ir_kernel_dot_t *out)
     memcpy(out->flen, k->flen, sizeof(out->flen));
     memcpy(out->fop, k->fop, sizeof(out->fop));
     memcpy(out->fimm, k->fimm, sizeof(out->fimm));
+    out->q = k->q;
+    out->qo = k->qo;
+    out->qbit = k->qbit;
     return true;
 }
 
@@ -494,8 +504,29 @@ EMU_HOT_TEXT uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t
     uint32_t sum = 0u;
     uint32_t i = 0u;
 
+    if (k->q) {
+        /*
+         * The sum step by step from the register's value, each add's
+         * signed overflow ORed into the sticky bit -- SMLABB's Q, set by
+         * an intermediate overflow even where the total comes back.
+         */
+        uint32_t s = reg(cpu, k->ao), ovf = 0u;
+
+        for (; i < m; i++) {
+            const uint32_t v = mapped(k, (uint32_t)(elem(k, x + (uint32_t)k->xstride * i, k->xswap) *
+                                                    elem(k, y + (uint32_t)ys * i, k->yswap)));
+            const uint32_t s2 = s + v;
+
+            ovf |= (v ^ s2) & (s ^ s2);
+            s = s2;
+        }
+        sum = s - reg(cpu, k->ao);
+        if ((ovf >> 31) != 0u) {
+            set_reg(cpu, k->qo, reg(cpu, k->qo) | (1u << k->qbit));
+        }
+    }
 #if KERNEL_SMLAD
-    if (k->fchains == 0u && k->xstride == 2 && !k->xswap && !k->yswap &&
+    if (!k->q && k->fchains == 0u && k->xstride == 2 && !k->xswap && !k->yswap &&
         ((x - k->base) & 3u) == 0u) {
         /* Two products a SMLAD: x's pair from one word, y's packed. */
         const uint8_t *px = k->host + (x - k->base);

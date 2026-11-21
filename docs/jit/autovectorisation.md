@@ -331,9 +331,23 @@ ARMv7-M's went missing.
 | ARMv7-M, pad 0 / 64 (pass order, against the above) | 11.24 / 11.18 | 11.05 / 11.05 | **-1.69% / -1.16%**, 1 kernel, 493,773 iterations inline |
 | RV32, G4MH | | | +0.0 to +0.3%, the same kernels: layout |
 
-ARMv7-M's other two dot loops (`smlabb`, 0.7% and 2.6% of its samples)
-still have no kernel: SMLABB sets Q on overflow, a sticky bit the
-recogniser reads as the loop's but no kernel computes.
+**ARMv7-M's `smlabb` loops** (2026-11-21): SMLABB sets Q when the
+accumulate overflows, and the translator ORs that into xPSR every
+iteration (`set_q`). The recogniser now matches that expression exactly
+-- `x | ((((p ^ res) & (old ^ res)) >> sh) & (1 << (31 - sh)))` -- and
+records the register and the bit (`q`, `qreg`, `qbit`); anything else
+ORed into a register keeps the scalar body. The C kernel then adds step
+by step from the sum's own value, ORing each add's overflow -- a step's,
+not the total's: a sum that overflows and comes back still sets Q -- and
+Thumb-2's emitted loop uses the host's own SMLABB, the APSR's Q cleared
+before and read after. `test_kernel_sticky_q` holds the step rule (three
+mutants of the kernel and two of the matcher fail it), and fuzz-ir draws
+the sticky bit at any position, now and then with a mask one bit off.
+
+| F746, CoreMark under the JIT | before | after | |
+|---|---|---|---|
+| ARMv7-M, pad 0 / 64 | 10.33 / 10.33 | 10.17 / 10.17 | **-1.55%**, 3 kernels, 1,036,923 iterations inline (493,773 before) |
+| RV32 | 8.92 | 8.91 | -0.11%: the same kernels, layout |
 
 **P3 -- copies and fills. strcpy's kept.** The byte loops get the same
 call: copy to the NUL (strcpy), copy and fill counted (memcpy, memset),

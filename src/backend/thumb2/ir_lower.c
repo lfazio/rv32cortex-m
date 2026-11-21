@@ -1398,7 +1398,8 @@ static int emit_dot_inline(uint32_t index)
     const uint32_t s = (uint32_t)((d.estep < 0) ? -d.estep : d.estep);
     const uint32_t offs[] = {d.xo, d.yo, d.eo, d.ao,
                              (d.lo == EMU_IR_KERNEL_NO_REG) ? 0u : d.lo,
-                             (d.so == EMU_IR_KERNEL_NO_REG) ? 0u : d.so};
+                             (d.so == EMU_IR_KERNEL_NO_REG) ? 0u : d.so,
+                             d.q ? d.qo : 0u};
 
     if (d.xstride != 2 || (s != 1u && s != 2u && s != 4u) ||
         d.insns == 0u || d.insns > EMU_JIT_LOOP_CAP || d.size < 2u || d.size > 0x7FFFFFFFu ||
@@ -1429,8 +1430,8 @@ static int emit_dot_inline(uint32_t index)
     uint32_t nk = 0u;
     static const uint8_t k_slots[2] = {T2_R1, T2_LR};
 
-    if (d.fchains > 2u) {
-        return KI_SKIP;
+    if (d.fchains > 2u || (d.q && (d.fchains != 0u || d.qbit > 31u))) {
+        return KI_SKIP; /* a sticky bit: SMLABB's own Q, on a product summed unmapped */
     }
     for (uint32_t c = 0u; c < 2u; c++) {
         for (uint32_t i = 0u; i < EMU_IR_DOT_FN_OPS; i++) {
@@ -1543,7 +1544,19 @@ static int emit_dot_inline(uint32_t index)
     t2_imm32(T2_R12, (uint32_t)(uintptr_t)d.host);
     t2_add(KXH, KXH, T2_R12);
     t2_add(KYH, KYH, T2_R12);
-    t2_imm32(T2_R0, 0u);
+    if (d.q) {
+        /*
+         * From the sum itself, and the host's Q clear: SMLABB sets Q on
+         * the accumulate's signed overflow, step by step, as the guest's
+         * does. Nothing before the kernel -- the block's first op -- has
+         * flags in the APSR to lose.
+         */
+        t2_ldr_imm(T2_R0, T2_CPU, d.ao);
+        t2_imm32(T2_R3, 0u);
+        t2_msr_apsr_nzcvq(T2_R3);
+    } else {
+        t2_imm32(T2_R0, 0u);
+    }
     t2_mov(T2_R2, T2_R1);
     t2_imm32(KX, 0u);
     t2_imm32(KY, 0u);
@@ -1568,7 +1581,9 @@ static int emit_dot_inline(uint32_t index)
     }
     t2_add_imm(KX, KX, 2u); /* imm12 2: the byte itself */
     t2_add(KY, KY, KS);
-    if (d.fchains == 0u) {
+    if (d.q) {
+        t2_smlaxy(T2_R0, T2_R3, T2_R12, T2_R0, false, false); /* SMLABB: Q, as the guest's */
+    } else if (d.fchains == 0u) {
         t2_mla(T2_R0, T2_R3, T2_R12, T2_R0, false); /* MLA: no Q, unlike SMLABB */
     } else {
         /* DOT16_F: the product in r3, chain 0 into r12, chain 1 in place */
@@ -1609,9 +1624,21 @@ static int emit_dot_inline(uint32_t index)
         t2_mla(T2_R3, T2_R12, T2_R1, T2_R3, false);
         t2_str_imm(T2_R3, T2_CPU, d.eo);
     }
-    t2_ldr_imm(T2_R3, T2_CPU, d.ao);
-    t2_add(T2_R3, T2_R3, T2_R0);
-    t2_str_imm(T2_R3, T2_CPU, d.ao);
+    if (d.q) {
+        t2_str_imm(T2_R0, T2_CPU, d.ao); /* r0 is the sum, from its own value */
+        t2_mrs_apsr(T2_R3);
+        t2_ubfx(T2_R3, T2_R3, 27u, 1u); /* the host's Q */
+        if (d.qbit != 0u) {
+            t2_shift_imm(T2_LSL, T2_R3, T2_R3, d.qbit);
+        }
+        t2_ldr_imm(T2_R12, T2_CPU, d.qo);
+        t2_orr(T2_R12, T2_R12, T2_R3);
+        t2_str_imm(T2_R12, T2_CPU, d.qo);
+    } else {
+        t2_ldr_imm(T2_R3, T2_CPU, d.ao);
+        t2_add(T2_R3, T2_R3, T2_R0);
+        t2_str_imm(T2_R3, T2_CPU, d.ao);
+    }
     /* what it retired, and the report's count */
     t2_imm32(T2_R12, d.insns);
     t2_mla(T2_CNT, T2_R1, T2_R12, T2_CNT, false);

@@ -2522,6 +2522,84 @@ static bool lk_map(const emu_ir_block_t *b, uint16_t term, uint16_t *p, emu_ir_d
     return true;
 }
 
+/*
+ * A temp's constant operand, as the fusion pass may have left it: an
+ * immediate op's imm, or a CONST beside the other operand. *x is the other.
+ */
+static bool lk_op_k(const emu_ir_block_t *b, uint16_t t, uint8_t op, uint8_t opi, uint16_t *x,
+                    uint32_t *k)
+{
+    const emu_ir_insn_t *const d = lk_def_insn(b, t);
+
+    if (d == NULL) {
+        return false;
+    }
+    if (d->op == opi) {
+        *x = d->a;
+        *k = d->imm;
+        return true;
+    }
+    if (d->op != op) {
+        return false;
+    }
+    if (lk_const(b, d->b, k)) {
+        *x = d->a;
+        return true;
+    }
+    if (op == (uint8_t)EMU_IR_AND && lk_const(b, d->a, k)) {
+        *x = d->b;
+        return true;
+    }
+    return false;
+}
+
+/* `t` is XOR(u, v) or XOR(v, u). */
+static bool lk_xor_of(const emu_ir_block_t *b, uint16_t t, uint16_t u, uint16_t v)
+{
+    const emu_ir_insn_t *const d = lk_def_insn(b, t);
+
+    return d != NULL && d->op == (uint8_t)EMU_IR_XOR &&
+           ((d->a == u && d->b == v) || (d->a == v && d->b == u));
+}
+
+/*
+ * The sticky register r's update is the sum's signed overflow, one bit:
+ * put[r] = get[r] | ((((term ^ res) & (old ^ res)) >> sh) & (1 << (31 -
+ * sh))), res = old + term -- ARMv7-M's SMLABB, set_q, Q at bit 27. Any
+ * other OR into a register is not something a kernel knows how to
+ * compute, and the loop keeps its scalar body.
+ */
+static bool lk_sticky_q(const emu_ir_block_t *b, uint8_t r, uint8_t acc, uint16_t term,
+                        const uint16_t *get, const uint16_t *put, uint8_t *bit)
+{
+    const emu_ir_insn_t *const o = lk_def_insn(b, put[r]);
+    const emu_ir_insn_t *const s = lk_def_insn(b, put[acc]);
+
+    if (o == NULL || o->op != (uint8_t)EMU_IR_OR || s == NULL ||
+        s->op != (uint8_t)EMU_IR_ADD || get[r] == EMU_IR_NO_TEMP) {
+        return false;
+    }
+    const uint16_t t = (o->a == get[r]) ? o->b : (o->b == get[r]) ? o->a : EMU_IR_NO_TEMP;
+    uint16_t sh_t, v;
+    uint32_t mask, sh;
+
+    if (t == EMU_IR_NO_TEMP || !lk_op_k(b, t, EMU_IR_AND, EMU_IR_ANDI, &sh_t, &mask) ||
+        !lk_op_k(b, sh_t, EMU_IR_SHR, EMU_IR_SHRI, &v, &sh) || sh > 31u ||
+        mask != (1u << (31u - sh))) {
+        return false;
+    }
+    const emu_ir_insn_t *const a = lk_def_insn(b, v);
+    const uint16_t res = put[acc], old = get[acc];
+
+    if (a == NULL || a->op != (uint8_t)EMU_IR_AND ||
+        !((lk_xor_of(b, a->a, term, res) && lk_xor_of(b, a->b, old, res)) ||
+          (lk_xor_of(b, a->b, term, res) && lk_xor_of(b, a->a, old, res)))) {
+        return false;
+    }
+    *bit = (uint8_t)(31u - sh);
+    return true;
+}
+
 static void lk_dot(const emu_ir_block_t *b, emu_ir_loop_t *out, uint8_t acc, uint16_t term,
                    uint32_t back, const uint8_t *cls, const uint16_t *get, const uint16_t *put)
 {
@@ -3088,6 +3166,19 @@ bool emu_ir_loop_shape(const emu_ir_block_t *b, emu_ir_loop_t *out)
                 out->kind = mapped ? EMU_IR_LOOP_DOT16_F : EMU_IR_LOOP_DOT16;
                 if (out->sticky == 0u) {
                     lk_dot(b, out, (uint8_t)r, sum_term[r], back, cls, get, put);
+                } else if (out->sticky == 1u) {
+                    /* the one sticky register, if it is the sum's overflow */
+                    uint8_t q = 0u, bit = 0u;
+
+                    while (q < R && cls[q] != 5u) {
+                        q++;
+                    }
+                    if (q < R && lk_sticky_q(b, q, (uint8_t)r, sum_term[r], get, put, &bit)) {
+                        lk_dot(b, out, (uint8_t)r, sum_term[r], back, cls, get, put);
+                        out->dot.q = out->dot.ok;
+                        out->dot.qreg = q;
+                        out->dot.qbit = bit;
+                    }
                 }
             }
         }
@@ -3131,8 +3222,10 @@ static void loop_kernel(emu_ir_block_t *b, const emu_ir_target_t *t, const emu_i
                         lp->kind == EMU_IR_LOOP_FILL) &&
                        lp->copy.ok;
 
-    const uint8_t aux =
-        (uint8_t)(lp->kind | ((dot && lp->dot.xstride == 2) ? EMU_IR_KERNEL_PLAIN : 0u));
+    const uint8_t aux = (uint8_t)(lp->kind | ((dot && lp->dot.xstride == 2 &&
+                                                (!lp->dot.q || lp->dot.fchains == 0u))
+                                                   ? EMU_IR_KERNEL_PLAIN
+                                                   : 0u));
 
     if (t == NULL || (!dot && !bytes) || (emu_ir_kernel_kinds & (1u << lp->kind)) == 0u ||
         !b->has_fast || b->count + 1u > EMU_IR_MAX_INSNS ||

@@ -571,7 +571,9 @@ meaning) -- none, one chain or two multiplied, up to four of the
 fourteen operations each, shifts past 31 and constants with no
 immediate form among them -- and the order of the two factors, on a
 bit of the trip byte nothing read (ARMv7-M's `mla` puts y first, which
-the recogniser refused).
+the recogniser refused). And last, a sticky overflow bit: the sum's
+signed overflow ORed into r7 at any position, the shift emitted even at
+0, sometimes with a mask one bit off that must keep the scalar body.
 
 **A flag word that holds the flags alone** (`flags_alone`): fuzz-ir has
 eight more targets, k_targets[16..23], ARMv7-M's shape and G4MH's (the

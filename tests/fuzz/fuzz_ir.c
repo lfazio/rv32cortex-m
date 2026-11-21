@@ -1370,7 +1370,33 @@ static void build_dot(in_t *in, fcpu_t *c)
                                     : E(EMU_IR_MUL, 0u, lx, ly, 0u, 0u);
 
     emu_ir_put(&g_built, 6u, p); /* a register each iteration writes */
-    emu_ir_put(&g_built, 3u, E(EMU_IR_ADD, 0u, emu_ir_get(&g_built, 3u), dot_map(in, p), 0u, 0u));
+    const uint16_t term = dot_map(in, p);
+    const uint16_t acc = emu_ir_get(&g_built, 3u);
+    const uint16_t res = E(EMU_IR_ADD, 0u, acc, term, 0u, 0u);
+
+    emu_ir_put(&g_built, 3u, res);
+
+    /*
+     * Drawn after everything above (an input ending there reads 0 and
+     * keeps its meaning): the sum's signed overflow ORed into r7, as
+     * ARMv7-M's SMLABB sets Q -- at any bit, the shift emitted even when
+     * it is 0, and now and then a mask one bit off, which is not the
+     * overflow and must keep its scalar body.
+     */
+    const uint32_t qb = byte(in);
+
+    if ((qb & 1u) != 0u) {
+        const uint32_t sh = (qb >> 1) & 31u;
+        const uint32_t mask = ((qb & 0x40u) != 0u && sh > 0u) ? 1u << (32u - sh)
+                                                               : 1u << (31u - sh);
+        const uint16_t v = E(EMU_IR_AND, 0u, E(EMU_IR_XOR, 0u, term, res, 0u, 0u),
+                             E(EMU_IR_XOR, 0u, acc, res, 0u, 0u), 0u, 0u);
+        const uint16_t t = E(EMU_IR_AND, 0u, E(EMU_IR_SHRI, 0u, v, EMU_IR_NO_TEMP, sh, 0u),
+                             emu_ir_const(&g_built, mask), 0u, 0u);
+
+        c->r[7] = (qb & 0x80u) ? 0xFFFFFFFFu : 0u;
+        emu_ir_put(&g_built, 7u, E(EMU_IR_OR, 0u, emu_ir_get(&g_built, 7u), t, 0u, 0u));
+    }
     (void)E(EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 3u + (f >> 7), 0u);
     if ((f & 0x20u) != 0u) {
         /* PowerPC's bdnz: a counter down to zero */
