@@ -349,6 +349,30 @@ the sticky bit at any position, now and then with a mask one bit off.
 | ARMv7-M, pad 0 / 64 | 10.33 / 10.33 | 10.17 / 10.17 | **-1.55%**, 3 kernels, 1,036,923 iterations inline (493,773 before) |
 | RV32 | 8.92 | 8.91 | -0.11%: the same kernels, layout |
 
+**Helium on the N6** (2026-11-21). Where the core has MVE (`have_mve`,
+MVFR1), the emitted loop runs eight iterations a step while eight are
+left: x's eight halfwords in one `VLDRH.16`, y's gathered by `VLDRH.U16
+[Rn, Qm]` from offsets `{0, ys, .., 7 ys}` built once by `VIDUP` and
+`VMUL` by scalar, and `VMLAVA.S16` adding the eight products into the
+sum, modulo 2^32 as the scalar MLA does; the offsets move as the scalar
+loop's would, and it finishes what is left. A plain product only -- a
+map, a sticky Q or a swapped element keeps the scalar loop -- and a
+stride the gather's 16-bit offsets reach (0 to 9362 bytes). The five
+encodings are held to the assembler (`t2-check-encodings`, several
+registers each).
+
+The corpus replay runs on the F746, which has no MVE, so the N6 gets a
+guest instead: `dotcheck` computes 894 dot products of every length
+around a multiple of 8, strides past the gather's reach, odd-halfword
+starts and both ends of int16_t, through the kernel's loop and through
+a 64-bit one no kernel takes, and prints FAIL for each difference
+(ctests `guest-dotcheck`, both backends). On the N6 all 894 agree, and
+with y's step made 4 ys instead of 8 ys, 470 do not.
+
+| N6, RV32 CoreMark under the JIT | before | after | |
+|---|---|---|---|
+| pad 0 / 64 | 12.30 / 12.22 | 12.13 / 12.11 | **-1.4% / -0.9%**, CRC and retired count unchanged |
+
 **P3 -- copies and fills. strcpy's kept.** The byte loops get the same
 call: copy to the NUL (strcpy), copy and fill counted (memcpy, memset),
 a byte at a time in the scalar loop's order -- so a destination over its

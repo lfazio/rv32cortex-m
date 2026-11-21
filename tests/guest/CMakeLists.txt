@@ -458,6 +458,16 @@ add_guest_image(vecround SOURCES start.S vecround.c
 # Results at the edge of underflow (fpedge.c): what an FPU detecting
 # tininess before rounding answers differently from RISC-V.
 add_guest_image(fpedge SOURCES start.S fpedge.c)
+
+# The dot-product kernels against a 64-bit reference, shape by shape
+# (dotcheck.c): y's array takes what the guest RAM leaves, up to 40000
+# halfwords, so the strides past Helium's gather reach run where the RAM
+# allows them (-DEMU_GUEST_RAM_KIB=256 on the N6).
+math(EXPR _dot_elems "(${EMU_GUEST_RAM_KIB} - 24) * 512")
+if(_dot_elems GREATER 40000)
+    set(_dot_elems 40000)
+endif()
+add_guest_image(dotcheck SOURCES start.S dotcheck.c FLAGS -DDOT_ELEMS=${_dot_elems}u)
 add_guest_image(fpedge-v SOURCES start.S fpedge.c
                 FLAGS -march=${RV_GUEST_MARCH}_zve32f)
 

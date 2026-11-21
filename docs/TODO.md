@@ -56,11 +56,6 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       (`wip/ppc-bc-decoded-field`). Untried: a `bc` handler per field,
       its word at a constant offset as CR's was; or a PC profile of
       both builds (`-DEMU_PC_PROFILE`) to see which lines grew.
-- [ ] **The dot-product kernels left**
-      ([jit/autovectorisation.md](jit/autovectorisation.md)): Helium's
-      `VMLADAVA` on the N6, which needs MVE's contiguous and gather
-      `VLDRH`, `VIDUP`, a multiply by scalar and `VMLADAVA` encoded, and
-      the corpus replay (`ir-board.sh`, F746-only) on the N6 to test it.
 - [ ] **G4MH's arithmetic after the flags**: with SETF a store, profile
       G4MH CoreMark's translated time by host mnemonic again
       ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh))
@@ -175,7 +170,6 @@ From the last measurements in [linux.md](linux.md).
 
 ## PowerPC
 
-- [ ] Implement vectorial extensions
 - [ ] **SPE, the Signal Processing Engine** -- the e200's SIMD: each
       64-bit GPR as two 32-bit lanes (`ev*`: arithmetic, logic, shifts,
       merges, 64-bit loads and stores such as `evldd`/`evstdd`, the

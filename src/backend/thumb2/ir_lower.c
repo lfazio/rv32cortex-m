@@ -1388,6 +1388,37 @@ static void emit_map_op(uint8_t op, uint32_t imm, uint32_t rd, uint32_t rs, uint
     }
 }
 
+/*
+ * MVE (Helium), where the core has it -- the N6's Cortex-M55: 16 bytes an
+ * instruction where the DSP extension has 4, every element width for the
+ * multiply and the shifts, and the same tail window. Built where the
+ * compiler targets it, used where MVFR1 says the core implements it (read
+ * once; the M7's MVFR1 has 0 there). The unmasked single-width operations
+ * and the whole-group copies; the rest keeps the DSP lowering.
+ */
+#if defined(__ARM_FEATURE_MVE)
+#define T2_HAVE_MVE 1
+#else
+#define T2_HAVE_MVE 0
+#endif
+
+#if T2_HAVE_MVE
+static bool have_mve(void)
+{
+    static int8_t s_mve = -1;
+
+    if (s_mve < 0) {
+        s_mve = (int8_t)((((*(volatile const uint32_t *)0xE000EF44u) >> 8) & 0xFu) != 0u);
+    }
+    return s_mve > 0;
+}
+#else
+static bool have_mve(void)
+{
+    return false;
+}
+#endif
+
 static int emit_dot_inline(uint32_t index)
 {
     emu_ir_kernel_dot_t d;
@@ -1567,6 +1598,49 @@ static int emit_dot_inline(uint32_t index)
             }
         }
     }
+
+    /*
+     * Helium, where the core has it (the N6's M55): eight iterations a
+     * step while eight are left -- x's eight halfwords in one VLDRH, y's
+     * gathered from the offsets {0, ys, .., 7 ys} built once by VIDUP and
+     * a multiply, and VMLAVA adding the eight products into r0, modulo
+     * 2^32 as the scalar MLA does. The offsets move as the scalar loop's
+     * would, which takes what is left, so everything after the loop
+     * stands. A plain product only: a map, a sticky Q or a swapped element
+     * keeps the scalar loop, as does a stride the gather's sixteen-bit
+     * offsets cannot reach (7 ys above 65535, or a negative one).
+     */
+    uint8_t *vdone = NULL;
+
+    if (have_mve() && d.fchains == 0u && !d.q && !d.xswap && !d.yswap) {
+        uint8_t *novec[2];
+
+        t2_cmp_imm(T2_R2, 8u);
+        novec[0] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_LTU));
+        t2_imm32(T2_R3, 9362u); /* 7 * 9362 = 65534 */
+        t2_cmp(KS, T2_R3);
+        novec[1] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GTU));
+        t2_imm32(T2_R12, 0u);
+        t2_vidup16(2u, T2_R12, 1u); /* q2 = {0 .. 7} */
+        t2_vmul16_scalar(2u, 2u, KS); /* q2 = {0, ys, .., 7 ys} */
+        const uint8_t *const vtop = emu_jit_here();
+
+        t2_add(T2_R3, KXH, KX);
+        t2_vldrh16(0u, T2_R3, 0u);
+        t2_add(T2_R12, KYH, KY);
+        t2_vldrh16_gather(1u, T2_R12, 2u);
+        t2_vmlava16(T2_R0, 0u, 1u);
+        t2_add_imm(KX, KX, 16u);
+        t2_add_lsl(KY, KY, KS, 3u);
+        t2_imm32(T2_R3, 8u);
+        t2_sub(T2_R2, T2_R2, T2_R3);
+        t2_cmp_imm(T2_R2, 8u);
+        patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GEU)), vtop, true);
+        t2_cmp_imm(T2_R2, 0u); /* none left: past the scalar loop */
+        vdone = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_EQ));
+        patch_branch(novec[0], emu_jit_here(), true);
+        patch_branch(novec[1], emu_jit_here(), true);
+    }
     const uint8_t *const top = emu_jit_here();
 
     /* A big-endian element (PowerPC's) is LDRH and REVSH, a little-endian one LDRSH. */
@@ -1609,6 +1683,9 @@ static int emit_dot_inline(uint32_t index)
     }
     t2_adds_imm(T2_R2, T2_R2, minus1);
     patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_NE)), top, true);
+    if (vdone != NULL) {
+        patch_branch(vdone, emu_jit_here(), true);
+    }
     t2_shift_imm(T2_LSR, T2_R1, KX, 1u); /* the count again: x moved 2 a step */
 
     /* the registers, in the C kernel's order: x, y, e, the sum */
@@ -1975,36 +2052,6 @@ static bool vop_lowerable(uint8_t aux)
     }
 }
 
-/*
- * MVE (Helium), where the core has it -- the N6's Cortex-M55: 16 bytes an
- * instruction where the DSP extension has 4, every element width for the
- * multiply and the shifts, and the same tail window. Built where the
- * compiler targets it, used where MVFR1 says the core implements it (read
- * once; the M7's MVFR1 has 0 there). The unmasked single-width operations
- * and the whole-group copies; the rest keeps the DSP lowering.
- */
-#if defined(__ARM_FEATURE_MVE)
-#define T2_HAVE_MVE 1
-#else
-#define T2_HAVE_MVE 0
-#endif
-
-#if T2_HAVE_MVE
-static bool have_mve(void)
-{
-    static int8_t s_mve = -1;
-
-    if (s_mve < 0) {
-        s_mve = (int8_t)((((*(volatile const uint32_t *)0xE000EF44u) >> 8) & 0xFu) != 0u);
-    }
-    return s_mve > 0;
-}
-#else
-static bool have_mve(void)
-{
-    return false;
-}
-#endif
 
 /* The unmasked operations MVE lowers; the averages under rnu and rdn. */
 static bool vop_mve(uint32_t op, uint32_t sew, uint32_t rm)

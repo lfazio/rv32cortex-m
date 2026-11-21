@@ -150,6 +150,12 @@ void t2_ssat16(uint32_t rd, uint32_t rn);
 void t2_msr_apsr_nzcvq(uint32_t rn);
 void t2_smlaxy(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool nt,
                bool mt);
+/* MVE, the Helium dot product's (encode.c) */
+void t2_vldrh16(uint32_t qd, uint32_t rn, uint32_t off);
+void t2_vldrh16_gather(uint32_t qd, uint32_t rn, uint32_t qm);
+void t2_vidup16(uint32_t qd, uint32_t rn, uint32_t imm);
+void t2_vmul16_scalar(uint32_t qd, uint32_t qn, uint32_t rm);
+void t2_vmlava16(uint32_t rda, uint32_t qn, uint32_t qm);
 #define T2_LR 14u
 void t2_bic(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_rev16(uint32_t rd, uint32_t rm);
