@@ -50,10 +50,12 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
 ## JIT
 
 - [ ] **PowerPC's interpreter 0.6-1.0% slower with CR as fields**
-      ([frontend/ppc.md](frontend/ppc.md#the-jit)): a `bc` finds its
-      field (`bi >> 2`) and shift (`3 - (bi & 3)`) at every execution;
-      decoded once, into the decode cache's entry, it would be a load
-      and a shift as before.
+      ([frontend/ppc.md](frontend/ppc.md#the-jit)), on the M7 only:
+      callgrind counts fewer host instructions, and the field's offset
+      and shift decoded once made it slower still
+      (`wip/ppc-bc-decoded-field`). Untried: a `bc` handler per field,
+      its word at a constant offset as CR's was; or a PC profile of
+      both builds (`-DEMU_PC_PROFILE`) to see which lines grew.
 - [ ] **The dot-product kernels on the other frontends**
       ([jit/autovectorisation.md](jit/autovectorisation.md)): PowerPC's,
       byte-swapped, which the emitted loop declines; ARMv7-M's, which the

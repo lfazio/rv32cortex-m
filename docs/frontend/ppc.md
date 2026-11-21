@@ -1267,8 +1267,13 @@ it shifted one word. First 2.8-3.3% slower, at five layouts (flash 0,
 pack and unpack for mfcr, mtcrf and the multiple-volatile forms had been
 inlined into the loop in ITCM, 256 bytes of it; out of line
 (`cr_word`, `cr_word_set`) it is **0.6% / 1.0% slower** (112.09 to
-113.18, 112.29 to 112.96), the loop 128 bytes larger. The rest is the
-branch's arithmetic ([../TODO.md](../TODO.md)).
+113.18, 112.29 to 112.96), the loop 128 bytes larger. Not more work:
+callgrind counts 0.52% fewer host instructions for it on x86-64 (and
+8.56% fewer under the JIT). Decoding the field's offset and shift once,
+into the `sh` and `mb` a branch does not use, made the loop 48 bytes
+smaller and the interpreter **0.4-0.5% slower still**
+(`wip/ppc-bc-decoded-field`): what the M7 charges is not the
+arithmetic.
 
 ### What it still interprets
 
