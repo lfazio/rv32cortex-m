@@ -256,16 +256,22 @@ void ld_operand(uint32_t rt, uint16_t n)
 }
 
 /*
- * A constant whose one reader is a compare's right operand (EXIT_IF,
- * SETCC), and that CMP or CMN takes as an immediate: the compare uses
- * it in place and the CONST is not emitted. Index + 1 of the CONST, 0
- * for none. Taken from the IR's `uses`, the count the allocator trusts.
+ * A constant whose every reader is a compare's right operand (EXIT_IF,
+ * SETCC, CMP3), and that CMP or CMN takes as an immediate: each compare
+ * uses it in place and the CONST is not emitted. Index + 1 of the
+ * CONST, 0 for none. Every one of its `uses` -- the count the allocator
+ * trusts -- must be such a compare, counted (g_kcmp_reads): a reader
+ * the scan cannot see would read a register nothing wrote.
  *
  * What it replaces: `movw r8, #0` then `cmp r7, r8` for every RISC-V
  * beqz/bnez -- a register and an instruction for a constant ARM encodes
- * in the compare -- in the F746's hottest CoreMark block.
+ * in the compare -- in the F746's hottest CoreMark block. It took one
+ * reader only, and a PowerPC `cmpwi` gives its constant to two: CMP3
+ * for the CR field and the branch comparing the same operands, so the
+ * `movw` stayed in every one (backend/thumb2.md, by mnemonic).
  */
 static EMU_PER_CORE uint16_t g_kcmp[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE uint16_t g_kcmp_reads[EMU_IR_MAX_TEMPS];
 static EMU_PER_CORE const emu_ir_block_t *g_kcmp_block;
 
 static bool kcmp_folded(uint16_t t)
@@ -278,7 +284,7 @@ static bool kcmp_reader(const emu_ir_insn_t *in, uint16_t k)
     if (in->b != k || in->a == k || in->c == k) {
         return false;
     }
-    return in->op == (uint8_t)EMU_IR_EXIT_IF ||
+    return in->op == (uint8_t)EMU_IR_EXIT_IF || in->op == (uint8_t)EMU_IR_CMP3 ||
            (in->op == (uint8_t)EMU_IR_SETCC && in->aux != (uint8_t)EMU_IR_C_ALWAYS);
 }
 
@@ -295,10 +301,11 @@ static void kcmp_scan(const emu_ir_block_t *b)
 
     g_kcmp_block = b;
     memset(g_kcmp, 0, n * sizeof(g_kcmp[0]));
+    memset(g_kcmp_reads, 0, n * sizeof(g_kcmp_reads[0]));
     for (uint32_t i = 0; i < b->count; i++) {
         const emu_ir_insn_t *const in = &b->insn[i];
 
-        if (!in->dead && in->op == (uint8_t)EMU_IR_CONST && in->uses == 1u &&
+        if (!in->dead && in->op == (uint8_t)EMU_IR_CONST && in->uses != 0u &&
             in->dst < n && kcmp_encodes(in->imm)) {
             g_kcmp[in->dst] = (uint16_t)(i + 1u);
         }
@@ -311,9 +318,20 @@ static void kcmp_scan(const emu_ir_block_t *b)
             continue;
         }
         for (uint32_t k = 0; k < 3u; k++) {
-            if (ops[k] < n && g_kcmp[ops[k]] != 0u && !kcmp_reader(in, ops[k])) {
-                g_kcmp[ops[k]] = 0u;
+            if (ops[k] >= n || g_kcmp[ops[k]] == 0u) {
+                continue;
             }
+            if (!kcmp_reader(in, ops[k])) {
+                g_kcmp[ops[k]] = 0u;
+            } else if (k == 1u) {
+                g_kcmp_reads[ops[k]]++; /* its b, once: a and c are not it */
+            }
+        }
+    }
+    /* every use a compare that folds it, or none folds it */
+    for (uint32_t t = 0; t < n; t++) {
+        if (g_kcmp[t] != 0u && g_kcmp_reads[t] != b->insn[g_kcmp[t] - 1u].uses) {
+            g_kcmp[t] = 0u;
         }
     }
 }

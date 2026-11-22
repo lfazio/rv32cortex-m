@@ -72,10 +72,15 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       byte swaps for a big-endian guest in little-endian RAM, 9.0% of
       its translated time -- which only RAM kept in the host's order for
       words (an address XOR for halves and bytes) would drop; the RAM
-      window's bounds guard, 6.5%; a block's entry and exit, 9.1%. And
-      `cmpwi`'s constant in a register: Thumb-2 compares by immediate
-      only for EXIT_IF and SETCC and only a constant used once, and a
-      `cmpwi` gives its constant to CMP3 and to the branch's compare.
+      window's bounds guard, 6.5%; a block's entry and exit, 9.1%. A
+      guard shared by the accesses on one base would reach only a fifth
+      of them: counted on the host, 21% of RV32 CoreMark's accesses, 22%
+      of PowerPC's and 20% of G4MH's follow one on the same base in their
+      block, four in five of them stores -- at most 1.3% of PowerPC's
+      translated time, not built.
+- [ ] **A constant the compare takes as an immediate still gets a
+      register**: Thumb-2's allocator runs before `kcmp_scan`, so a
+      folded constant is allocated and never written.
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have (inlined on Thumb-2 for RV32, ARMv7-M and
       G4MH: [performance.md](performance.md#driver-performance-the-passthrough-window),

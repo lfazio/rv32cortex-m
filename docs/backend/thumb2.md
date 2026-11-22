@@ -1207,10 +1207,17 @@ str.w r0, [r4, #164]  @ the field
 The four for SO are gone: SO is in the context, a constant 0 in a
 block built with it clear, and the two instructions that may set it end
 such a block (PowerPC CoreMark 3.4-3.6% faster,
-[../frontend/ppc.md](../frontend/ppc.md#what-it-is-worth)). The `movw`
-is left: the compare by immediate (`kcmp_scan`) takes a constant with
-one reader, an EXIT_IF or a SETCC, and a `cmpwi`'s goes to CMP3 and to
-the branch that compares the same operands.
+[../frontend/ppc.md](../frontend/ppc.md#what-it-is-worth)). So is the
+`movw`: the compare by immediate (`kcmp_scan`) took a constant with one
+reader, an EXIT_IF or a SETCC, and a `cmpwi`'s goes to CMP3 and to the
+branch that compares the same operands. CMP3 is a reader now, and a
+constant is folded when every one of its uses is such a compare,
+counted against the IR's `uses` -- a reader the scan cannot see would
+read a register nothing wrote. A `cmpwi` is seven: `movw #2`,
+`cmp #imm`, the two predicated moves, the store. PowerPC CoreMark on
+the F746 **0.49% / 0.58% faster**, RV32, ARMv7-M and G4MH within
+±0.2%. The allocator runs before the scan, so a folded constant may
+still hold a register it never fills.
 
 ### A loop's guest registers in host ones: measured, not kept
 
