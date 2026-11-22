@@ -651,7 +651,21 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "t2_ibtc_stub:\n"
         "    ldr     r3, =emu_jit_ibtc_state\n"
         "    cmp     r5, #128\n"          /* EMU_JIT_LOOP_CAP */
+        "    blo     3f\n"
+        "    ldr     r12, =emu_jit_cap_state\n" /* t2_cap_stub's check */
+        "    ldr     r1, [r12]\n"
+        "    ldrb    r1, [r1]\n"
+        "    cmp     r1, #0\n"
+        "    bne     9f\n"
+        "    ldrd    r1, r2, [r12, #4]\n"  /* limit, carried */
+        "    add     r2, r2, r5\n"
+        "    cmp     r2, r1\n"
         "    bhs     9f\n"
+        "    ldr     r1, [r12, #12]\n"
+        "    adds    r1, r1, #1\n"
+        "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
+        "    movs    r5, #0\n"
+        "3:\n"
         "    ldr     r1, =0x9E3779B1\n"   /* emu_jit_ibtc_index */
         "    mul     r1, r0, r1\n"
         "    lsrs    r1, r1, #26\n"       /* 32 - EMU_JIT_IBTC_BITS */
@@ -692,31 +706,31 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    .ltorg\n"
         "    .size t2_ibtc_stub, . - t2_ibtc_stub\n"
         /*
-         * The loop cap's check (emu_jit_cap_continue), called where a
-         * chained exit or a self-loop meets EMU_JIT_LOOP_CAP: the pc
-         * stored, the frame given back, the core in r4 and the count in
-         * r5; r0-r3 and r12 are free, as at a chained exit. Going on, it
-         * returns with the count at 0. Not, it returns for the block, to
-         * the dispatcher -- with the count to charge, or with 0 when the
-         * check charged it and the count hook raised an interrupt. sp is
-         * 4 mod 8 here, after the nine words of the block's push, so one
-         * more word aligns it for the call.
+         * The check past EMU_JIT_LOOP_CAP (emu_jit_cap_state), reached by
+         * a BL from the block -- through its trampoline -- where a chained
+         * exit or a self-loop's back edge meets the cap: the pc stored,
+         * the frame given back, the core in r4 and the count in r5, r0-r3
+         * and r12 free. On: back to lr, the way on. Not -- an interrupt
+         * pending, or the count at the limit -- back to the dispatcher for
+         * the block, as the computed jumps' miss does.
          */
         "    .p2align 2\n"
         "    .global t2_cap_stub\n"
         "    .thumb_func\n"
         "    .type t2_cap_stub, %function\n"
         "t2_cap_stub:\n"
-        "    push    {lr}\n"
-        "    mov     r0, r4\n"
-        "    mov     r1, r5\n"
-        "    ldr     r12, =emu_jit_cap_continue\n"
-        "    blx     r12\n"
-        "    pop     {lr}\n"
-        "    cbz     r0, 1f\n"
-        "    movs    r5, #0\n"          /* charged: the count starts again */
-        "    cmp     r0, #1\n"
-        "    bne     1f\n"
+        "    ldr     r12, =emu_jit_cap_state\n"
+        "    ldr     r0, [r12]\n"        /* irq: the flag's address */
+        "    ldrb    r0, [r0]\n"
+        "    cbnz    r0, 1f\n"
+        "    ldrd    r1, r2, [r12, #4]\n" /* limit, carried */
+        "    add     r2, r2, r5\n"
+        "    cmp     r2, r1\n"
+        "    bhs     1f\n"
+        "    ldr     r0, [r12, #12]\n"   /* passed */
+        "    adds    r0, r0, #1\n"
+        "    strd    r2, r0, [r12, #8]\n" /* carried, passed */
+        "    movs    r5, #0\n"
         "    bx      lr\n"
         "1:\n"
         "    mov     r0, r5\n"
@@ -728,6 +742,10 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
 _Static_assert(EMU_JIT_LOOP_CAP == 128u && EMU_JIT_IBTC_BITS == 6u &&
                    EMU_JIT_IBTC_SHIFT == 5u,
                "t2_ibtc_stub's constants");
+_Static_assert(offsetof(emu_jit_cap_state_t, limit) == 4u &&
+                   offsetof(emu_jit_cap_state_t, carried) == 8u &&
+                   offsetof(emu_jit_cap_state_t, passed) == 12u,
+               "t2_cap_stub's offsets, and LDRD/STRD's pairs");
 _Static_assert(offsetof(emu_jit_ibtc_t, block) == 4u &&
                    offsetof(emu_jit_ibtc_t, context) == 8u &&
                    offsetof(emu_jit_ibtc_t, entry) == 16u &&
@@ -1238,30 +1256,41 @@ static void emit_frame_release(uint32_t frame)
  * taken.
  */
 /*
- * BLX t2_cap_stub through r12, under HS when `cond`: the compare against
- * EMU_JIT_LOOP_CAP just made. The stub returns here only to go on, so
- * what follows is the way on; the way back to the dispatcher is the
- * stub's own. One IT block, so its length follows how the pool gives
- * the stub's address: a literal load or a lone MOVW, or MOVW and MOVT
- * when the pool is full.
+ * BLs to the block's trampoline to t2_cap_stub, patched once the block
+ * ends: emitted as B.W, whose T4 encoding differs from BL's T1 in one
+ * bit of the second halfword. A block with more than this many keeps
+ * the old exit at the rest.
  */
-static void emit_cap_call(bool cond)
+#define CAP_SITES 32u
+static EMU_PER_CORE uint8_t *g_cap_site[CAP_SITES];
+static EMU_PER_CORE uint32_t g_ncap_sites;
+
+static uint8_t *cap_bl(void)
 {
-    const uint32_t v = (uint32_t)(uintptr_t)t2_cap_stub;
+    uint8_t *const at = t2_b_forward();
 
-    if (cond) {
-        uint32_t i = 0u;
+    g_cap_site[g_ncap_sites++] = at;
+    return at;
+}
 
-        while (i < g_pool_nval && g_pool_val[i] != v) {
-            i++;
-        }
-        const bool two = (v >> 16) != 0u && (g_pool_nsites == POOL_SITES || i == POOL_VALUES);
-
-        /* ITT HS, or ITTT HS: HS is 0x2, its low bit 0, so T is 0 in the mask */
-        t2_emit16((uint16_t)(0xBF00u | (0x2u << 4) | (two ? 0x2u : 0x4u)));
+/* The trampoline, LDR r12 / BX r12 so lr still points into the block,
+ * and the BLs pointed at it. */
+static void cap_sites_emit(void)
+{
+    if (g_ncap_sites == 0u) {
+        return;
     }
-    emit_pooled(T2_R12, v);
-    t2_emit16((uint16_t)(0x4780u | (T2_R12 << 3))); /* BLX r12 */
+    uint8_t *const tramp = emu_jit_here();
+
+    emit_pooled(T2_R12, (uint32_t)(uintptr_t)t2_cap_stub);
+    t2_emit16((uint16_t)(0x4700u | (T2_R12 << 3))); /* BX r12 */
+    for (uint32_t i = 0; i < g_ncap_sites; i++) {
+        patch_branch(g_cap_site[i], tramp, false);
+        if (!emu_jit_overflowed()) {
+            g_cap_site[i][3] |= 0x40u; /* B.W to BL: bit 14 of the second halfword, its high byte */
+        }
+    }
+    g_ncap_sites = 0u;
 }
 
 static bool chain_exit(uint32_t target_pc)
@@ -1286,8 +1315,10 @@ static bool chain_exit(uint32_t target_pc)
         t2_imm32(T2_R12, EMU_JIT_LOOP_CAP);
         t2_cmp(T2_CNT, T2_R12);
     }
-    if (g_ibtc_ok) {
-        emit_cap_call(true); /* at the cap: go on, or back to the dispatcher from the stub */
+    if (g_ibtc_ok && g_ncap_sites < CAP_SITES) {
+        /* IT HS; BL: past the cap, the check -- on, or the dispatcher from the stub */
+        t2_emit16((uint16_t)(0xBF00u | (0x2u << 4) | 0x8u));
+        (void)cap_bl();
     } else {
         note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
     }
@@ -1341,9 +1372,9 @@ static bool loop_back(uint32_t target_pc)
      * nothing in the frame lives across the back edge but FPSCR's slot,
      * and a block that borrows FPSCR must leave through its tail.
      */
-    if (g_ibtc_ok && !g_has_fp) {
+    if (g_ibtc_ok && !g_has_fp && g_ncap_sites < CAP_SITES) {
         emit_frame_release(g_frame);
-        emit_cap_call(false);
+        (void)cap_bl();
         if (g_frame != 0u && !t2_sp_adjust(true, g_frame)) {
             t2_imm32(T2_R12, g_frame);
             t2_emit32(0xEBADu, (uint16_t)((13u << 8) | T2_R12)); /* SUB.W sp, sp, r12 */
@@ -5451,6 +5482,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_rom = b->rom;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
+    g_ncap_sites = 0u;
     /*
      * The links are this function's output: a caller that lowers block
      * after block without the framework's reset (test_ir, fuzz-ir) must
@@ -5744,6 +5776,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
                          unlinked, false);
         }
     }
+    cap_sites_emit();
     pool_emit();
 
     return !emu_jit_overflowed() && !g_exits_lost;

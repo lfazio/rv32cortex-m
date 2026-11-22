@@ -534,22 +534,39 @@ typedef struct emu_jit_ibtc_state {
 extern EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state;
 
 /*
- * The loop cap's check, called from translated code where a chain or a
- * self-loop meets EMU_JIT_LOOP_CAP -- what the dispatcher would have done
- * had the chain come back to it there, less the round trip: the state,
- * a pending interrupt, `blocked`, the generation, a flush or an
- * unchaining since the block was entered, and the budget. `n` is the
- * count since the dispatcher entered the block, or since the last time
- * this went on. 0: back to the dispatcher, with `n` still to charge. 1:
- * `n` is charged and counted (the frontend's `count` hook), go on with
- * the count at 0. 2: charged and counted, but the count raised an
- * interrupt -- back to the dispatcher, with nothing left to charge.
+ * The loop cap in two parts. Past EMU_JIT_LOOP_CAP a chain or a
+ * self-loop reads the core's pending-interrupt flag at each exit, in
+ * translated code, and comes back to the dispatcher if it is set -- or
+ * once its count reaches `limit`: EMU_JIT_CAP_OUTER, or the end of the
+ * call's budget if that is nearer. So an interrupt waits as long as it
+ * did, and the dispatcher's other checks -- the state, `blocked`, the
+ * generation, the count hook -- come every EMU_JIT_CAP_OUTER.
  *
  * Most returns to the dispatcher were the cap's: 85% of PowerPC
  * CoreMark's block entries, 79% of G4MH's, a fifth of the run in the
- * dispatcher and the count hook on the F746 (jit/README.md).
+ * dispatcher and the count hook on the F746; a cap of 512 made RV32
+ * CoreMark 9.3% faster there, G4MH's 7.4% (jit/README.md).
+ *
+ * `irq` is never NULL: a frontend without the flag gets one always set.
+ * Going on, the check moves the count into `carried` and starts it again
+ * at 0, so it comes once every EMU_JIT_LOOP_CAP and not at every exit
+ * after the first -- which cost RV32 CoreMark 25% on the F746, 3.5M
+ * checks for its 30M instructions; the dispatcher adds `carried` to
+ * what the block returns, and the limit is against the sum. `passed`
+ * counts the checks that went on, the stats line's `caps`.
  */
-uint32_t emu_jit_cap_continue(emu_cpu_t *cpu, uint32_t n);
+#ifndef EMU_JIT_CAP_OUTER
+#define EMU_JIT_CAP_OUTER 512u
+#endif
+
+typedef struct emu_jit_cap_state {
+    const volatile bool *irq;
+    uint32_t limit;
+    uint32_t carried;
+    uint32_t passed;
+} emu_jit_cap_state_t;
+
+extern EMU_PER_CORE emu_jit_cap_state_t emu_jit_cap_state;
 
 /* The entry for a pc: the top bits of a multiply, which reads them all. */
 static inline uint32_t emu_jit_ibtc_index(uint32_t pc)
