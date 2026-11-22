@@ -1154,10 +1154,15 @@ operands follows becomes ADDS or SUBS, and the SETF skips its own.
 Looking at the next live instruction it fused 2 of the 392 SETFs --
 the translators PUT the result in between -- and past those PUTs 208;
 on the F746 G4MH CoreMark moved +0.24% / +0.16% and ARMv7-M's was
-2.85% / 3.54% *slower*, which was not run down. What is left of the
-SETF is the mask and the borrow, and a word allowed bits beyond the
-four would drop the mask -- at the price of every reader and both
-fuzz harnesses masking them.
+2.85% / 3.54% *slower*, which was not run down. What was left of the
+SETF was the mask and the borrow. **The mask is gone** (2026-11-22):
+the word's bits beside the four are undefined, and the SETF stores the
+APSR as MRS gives it, Q and GE included -- every reader takes the four
+alone, `EMU_JIT_DIFF` compares the word through their mask, and fuzz-ir
+starts an alone target with junk beside them. G4MH CoreMark **1.67%
+faster** at both layouts, ARMv7-M's 1.48% / 1.38%
+([../frontend/g4mh.md](../frontend/g4mh.md#the-flags-apart-from-the-psw-2026-11-21)).
+The borrow's EOR is left.
 
 What the dump did show was two `mov`s before each `adds`: the SETF
 lowering copied its operands into r0 and r1 whether or not they were

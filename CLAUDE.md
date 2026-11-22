@@ -279,6 +279,11 @@ Each has cost more than one session, and every one recurred.
   first group on both boards, whose buffer compacts before the run and
   then waits for 8 entries a context (vxrm in it). A mutant must change
   the lines it should, each line its own checksum.
+- **A promise one backend keeps by construction is untested where only
+  it runs**: x86-64's SETF writes the flag word's four bits alone, so
+  once Thumb-2 left Q and GE beside them, a pack trusting the word clean
+  passed every host suite (`test_jit_flags_pack_ignores_the_rest`) --
+  and junk shows only through a flag it should leave clear.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all;

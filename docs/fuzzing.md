@@ -579,8 +579,11 @@ signed overflow ORed into r7 at any position, the shift emitted even at
 eight more targets, k_targets[16..23], ARMv7-M's shape and G4MH's (the
 APSR's places, a borrow for C), chosen on a bit of `cfg2` no regression
 input with either layout sets -- `vmems-stride-in-a-moved-register`
-keeps its register on the flag word. On those the word starts with the
-flags alone and `h_poke` keeps it so: the promise the target makes. The
+keeps its register on the flag word. On those the bits beside the
+flags are undefined -- Thumb-2 stores the host's Q and GE there -- so
+the word starts with junk in them as often as not, `h_poke` flips
+some, and the comparison and `h_peek`'s hash read the four alone
+(`flags_seen`): a reader that looked beside them would differ. The
 G4MH fuzzers pack the flags after a run, as the frontend's run op does. Four mutants of the C kernel's map and the
 recogniser's chain (a shift masked to four bits, a rotate the wrong
 way, the second chain dropped, a chain taken outside in) were found in

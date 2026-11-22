@@ -542,6 +542,9 @@ flags alone (`flags_alone`), a SETF defining all four stores the APSR's
 top nibble without reading the word first -- SUBS, MRS, AND, store:
 CoreMark **6.1% faster** again (11.19 to 10.51, both layouts; G4MH's
 flags took the same design, [g4mh.md](g4mh.md#the-flags-apart-from-the-psw-2026-11-21)).
+Since 2026-11-22 without the AND: `jit_nzcv`'s bits 27:0 are
+undefined, the host's Q and GE left in them, and `armv7m_flags_pack`
+takes bits 31:28 alone -- 1.48% / 1.38% faster (10.16 to 10.01).
 
 What a block may assume, and what invalidates it:
 

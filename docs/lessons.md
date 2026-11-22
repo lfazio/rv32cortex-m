@@ -5451,6 +5451,25 @@ session, and every one of them recurred:
   list of what to install. **Validate a recipe from a fresh checkout, as
   written, before calling it documentation.**
 
+- **A promise one backend keeps by construction is untested where only
+  that backend runs.** Thumb-2's fast SETF ended in an AND clearing the
+  APSR's Q and GE, so that the flag word held the four flags alone; the
+  AND went (1.4-1.7% of CoreMark on two frontends), and the bits beside
+  the flags became undefined. Every reader was read for whether it
+  trusted them clear, and none did -- but nothing would have said so:
+  x86-64's SETF writes the four alone, so on the host the word was
+  clean whatever the readers did, and removing ARMv7-M's `0xF0000000`
+  from its xPSR merge passed every host suite. One unit test,
+  `test_jit_flags_pack_ignores_the_rest`, sets every bit beside the
+  flags and packs. Its first version set OV and Z with the junk and
+  cleared the other two, and a G4MH pack that took junk for OV passed
+  it -- junk can only be seen through a flag it should leave clear --
+  so it has two cases now, each flag clear in one. fuzz-ir's alone
+  targets start with junk beside their flags as well, and on the F746
+  the Thumb-2 replay does too. **When a contract is loosened, make the
+  input the old contract excluded, on the host, where the backend that
+  never produces it runs.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

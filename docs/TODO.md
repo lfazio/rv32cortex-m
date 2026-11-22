@@ -60,8 +60,10 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       the most of it (add, and, sub, eor, mrs: 47% of the samples);
       reusing the operation's flags was not worth it
       ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)).
-      Left: the mask (a flag word allowed junk beyond the four, every
-      reader and both fuzz harnesses masking) and the borrow's EOR.
+      The mask went on 2026-11-22 (1.67% on G4MH, 1.4% on ARMv7-M);
+      left: the borrow's EOR, which only a word holding CY inverted
+      would drop -- the EOR moving to every add's SETF instead, worth
+      it only where subtracts' SETFs outnumber adds' at a block's exit.
 - [ ] **PowerPC's arithmetic, what is left** (profiled 2026-11-22,
       [backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
       byte swaps for a big-endian guest in little-endian RAM, 9.0% of

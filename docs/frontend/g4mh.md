@@ -416,6 +416,18 @@ the Thumb-2 lowering, none different; the G4MH guest and both ARMv7-M
 guests print the same with the same retired counts, and `mmiobench`
 differs only in its timings.
 
+**And without the mask** (2026-11-22): the bits beside the four are
+undefined now (`flags_alone`), and the SETF stores the APSR as MRS gives
+it -- Q and GE with it -- where an AND cleared them: SUBS, MRS, the
+borrow's EOR and the store. Every reader takes the four: `GETCOND`, the
+partial SETF, `g4mh_flags_packed`, `EMU_JIT_DIFF` and fuzz-ir, whose
+alone targets now start with junk beside their flags. No host suite
+could tell a pack that trusted the word clean, since x86-64's SETF
+writes the four alone: `test_jit_flags_pack_ignores_the_rest` sets
+every other bit, each flag clear in one of two cases. G4MH CoreMark on
+the F746 **1.67% faster** at both layouts (12.57 to 12.36), ARMv7-M's
+1.48% / 1.38%. What is left of the SETF is the borrow's EOR.
+
 ## The peripheral window
 
 **Inlined under the JIT once armed**, as RV32's and ARMv7-M's are:
