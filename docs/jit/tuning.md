@@ -359,6 +359,29 @@ trials were undone at 32 KB. A period long enough to get past that
 would be one long enough to sit in the bad equilibrium. The policy
 stays.
 
+**On the board, the hill climb by time wins where the host said it lost
+-- and loses elsewhere** (2026-11-22, `wip/jit-thrash-retry-settled`,
+`-DJIT_RETRY_EXP=1`; `=2` judges each period by its second half, past
+the forget's retranslation). F746, 32 KB:
+
+| | default | keep, by time | keep, second halves |
+|---|---|---|---|
+| RV32 CoreMark x2000, pad 0 | 24.39 (55.76 s) | **18.82** (43.00 s) | 19.06 (43.57 s) |
+| RV32 CoreMark x2000, pad 64 | 24.40 (55.77 s) | **18.82** (43.01 s) | |
+| PowerPC CoreMark x400 | **88.24** (48.98 s) | 97.30 (54.00 s) | |
+| ARMv7-M CoreMark x400 | **(58.41 s)** | (59.59 s) | |
+| RV32 CoreMark x120, Whetstone | 15.73, 41.31 | 15.79, 41.64 | 15.77, 41.46 |
+
+RV32 x2000 is 23% faster, by both clocks, with 20,624 translations
+against 56,330; PowerPC 10% slower and ARMv7-M 2% by the wall clock (its
+cycle ratio read 1.49, which is the instrument, not a figure). x120 and
+Whetstone retry once or never, G4MH's CoreMark fits 32 KB, and at the
+64 KB default nothing retries. Judging by second halves changes nothing
+measurable. And the host cannot stand for the board here: with the
+board's tables at 40, 48 and 56 KB, x2000 costs 10%, 4% and 3% more an
+instruction than x120, evenly through the run in 50M-instruction cuts
+-- never the board's switch between two rates.
+
 **What moved x2000 from 24.16 to 26.45 is the inline dot kernels**
 (2026-11-21). The same firmware, 4a8af26, with every kernel a call to
 the C routine as before d00c3e0, F746, CoreMark x2000 at 32 KB:

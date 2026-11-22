@@ -94,7 +94,12 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       another (`wip/jit-thrash-retry-variants`), and a hill climb keeping
       the better mark set lost too, by translations and by time
       (`wip/jit-thrash-retry-keep`). Left: a period that does not start at
-      a forget, or a cost model the host can reproduce. At 3e0df70 the
+      a forget, or a cost model the host can reproduce -- and the host
+      has none: with the board's tables at 40-56 KB its x2000 degrades
+      evenly, never switching. On the board (2026-11-22) the hill climb
+      by time made RV32 x2000 23% faster and PowerPC CoreMark x400 10%
+      slower at 32 KB; judging the second half of each period changed
+      nothing (`wip/jit-thrash-retry-settled`). At 3e0df70 the
       x2000 run was 26.45 where 3fb2264 was 24.16: the inline dot
       kernels' bytes, now emitted only in a 64 KB buffer (24.46 with
       the rule; [jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
