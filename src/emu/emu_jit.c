@@ -2013,10 +2013,27 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
      * them.
      */
 #if defined(JIT_RETRY_KEEP) && JIT_RETRY_KEEP
-    if (++g_thrash_interps >= (g_trial ? EMU_JIT_THRASH_RETRY : g_retry_at)) {
-        g_thrash_interps = 0u;
-        g_stats.thrash_retries++;
-        thrash_retry(g_done_total + *done);
+    {
+        const uint32_t len = g_trial ? EMU_JIT_THRASH_RETRY : g_retry_at;
+
+        ++g_thrash_interps;
+#if defined(JIT_RETRY_SETTLE) && JIT_RETRY_SETTLE
+        /*
+         * EXPERIMENT: judge a period by its second half. The first half
+         * of a trial pays to translate again what the forgotten marks had
+         * held, and read as worse in either equilibrium; the settled
+         * period is cut the same way, so the two halves compare.
+         */
+        if (g_thrash_interps == len / 2u) {
+            g_period_done = g_done_total + *done;
+            g_period_xlat64 = retry_clock();
+        }
+#endif
+        if (g_thrash_interps >= len) {
+            g_thrash_interps = 0u;
+            g_stats.thrash_retries++;
+            thrash_retry(g_done_total + *done);
+        }
     }
 #else
     if (++g_thrash_interps >= EMU_JIT_THRASH_RETRY) {

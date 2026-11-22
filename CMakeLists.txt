@@ -24,6 +24,19 @@ project(rv32cortex-m
     DESCRIPTION "Retargetable 32-bit ISA emulator for ARM Cortex-M"
     LANGUAGES C ASM)
 
+# EXPERIMENT (wip/jit-thrash-retry-settled, not for main): the thrash
+# retry's hill climb -- 0 the default policy, 1 keep the better mark set
+# judged by time (JIT_RETRY_KEEP), 2 the same judged by each period's
+# second half (JIT_RETRY_SETTLE). A cache variable, because a firmware's
+# CMAKE_C_FLAGS on the command line would replace the toolchain's.
+set(JIT_RETRY_EXP 0 CACHE STRING "wip: thrash retry experiment (0, 1, 2)")
+if(JIT_RETRY_EXP GREATER 0)
+    add_compile_definitions(JIT_RETRY_KEEP=1)
+endif()
+if(JIT_RETRY_EXP GREATER 1)
+    add_compile_definitions(JIT_RETRY_SETTLE=1)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
