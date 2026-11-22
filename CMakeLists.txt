@@ -489,7 +489,7 @@ option(EMU_JIT "Thumb-2 JIT backend" ${_jit_default})
 # that reads like a setting and is not one is how a measurement comes to
 # compare two identical binaries. What they did, and what survived as
 # behaviour rather than as an option, is in docs/jit/tuning.md.
-set(EMU_JIT_LOOP_CAP "128" CACHE STRING
+set(EMU_JIT_LOOP_CAP "512" CACHE STRING
     "Guest instructions a chained loop runs before returning to the dispatcher")
 
 # Histogram how often a block reads sp/ra/a0/a1, to decide whether a

@@ -370,7 +370,7 @@ typedef struct emu_jit_hot {
  * and doubles worst-case latency.
  */
 #ifndef EMU_JIT_LOOP_CAP
-#define EMU_JIT_LOOP_CAP 512u /* EXPERIMENT: an upper bound on the cap returns' cost */
+#define EMU_JIT_LOOP_CAP 128u
 #endif
 
 /*
