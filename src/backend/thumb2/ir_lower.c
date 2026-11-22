@@ -691,6 +691,38 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    pop     {r4-r11, pc}\n"
         "    .ltorg\n"
         "    .size t2_ibtc_stub, . - t2_ibtc_stub\n"
+        /*
+         * The loop cap's check (emu_jit_cap_continue), called where a
+         * chained exit or a self-loop meets EMU_JIT_LOOP_CAP: the pc
+         * stored, the frame given back, the core in r4 and the count in
+         * r5; r0-r3 and r12 are free, as at a chained exit. Going on, it
+         * returns with the count at 0. Not, it returns for the block, to
+         * the dispatcher -- with the count to charge, or with 0 when the
+         * check charged it and the count hook raised an interrupt. sp is
+         * 4 mod 8 here, after the nine words of the block's push, so one
+         * more word aligns it for the call.
+         */
+        "    .p2align 2\n"
+        "    .global t2_cap_stub\n"
+        "    .thumb_func\n"
+        "    .type t2_cap_stub, %function\n"
+        "t2_cap_stub:\n"
+        "    push    {lr}\n"
+        "    mov     r0, r4\n"
+        "    mov     r1, r5\n"
+        "    ldr     r12, =emu_jit_cap_continue\n"
+        "    blx     r12\n"
+        "    pop     {lr}\n"
+        "    cbz     r0, 1f\n"
+        "    movs    r5, #0\n"          /* charged: the count starts again */
+        "    cmp     r0, #1\n"
+        "    bne     1f\n"
+        "    bx      lr\n"
+        "1:\n"
+        "    mov     r0, r5\n"
+        "    pop     {r4-r11, pc}\n"
+        "    .ltorg\n"
+        "    .size t2_cap_stub, . - t2_cap_stub\n"
         ".popsection\n");
 
 _Static_assert(EMU_JIT_LOOP_CAP == 128u && EMU_JIT_IBTC_BITS == 6u &&
@@ -712,6 +744,7 @@ _Static_assert(offsetof(emu_jit_ibtc_state_t, hits) == 4u &&
  * the push list is the one the stub pops.
  */
 static EMU_PER_CORE bool g_ibtc_ok;
+static EMU_PER_CORE bool g_has_fp; /* the block borrows FPSCR: see emu_ir_lower */
 static EMU_PER_CORE bool g_ibtc_armed;
 
 /*
@@ -1204,6 +1237,33 @@ static void emit_frame_release(uint32_t frame)
  * framework patches it once both blocks exist and the edge has been
  * taken.
  */
+/*
+ * BLX t2_cap_stub through r12, under HS when `cond`: the compare against
+ * EMU_JIT_LOOP_CAP just made. The stub returns here only to go on, so
+ * what follows is the way on; the way back to the dispatcher is the
+ * stub's own. One IT block, so its length follows how the pool gives
+ * the stub's address: a literal load or a lone MOVW, or MOVW and MOVT
+ * when the pool is full.
+ */
+static void emit_cap_call(bool cond)
+{
+    const uint32_t v = (uint32_t)(uintptr_t)t2_cap_stub;
+
+    if (cond) {
+        uint32_t i = 0u;
+
+        while (i < g_pool_nval && g_pool_val[i] != v) {
+            i++;
+        }
+        const bool two = (v >> 16) != 0u && (g_pool_nsites == POOL_SITES || i == POOL_VALUES);
+
+        /* ITT HS, or ITTT HS: HS is 0x2, its low bit 0, so T is 0 in the mask */
+        t2_emit16((uint16_t)(0xBF00u | (0x2u << 4) | (two ? 0x2u : 0x4u)));
+    }
+    emit_pooled(T2_R12, v);
+    t2_emit16((uint16_t)(0x4780u | (T2_R12 << 3))); /* BLX r12 */
+}
+
 static bool chain_exit(uint32_t target_pc)
 {
     if (!emu_jit_layout.chainable) {
@@ -1226,7 +1286,11 @@ static bool chain_exit(uint32_t target_pc)
         t2_imm32(T2_R12, EMU_JIT_LOOP_CAP);
         t2_cmp(T2_CNT, T2_R12);
     }
-    note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
+    if (g_ibtc_ok) {
+        emit_cap_call(true); /* at the cap: go on, or back to the dispatcher from the stub */
+    } else {
+        note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
+    }
 
     uint8_t *const site = t2_b_forward();
 
@@ -1272,6 +1336,21 @@ static bool loop_back(uint32_t target_pc)
     patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_LTU)), g_body, true);
     t2_imm32(T2_R0, target_pc);
     t2_str_imm(T2_R0, T2_CPU, g_pc_off);
+    /*
+     * Or the cap's check, and round again with the frame taken back --
+     * nothing in the frame lives across the back edge but FPSCR's slot,
+     * and a block that borrows FPSCR must leave through its tail.
+     */
+    if (g_ibtc_ok && !g_has_fp) {
+        emit_frame_release(g_frame);
+        emit_cap_call(false);
+        if (g_frame != 0u && !t2_sp_adjust(true, g_frame)) {
+            t2_imm32(T2_R12, g_frame);
+            t2_emit32(0xEBADu, (uint16_t)((13u << 8) | T2_R12)); /* SUB.W sp, sp, r12 */
+        }
+        patch_branch(t2_b_forward(), g_body, false);
+        return true;
+    }
     note_exit(t2_b_forward(), false);
     return true;
 }

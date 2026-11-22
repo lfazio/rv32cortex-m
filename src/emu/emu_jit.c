@@ -119,6 +119,20 @@ JIT_ASM_READ EMU_PER_CORE emu_jit_ibtc_t
     emu_jit_ibtc[EMU_JIT_IBTC_SIZE] EMU_HOT_DATA;
 JIT_ASM_READ EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state EMU_HOT_DATA;
 
+/*
+ * What emu_jit_cap_continue reads: the dispatcher's view, copied in when
+ * it enters a block. `ops` NULL: never go on (EMU_JIT_DIFF, or no
+ * dispatcher).
+ */
+static EMU_PER_CORE struct {
+    const emu_jit_ops_t *ops;
+    emu_jit_hot_t hot;
+    uint32_t charged0;  /* *hot.charged when last charged */
+    uint32_t left;      /* of the call's budget, at the block's entry less what went on */
+    uint32_t accounted; /* charged here since the dispatcher entered the block */
+    uint32_t flushes;   /* g_stats.flushes when it did */
+} g_cap;
+
 /* The backend's stub return; NULL, no stub, and nothing filled. */
 static EMU_PER_CORE const uint8_t *g_ibtc_miss;
 /* What an empty entry's hit count points at. */
@@ -1930,6 +1944,34 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
 }
 
 
+JIT_ASM_READ EMU_HOT_TEXT uint32_t emu_jit_cap_continue(emu_cpu_t *cpu, uint32_t n)
+{
+    const emu_jit_hot_t *const h = &g_cap.hot;
+
+    if (g_cap.ops == NULL || *h->state != EMU_STATE_RUNNING || h->irq_pending == NULL ||
+        *h->irq_pending || (h->blocked != NULL && *h->blocked) ||
+        (h->generation != NULL && *h->generation != g_generation) || g_unchain ||
+        g_stats.flushes != g_cap.flushes) {
+        return 0u; /* the dispatcher would have something to do */
+    }
+
+    const uint32_t charge = n + ((h->charged != NULL) ? *h->charged - g_cap.charged0 : 0u);
+
+    if (charge >= g_cap.left) {
+        return 0u; /* the call's budget: it ends in the dispatcher */
+    }
+    g_cap.left -= charge;
+    g_cap.accounted += charge;
+    if (h->charged != NULL) {
+        g_cap.charged0 = *h->charged;
+    }
+    if (n != 0u && g_cap.ops->count != NULL) {
+        g_cap.ops->count(cpu, n);
+    }
+    g_stats.cap_continues++;
+    return *h->irq_pending ? 2u : 1u;
+}
+
 EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
                                           uint32_t *retired,
                                           const emu_jit_ops_t *ops)
@@ -1967,6 +2009,12 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     emu_jit_hot_t hot;
     memset(&hot, 0, sizeof(hot));
     ops->bind(cpu, &hot);
+#ifdef EMU_JIT_DIFF
+    g_cap.ops = NULL; /* a checked block runs alone */
+#else
+    g_cap.ops = ops;
+    g_cap.hot = hot;
+#endif
 
     if (ops->is_idle != NULL && ops->is_idle(cpu)) {
         if (!ops->wake(cpu)) {
@@ -2211,6 +2259,10 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
         }
         emu_jit_ibtc_state.last = 0u;
+        g_cap.left = budget - done;
+        g_cap.accounted = 0u;
+        g_cap.charged0 = charged0;
+        g_cap.flushes = g_stats.flushes;
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
         ran = true;
 #endif
@@ -2240,10 +2292,18 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
          * this loop while the guest runs on underneath, which no
          * instruction cap can break because the cap is the caller's.
          */
-        const uint32_t charge =
-            n + ((hot.charged != NULL) ? *hot.charged - charged0 : 0u);
+#ifdef EMU_JIT_DIFF
+        const uint32_t from = charged0;
+        const uint32_t went_on = 0u;
+#else
+        /* what emu_jit_cap_continue charged and counted is behind us */
+        const uint32_t from = g_cap.charged0;
+        const uint32_t went_on = g_cap.accounted;
+#endif
+        const uint32_t charge = n + ((hot.charged != NULL) ? *hot.charged - from : 0u);
 
-        done += (charge != 0u || ops->fault_not_charged) ? charge : 1u;
+        done += went_on +
+                ((charge != 0u || went_on != 0u || ops->fault_not_charged) ? charge : 1u);
 
         if (n != 0u && ops->count != NULL) {
             ops->count(cpu, n);

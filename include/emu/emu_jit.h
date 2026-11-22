@@ -156,6 +156,7 @@ typedef struct emu_jit_stats {
     uint32_t blocks; /* blocks currently held               */
     uint32_t translations; /* blocks translated since reset       */
     uint32_t block_entries; /* times a translated block was run    */
+    uint32_t cap_continues; /* caps met in translated code that went on */
     uint32_t interp_fallbacks; /* instructions the interpreter ran    */
     uint32_t flushes; /* whole-cache discards                */
     uint32_t compactions; /* reclaims that kept the hot blocks   */
@@ -531,6 +532,24 @@ typedef struct emu_jit_ibtc_state {
 } emu_jit_ibtc_state_t;
 
 extern EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state;
+
+/*
+ * The loop cap's check, called from translated code where a chain or a
+ * self-loop meets EMU_JIT_LOOP_CAP -- what the dispatcher would have done
+ * had the chain come back to it there, less the round trip: the state,
+ * a pending interrupt, `blocked`, the generation, a flush or an
+ * unchaining since the block was entered, and the budget. `n` is the
+ * count since the dispatcher entered the block, or since the last time
+ * this went on. 0: back to the dispatcher, with `n` still to charge. 1:
+ * `n` is charged and counted (the frontend's `count` hook), go on with
+ * the count at 0. 2: charged and counted, but the count raised an
+ * interrupt -- back to the dispatcher, with nothing left to charge.
+ *
+ * Most returns to the dispatcher were the cap's: 85% of PowerPC
+ * CoreMark's block entries, 79% of G4MH's, a fifth of the run in the
+ * dispatcher and the count hook on the F746 (jit/README.md).
+ */
+uint32_t emu_jit_cap_continue(emu_cpu_t *cpu, uint32_t n);
 
 /* The entry for a pc: the top bits of a multiply, which reads them all. */
 static inline uint32_t emu_jit_ibtc_index(uint32_t pc)

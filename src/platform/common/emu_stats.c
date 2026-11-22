@@ -130,10 +130,11 @@ bool emu_print_jit_stats(void)
                        (unsigned)js.declined, (unsigned)js.declined_cached,
                        (unsigned)js.overflowed);
     emu_console_printf("  blk entr %u  links %u (missed %u, no slot %u)  "
-                       "entry stops %u  ibtc %u\n",
+                       "entry stops %u  ibtc %u  caps %u\n",
                        (unsigned)js.block_entries, (unsigned)js.links,
                        (unsigned)js.link_missed, (unsigned)js.no_chain_slot,
-                       (unsigned)js.entry_stops, (unsigned)js.ibtc_hits);
+                       (unsigned)js.entry_stops, (unsigned)js.ibtc_hits,
+                       (unsigned)js.cap_continues);
     /*
      * The thrash fallback, beside the same counts for a declined pc: a
      * hot set larger than the buffer shows as pcs given up on and their
