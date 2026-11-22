@@ -1162,7 +1162,10 @@ alone, `EMU_JIT_DIFF` compares the word through their mask, and fuzz-ir
 starts an alone target with junk beside them. G4MH CoreMark **1.67%
 faster** at both layouts, ARMv7-M's 1.48% / 1.38%
 ([../frontend/g4mh.md](../frontend/g4mh.md#the-flags-apart-from-the-psw-2026-11-21)).
-The borrow's EOR is left.
+The borrow's EOR is left, and stays: holding CY inverted would put it
+in every add's SETF instead, and G4MH CoreMark runs as many of each on
+that path (2,586,876 adds and 2,628,151 subtracts, counted on the host
+by an increment in x86-64's SETF, a measurement not kept).
 
 What the dump did show was two `mov`s before each `adds`: the SETF
 lowering copied its operands into r0 and r1 whether or not they were
