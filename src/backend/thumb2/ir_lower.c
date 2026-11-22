@@ -650,7 +650,7 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    .type t2_ibtc_stub, %function\n"
         "t2_ibtc_stub:\n"
         "    ldr     r3, =emu_jit_ibtc_state\n"
-        "    cmp     r5, #128\n"          /* EMU_JIT_LOOP_CAP */
+        "    cmp     r5, #512\n"          /* EMU_JIT_LOOP_CAP */
         "    bhs     9f\n"
         "    ldr     r1, =0x9E3779B1\n"   /* emu_jit_ibtc_index */
         "    mul     r1, r0, r1\n"
@@ -693,7 +693,7 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    .size t2_ibtc_stub, . - t2_ibtc_stub\n"
         ".popsection\n");
 
-_Static_assert(EMU_JIT_LOOP_CAP == 128u && EMU_JIT_IBTC_BITS == 6u &&
+_Static_assert(EMU_JIT_LOOP_CAP == 512u && EMU_JIT_IBTC_BITS == 6u &&
                    EMU_JIT_IBTC_SHIFT == 5u,
                "t2_ibtc_stub's constants");
 _Static_assert(offsetof(emu_jit_ibtc_t, block) == 4u &&
@@ -1222,9 +1222,10 @@ static bool chain_exit(uint32_t target_pc)
      * never reaches the dispatcher, so nothing checks for a pending
      * interrupt or tests the caller's budget.
      */
-    if (!t2_cmp_imm8(T2_CNT, EMU_JIT_LOOP_CAP)) {
-        t2_imm32(T2_R12, EMU_JIT_LOOP_CAP);
-        t2_cmp(T2_CNT, T2_R12);
+    { /* EXPERIMENT: the cap as a modified immediate */
+        uint16_t enc;
+        (void)t2_expand_imm(EMU_JIT_LOOP_CAP, &enc);
+        t2_cmp_imm(T2_CNT, enc);
     }
     note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
 
@@ -1264,9 +1265,10 @@ static bool loop_back(uint32_t target_pc)
      * would hang. The count is already in a register because it is the
      * return value.
      */
-    if (!t2_cmp_imm8(T2_CNT, EMU_JIT_LOOP_CAP)) {
-        t2_imm32(T2_R0, EMU_JIT_LOOP_CAP);
-        t2_cmp(T2_CNT, T2_R0);
+    { /* EXPERIMENT: the cap as a modified immediate */
+        uint16_t enc;
+        (void)t2_expand_imm(EMU_JIT_LOOP_CAP, &enc);
+        t2_cmp_imm(T2_CNT, enc);
     }
     /* LO/CC: under the bound, round again; else the pc, and out. */
     patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_LTU)), g_body, true);
@@ -1518,9 +1520,10 @@ static int emit_dot_inline(uint32_t index)
         t2_shift_imm(T2_LSR, T2_R1, T2_R1, (s == 2u) ? 1u : 2u);
     }
     /* no more than the cap leaves, less the body's iteration (kernel_room) */
-    if (!t2_cmp_imm8(T2_CNT, EMU_JIT_LOOP_CAP)) {
-        t2_imm32(T2_R2, EMU_JIT_LOOP_CAP);
-        t2_cmp(T2_CNT, T2_R2);
+    { /* EXPERIMENT: the cap as a modified immediate */
+        uint16_t enc;
+        (void)t2_expand_imm(EMU_JIT_LOOP_CAP, &enc);
+        t2_cmp_imm(T2_CNT, enc);
     }
     skip[ns++] = t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GEU));
     t2_imm32(T2_R2, EMU_JIT_LOOP_CAP + d.insns - 1u);
