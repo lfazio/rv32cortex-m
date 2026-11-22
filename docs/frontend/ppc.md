@@ -278,7 +278,9 @@ interpreted -- and three things lifted that:
   interpreter, arriving, raises what the manual says;
 - **what a block was fetched under is its identity**: under the MMU the
   context carries `mmu_on`, MSR[IS], MSR[PR] (execute permission is per
-  mode) and PID0 (`ppc_cpu_ctx`); and **a TLB write retires the blocks
+  mode), MSR[DS], PID0 and the core (`ppc_cpu_ctx`) -- beside the
+  encoding and XER[SO], which it carries everywhere
+  ([the JIT](#what-it-is-worth)); and **a TLB write retires the blocks
   whose code the entry mapped**, before the change and after it,
   because the mapping itself is not identity but validity -- see
   [per-entry invalidation](#per-entry-invalidation);
@@ -1274,6 +1276,26 @@ into the `sh` and `mb` a branch does not use, made the loop 48 bytes
 smaller and the interpreter **0.4-0.5% slower still**
 (`wip/ppc-bc-decoded-field`): what the M7 charges is not the
 arithmetic.
+
+**XER[SO] as part of the context** (2026-11-22): a compare's field
+carries SO, which a translated `cmpw` loaded from XER, shifted down
+and ORed in -- with the XER value spilled to the frame on the way, four
+of its thirteen host instructions on the F746. SO is sticky and set by
+nothing a compiler emits for C: an OE=1 instruction (`addo`, `divwo`,
+...) or `mtxer`, neither of which occurs in CoreMark. So whether it is
+set is in the context (`PPC_CTX_SO`, `ppc_cpu_ctx`), and a block built
+with it clear takes SO as the constant 0 (`so01`) and ends before
+either writer (`sets_so`): the dispatcher's interpreter runs it and
+derives the context again after it, as after every fallback. The flag
+is read from the context the block is keyed on, never from XER -- a
+context still saying "set" after mtxer cleared SO is slow, not wrong,
+because its blocks read XER, but a block built clear under it would be.
+The seed `so-under-a-clear-block.S` runs one block with SO clear and
+then set, and each writer with a compare after it in its block; three
+mutants -- SO out of the context, mtxer kept in the block, an o-form
+kept in it -- each fail it on its first run. CoreMark on the F746
+under the JIT **3.56% / 3.37% faster** (10.68 to 10.30, 10.67 to
+10.31; retired count, CRC and validation unchanged).
 
 ### What it still interprets
 

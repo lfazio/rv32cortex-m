@@ -1205,6 +1205,15 @@ the seed itself, the others in 8 and 111 s. Run alone (`FUZZ_SHOW=1`),
 it retires all 16 with no enables and takes the round interrupt at the
 first inexact result with all five.
 
+**Nor could it run one block on both sides of XER[SO].** Random words
+almost never set SO, and never set it and compare in one block, so
+when a block built with SO clear began taking a compare's SO as 0
+(PPC_CTX_SO, [frontend/ppc.md](frontend/ppc.md#what-it-is-worth)),
+`seeds/ppc-jit/so-under-a-clear-block.S` was written with the change:
+one block run every round with SO clear and then set, and an o-form
+and mtxer each followed by a compare in its block. Leaving SO out of
+the context, or either writer in the block, fails it on its first run.
+
 **efsadd and efssub have a seed of their own edges** too,
 `seeds/ppc-jit/efsadd-edges.S`, in the same 64-byte cases: shifts of
 0, 1, 7, 8, 23 to 25, 31, 32 and 100, a borrow, deep cancellation, ties

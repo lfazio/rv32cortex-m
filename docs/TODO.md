@@ -62,11 +62,15 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       ([backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)).
       Left: the mask (a flag word allowed junk beyond the four, every
       reader and both fuzz harnesses masking) and the borrow's EOR.
-- [ ] **PowerPC's arithmetic, what is left**: a `cmpw`'s summary
-      overflow from XER (3 of its instructions), and byte swaps for a
-      big-endian guest in little-endian RAM, about 10% of its translated
-      time -- which only RAM kept in the host's order for words (an
-      address XOR for halves and bytes) would drop.
+- [ ] **PowerPC's arithmetic, what is left** (profiled 2026-11-22,
+      [backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
+      byte swaps for a big-endian guest in little-endian RAM, 9.0% of
+      its translated time -- which only RAM kept in the host's order for
+      words (an address XOR for halves and bytes) would drop; the RAM
+      window's bounds guard, 6.5%; a block's entry and exit, 9.1%. And
+      `cmpwi`'s constant in a register: Thumb-2 compares by immediate
+      only for EXIT_IF and SETCC and only a constant used once, and a
+      `cmpwi` gives its constant to CMP3 and to the branch's compare.
 - [ ] **The peripheral window for PowerPC**, only for a little-endian
       window it does not have (inlined on Thumb-2 for RV32, ARMv7-M and
       G4MH: [performance.md](performance.md#driver-performance-the-passthrough-window),

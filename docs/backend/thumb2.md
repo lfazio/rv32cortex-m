@@ -1173,6 +1173,37 @@ PowerPC CoreMark is 6.1-6.3% faster. Its loads and stores swap bytes (rev, rev16
 a big-endian guest in little-endian RAM; and the RAM window's guard is
 6.6%.
 
+Profiled again on 2026-11-22, at 400 iterations so that the run gives
+the profile more than a few hundred samples (3,334 in translated code,
+of 4,990; at 40 the run is 0.64 s of samples, the dumps' printing
+taken out): `ldr` 11.9%, `mov` 8.8%, `add` 8.2%, `cmp` 8.0%, `str`
+7.9%, `sub` 7.7%, `movw` 7.0%, byte swaps 9.0% (`rev` 6.3%, `rev16`
+1.7%, `revsh` 1.0%); by class, ALU 33.1%, a block's frame -- the
+nine-register push and its pop -- 9.1%, constants 8.8%, branches
+8.6%, the RAM guard (`sub #0x80000000`, `ror #2`, the compare and
+`bcs`) 6.5%. A `cmpwi` was still thirteen:
+
+```
+movw  r6, #0          @ the immediate, in a register
+movw  r8, #2          @ CMP3: EQ, then LT or GT under IT
+cmp   r7, r6
+it lt ; movwlt r8, #8
+it gt ; movwgt r8, #4
+ldr.w r0, [r4, #168]  @ XER
+str   r0, [sp, #40]   @   spilled
+lsr   r0, r0, #31     @   SO
+orr   r0, r8, r0
+str.w r0, [r4, #164]  @ the field
+```
+
+The four for SO are gone: SO is in the context, a constant 0 in a
+block built with it clear, and the two instructions that may set it end
+such a block (PowerPC CoreMark 3.4-3.6% faster,
+[../frontend/ppc.md](../frontend/ppc.md#what-it-is-worth)). The `movw`
+is left: the compare by immediate (`kcmp_scan`) takes a constant with
+one reader, an EXIT_IF or a SETCC, and a `cmpwi`'s goes to CMP3 and to
+the branch that compares the same operands.
+
 ### A loop's guest registers in host ones: measured, not kept
 
 Not the whole-block register cache above, which lost 15.5%: a block

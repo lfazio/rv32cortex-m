@@ -388,7 +388,12 @@ void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
 /* The older spelling, for an interrupt with no syndrome. */
 void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc);
 
-/* What a block is built for: which of the two encodings it decoded. */
+/*
+ * What a block is built for: which of the two encodings it decoded,
+ * whether XER[SO] was set (PPC_CTX_SO), and under a programmed TLB the
+ * address space, privilege and core its code was fetched under.
+ */
+#define PPC_CTX_SO 32u
 uint64_t ppc_cpu_ctx(const ppc_cpu_t *c);
 
 /*

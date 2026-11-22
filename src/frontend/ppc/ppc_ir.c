@@ -542,9 +542,22 @@ static uint16_t base_of(T *t, const I *d)
     return (d->ra0 && d->ra == 0u) ? K(t->b, 0u) : G(t->b, d->ra);
 }
 
+/*
+ * Whether this block was built with XER[SO] clear: its context says so
+ * (PPC_CTX_SO, ppc_cpu_ctx), and nothing in it may set SO -- it ends
+ * before an instruction that may (sets_so). Read from the context the
+ * block is keyed on, never from XER, which may differ from it: a context
+ * left saying "set" after mtxer cleared SO is one a block must not be
+ * built clear under.
+ */
+static EMU_PER_CORE bool g_so_clear;
+
 /* XER[SO] as the low bit of a CR field. */
 static uint16_t so01(B *b)
 {
+    if (g_so_clear) {
+        return K(b, 0u);
+    }
     return SHR(b, G(b, R_XER), 31u);
 }
 
@@ -1465,6 +1478,17 @@ static bool must_decline(const I *d)
     }
 }
 
+/*
+ * What may set XER[SO]: an OE=1 instruction, the interpreter's, from
+ * inside the block or not, and mtxer, the translator's. A block built
+ * with SO clear ends before each (g_so_clear): the dispatcher's
+ * interpreter runs it and derives the context again after it.
+ */
+static bool sets_so(const I *d)
+{
+    return d->oe || (d->sem == PPC_S_MTSPR && d->imm == PPC_SPR_XER);
+}
+
 /* The interpreter, for this instruction, from inside the block. */
 static void lower_helper(T *t)
 {
@@ -1603,6 +1627,7 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     b->start_pc = pc;
     b->has_fast = ppc_fast_mem(c, &b->fast);
     g_cmp.b = NULL; /* the block buffer is reused: its temps are not these */
+    g_so_clear = (c->jit_ctx & PPC_CTX_SO) == 0u;
 
     while (count < PPC_MAX_BLOCK_INSNS && !b->overflow &&
            b->count + PPC_IR_HEADROOM <= EMU_IR_MAX_INSNS &&
@@ -1625,7 +1650,7 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
             break;
         }
         ppc_decode(insn, len, c->vle, &d);
-        if (must_decline(&d)) {
+        if (must_decline(&d) || (g_so_clear && sets_so(&d))) {
             g_stats.declined++;
             g_stats.declined_by_sem[d.sem]++;
             break;

@@ -162,10 +162,21 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
  * through its mapping would otherwise be found by core 1 at the same
  * address under a different one. On the identity map the translation is
  * the same for both, so their blocks are shared there.
+ *
+ * **And XER[SO].** Clear, a compare's SO is 0 and a block says so with
+ * a constant: the XER load, its shift and its OR were three of the
+ * thirteen instructions of every `cmpw` on the F746. Only an OE=1
+ * instruction and mtxer set it, and a block built with it clear ends
+ * before either (ppc_ir.c, sets_so): the interpreter runs them, and the
+ * context is derived again after it. A block built with it set reads
+ * XER, so a context that still says set once SO is clear is slow, not
+ * wrong.
  */
 uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
 {
     uint64_t k = c->vle ? 1u : 0u;
+
+    k |= (c->xer & PPC_XER_SO) != 0u ? PPC_CTX_SO : 0u;
 
     if (c->mmu_on) {
         k |= 2u;
