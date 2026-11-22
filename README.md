@@ -580,8 +580,8 @@ gdb-multiarch build/f746/src/platform/stm32f746/emu-stm32f746.elf \
   -ex 'target extended-remote :3333'
 ```
 
-Or under [gdbtrace](https://github.com/lfazio/gdbtrace), a Trace32-style
-debugger on gdb, checked out beside this tree: run-control, the
+Or under [GdbTrace](https://github.com/lfazio/gdbtrace), a Cortex-M
+debugger with trace, on gdb, checked out beside this tree: run-control, the
 STM32F746's peripherals decoded from ST's SVD (STM32CubeIDE's, found
 where it installs), FreeRTOS's tasks, and memory read while the
 firmware runs. It configures and builds `build/f746` if needed -- and

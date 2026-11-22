@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
 #
-# gdbtrace-f746.sh - the F746 firmware under gdbtrace, a Trace32-style
-# debugger on gdb (github.com/lfazio/gdbtrace, checked out beside this
+# gdbtrace-f746.sh - the F746 firmware under GdbTrace, a Cortex-M
+# debugger with trace, on gdb (github.com/lfazio/gdbtrace, checked out beside this
 # tree): run-control, breakpoints, registers, memory, the STM32F746's
 # peripherals decoded from ST's SVD, and FreeRTOS's tasks -- read live,
 # through OpenOCD's TCL port, while the firmware runs.
@@ -96,11 +96,15 @@ export STLINK_SERIAL
 ELF=$(CDPATH='' cd -- "$(dirname -- "$ELF")" && pwd)/$(basename -- "$ELF")
 
 # Programmed and verified at connection, unless the caller attaches with
-# --no-load to what is already running.
+# --no-load to what is already running -- and then without the config's
+# connection under reset, which would catch the core before its first
+# instruction (pc 0, no stack, no tasks): CONNECT_UNDER_RESET=0.
 PROGRAM="--program"
+CONNECT_UNDER_RESET=1
 for a in "$@"; do
-    case $a in --no-load) PROGRAM= ;; esac
+    case $a in --no-load) PROGRAM= CONNECT_UNDER_RESET=0 ;; esac
 done
+export CONNECT_UNDER_RESET
 
 mkdir -p "$ROOT/build"
 export PYTHONPATH="$GT${PYTHONPATH:+:$PYTHONPATH}"
