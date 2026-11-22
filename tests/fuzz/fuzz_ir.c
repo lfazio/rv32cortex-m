@@ -223,12 +223,27 @@ static uint32_t h_mix(emu_cpu_t *cpu, uint32_t a, uint32_t b, uint32_t aux)
 
 static const emu_ir_target_t *g_tgt; /* this input's, for h_vmems and h_poke */
 
+/*
+ * The flag word as both sides must agree on it: all of it, or the four
+ * flags only where the target holds them alone -- the rest is undefined
+ * there (flags_alone), Thumb-2 storing the host's Q and GE in it.
+ */
+static uint32_t flags_seen(uint32_t w)
+{
+    const emu_ir_target_t *const t = g_tgt;
+
+    if (t == NULL || !t->flags_alone) {
+        return w;
+    }
+    return w & (t->flag_bit[0] | t->flag_bit[1] | t->flag_bit[2] | t->flag_bit[3]);
+}
+
 static uint32_t h_peek(emu_cpu_t *cpu, uint32_t a, uint32_t b)
 {
     fcpu_t *const c = (fcpu_t *)(void *)cpu;
 
     g_st.helpers++;
-    c->hlog = (c->hlog ^ c->pc ^ (c->flags << 7)) * 0x01000193u;
+    c->hlog = (c->hlog ^ c->pc ^ (flags_seen(c->flags) << 7)) * 0x01000193u;
     return c->r[a & 15u] + b;
 }
 
@@ -239,8 +254,8 @@ static uint32_t h_poke(emu_cpu_t *cpu, uint32_t a, uint32_t b)
     g_st.helpers++;
     c->hlog = (c->hlog ^ 0x55u ^ a) * 0x01000193u;
     c->r[a & 15u] = b;
-    /* the flag word's own bits only, where the target says it holds no other */
-    c->flags ^= (b ^ (b >> 28)) & ((g_tgt != NULL && g_tgt->flags_alone) ? 0xF0000000u : 0xF000000Fu);
+    /* where the word holds the flags alone, bits 3:0 are its junk */
+    c->flags ^= (b ^ (b >> 28)) & 0xF000000Fu;
     return a ^ b;
 }
 
@@ -1504,10 +1519,12 @@ static const emu_ir_target_t *build(in_t *in, fcpu_t *c)
     for (uint32_t i = 0; i < 16u; i++) {
         c->r[i] = interesting(byte(in));
     }
+    /*
+     * Where the word holds the flags alone, what is beside them is
+     * undefined, and a reader that looks there is wrong: start with it
+     * set as often as clear (flags_alone).
+     */
     c->flags = word(in);
-    if (t->flags_alone) { /* the promise flags_alone makes */
-        c->flags &= t->flag_bit[0] | t->flag_bit[1] | t->flag_bit[2] | t->flag_bit[3];
-    }
     c->pc = START_PC;
     for (uint32_t i = 0; i < 8u; i++) {
         c->f[i] = interesting_f(byte(in));
@@ -1734,7 +1751,7 @@ static bool same(const side_t *x, const side_t *y, bool print,
     for (unsigned i = 0; i < 16u; i++) {
         CMP("r", i, x->cpu.r[i], y->cpu.r[i]);
     }
-    CMP("flags", 0, x->cpu.flags, y->cpu.flags);
+    CMP("flags", 0, flags_seen(x->cpu.flags), flags_seen(y->cpu.flags));
     CMP("pc", 0, x->cpu.pc, y->cpu.pc);
     for (unsigned i = 0; i < 8u; i++) {
         CMP("f", i, x->cpu.f[i], y->cpu.f[i]);

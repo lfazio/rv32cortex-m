@@ -635,6 +635,11 @@ static bool ir_diff_ref(emu_cpu_t *cpu, uint32_t *retired,
         prefix##_ops_live.irq_not_retired = (fe).irq_not_retired;                                       \
         prefix##_ops_live.fault_not_charged = (fe).fault_not_charged;                                   \
         prefix##_ops_live.state_bytes = (fe).diff_state_bytes;                                          \
+        if ((fe).target->flags_alone) {                                                                 \
+            const uint32_t *const fb = (fe).target->flag_bit;                                           \
+            prefix##_ops_live.diff_flags_offset = (fe).target->flags_offset;                            \
+            prefix##_ops_live.diff_flags_mask = fb[0] | fb[1] | fb[2] | fb[3];                          \
+        }                                                                                               \
         if (emu_jit_init((fe).code_bytes)) {                                                            \
             return true;                                                                                \
         }                                                                                               \

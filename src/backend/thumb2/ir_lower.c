@@ -2430,9 +2430,11 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     /*
      * A word that holds nothing but the four, all of them live, in the
-     * APSR's own places: the APSR is the word, less Q and GE and with a
-     * subtract's C made a borrow -- no load, no bit-field moves
-     * (flags_alone). A shift's C comes from `b`, not the APSR.
+     * APSR's own places: the APSR is the word, with a subtract's C made
+     * a borrow -- no load, no bit-field moves (flags_alone). Q and GE
+     * go in with it: no reader looks below bit 28, and the AND that
+     * cleared them was one of five instructions in every such SETF.
+     * A shift's C comes from `b`, not the APSR.
      */
     if (t->flags_alone && (in->live & EMU_IR_F_ALL) == EMU_IR_F_ALL &&
         t->flag_bit[0] == (1u << 30) && t->flag_bit[1] == (1u << 31) &&
@@ -2444,8 +2446,6 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             (void)t2_expand_imm(0x20000000u, &imm); /* one byte, rotated: encodes */
             t2_eor_imm(SETF_PSR, SETF_PSR, imm);
         }
-        (void)t2_expand_imm(0xF0000000u, &imm);
-        t2_and_imm(SETF_PSR, SETF_PSR, imm);
         t2_str_imm(SETF_PSR, T2_CPU, t->flags_offset);
         return;
     }

@@ -1638,10 +1638,14 @@ typedef struct emu_ir_target {
     bool flags_arm_carry;
 
     /*
-     * The word holds the four flags and nothing else: every bit outside
-     * flag_bit is 0, always -- a promise the frontend keeps (ARMv7-M's
-     * jit_nzcv), which lets a SETF defining all four store them without
-     * reading the word first.
+     * The word holds the four flags and nothing else: no bit outside
+     * flag_bit means anything, so a SETF defining all four stores them
+     * without reading the word first -- and without clearing the rest:
+     * Thumb-2 stores the APSR as MRS gives it, Q and GE included. So the
+     * bits outside flag_bit are undefined, and every reader of the word
+     * reads its flags one at a time or masks them (GETCOND, the partial
+     * SETF, ARMv7-M's xPSR merge, G4MH's PSW pack, EMU_JIT_DIFF's
+     * comparison, fuzz-ir's). ARMv7-M's jit_nzcv, G4MH's jit_flags.
      */
     bool flags_alone;
 

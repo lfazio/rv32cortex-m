@@ -684,6 +684,14 @@ typedef struct emu_jit_ops {
     uint32_t state_bytes;
 
     /*
+     * The flag word, compared through `diff_flags_mask` only -- 0 for
+     * none: a word that holds the flags alone has undefined bits beside
+     * them, which the two sides need not agree on (flags_alone).
+     */
+    uint32_t diff_flags_offset;
+    uint32_t diff_flags_mask;
+
+    /*
      * True if a translated block may be *moved*.
      *
      * Compaction slides survivors down to reclaim space, which is only

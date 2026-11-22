@@ -321,7 +321,8 @@ typedef struct armv7m_cpu {
      * is stale; clear, xPSR is and jit_nzcv is stale. Every path from
      * translated code into C that reads the flags packs first, and every
      * path back unpacks -- see armv7m_flags_pack. The interpreter never
-     * sees the split form.
+     * sees the split form. Bits 27:0 are undefined (flags_alone):
+     * translated code stores the host's APSR there, Q and GE with it.
      */
     uint32_t jit_nzcv;
     bool jit_split;
@@ -549,6 +550,7 @@ static inline uint64_t armv7m_jit_ctx(const armv7m_cpu_t *c)
 static inline void armv7m_flags_pack(armv7m_cpu_t *c)
 {
     if (c->jit_split) {
+        /* the four only: translated code leaves the host's Q and GE below */
         c->xpsr = (c->xpsr & 0x0FFFFFFFu) | (c->jit_nzcv & 0xF0000000u);
         c->jit_split = false;
     }
@@ -557,7 +559,7 @@ static inline void armv7m_flags_pack(armv7m_cpu_t *c)
 static inline void armv7m_flags_unpack(armv7m_cpu_t *c)
 {
     if (!c->jit_split) {
-        c->jit_nzcv = c->xpsr & 0xF0000000u; /* nothing else, ever */
+        c->jit_nzcv = c->xpsr & 0xF0000000u;
         c->jit_split = true;
     }
 }

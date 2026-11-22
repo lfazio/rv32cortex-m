@@ -69,7 +69,10 @@ typedef struct g4mh_cpu {
      * PSW's four bits are stale; clear, PSW is. Every path from
      * translated code into C that reads or writes the flags packs first
      * and unpacks after -- g4mh_flags_pack -- and the interpreter never
-     * sees the split form. ARMv7-M's jit_nzcv is the same design.
+     * sees the split form. ARMv7-M's jit_nzcv is the same design. Bits
+     * outside the four are undefined (flags_alone): translated code
+     * stores the host's APSR, Q and GE with it, and the pack reads the
+     * four one at a time.
      *
      * Right after psw: emu_ir_frontend_t::diff_state_bytes covers both.
      */
@@ -322,7 +325,6 @@ static inline void g4mh_flags_unpack(g4mh_cpu_t *c)
     if (!c->jit_split) {
         const uint32_t p = c->psw;
 
-        /* nothing outside the four, ever: flags_alone is a promise */
         c->jit_flags = ((p & G4MH_PSW_Z) ? (1u << 30) : 0u) |
                        ((p & G4MH_PSW_S) ? (1u << 31) : 0u) |
                        ((p & G4MH_PSW_OV) ? (1u << 28) : 0u) |

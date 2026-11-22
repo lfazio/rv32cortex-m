@@ -2554,6 +2554,38 @@ static void test_step_is_one_instruction(void)
  *
  *   mov 3, r10; mov 5, r11; cmp r11, r10 (3 - 5: S and CY); br .
  */
+/*
+ * The split flag word's other bits are undefined (flags_alone): Thumb-2
+ * stores the host's APSR there, Q and GE with it. The pack takes the
+ * four and nothing else -- set every bit beside them, and the PSW's own
+ * bits around the flags, and see only the four move: each flag clear in
+ * one of the two cases, with the junk beside it. No host suite sees
+ * this otherwise: x86-64's SETF writes the four alone.
+ */
+static void test_jit_flags_pack_ignores_the_rest(void)
+{
+    static const uint32_t keep = G4MH_PSW_SAT | G4MH_PSW_ID | G4MH_PSW_EBV | G4MH_PSW_CU0;
+    static const struct {
+        uint32_t word, psw;
+    } k[2] = {
+        {(1u << 30) | (1u << 28), G4MH_PSW_Z | G4MH_PSW_OV},
+        {(1u << 31) | (1u << 29), G4MH_PSW_S | G4MH_PSW_CY},
+    };
+
+    for (unsigned i = 0; i < 2u; i++) {
+        g4mh_cpu_t c;
+
+        memset(&c, 0, sizeof(c));
+        c.psw = keep | k[1u - i].psw; /* the other case's flags, to go */
+        c.jit_flags = k[i].word | 0x0FFFFFFFu;
+        c.jit_split = true;
+        CHECK_EQ(g4mh_flags_packed(&c), keep | k[i].psw);
+        g4mh_flags_pack(&c);
+        CHECK_EQ(c.psw, keep | k[i].psw);
+        CHECK(!c.jit_split);
+    }
+}
+
 static void test_jit_flags_whole_after_a_budget_stop(void)
 {
     const uint16_t prog[] = {
@@ -12245,6 +12277,7 @@ void test_g4mh(void)
 #if EMU_HAVE_JIT
     test_ir_backend_is_used();
     test_step_is_one_instruction();
+    test_jit_flags_pack_ignores_the_rest();
     test_jit_flags_whole_after_a_budget_stop();
     test_jit_flags_across_a_raise();
 #if G4MH_EXT_MPU

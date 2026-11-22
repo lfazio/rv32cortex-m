@@ -1590,6 +1590,31 @@ static void test_lazy_board_answers(void)
     }
 }
 
+/*
+ * jit_nzcv's bits 27:0 are undefined (flags_alone): Thumb-2 stores the
+ * host's APSR there, Q and GE with it. The pack takes bits 31:28 and
+ * leaves xPSR's own Q, GE, IT and exception number, each flag clear in
+ * one of the two cases with the junk beside it -- which no host suite
+ * would see otherwise: x86-64's SETF writes the four alone.
+ */
+static void test_jit_flags_pack_ignores_the_rest(void)
+{
+    static const uint32_t keep = 0x0F0FFC23u; /* Q, IT, GE, T and an exception */
+    static const uint32_t k[2] = {0x50000000u, 0xA0000000u}; /* Z V; N C */
+
+    for (unsigned i = 0; i < 2u; i++) {
+        armv7m_cpu_t c;
+
+        memset(&c, 0, sizeof(c));
+        c.xpsr = keep | k[1u - i]; /* the other case's flags, to go */
+        c.jit_nzcv = k[i] | 0x0FFFFFFFu;
+        c.jit_split = true;
+        armv7m_flags_pack(&c);
+        CHECK_EQ(c.xpsr, keep | k[i]);
+        CHECK(!c.jit_split);
+    }
+}
+
 void test_armv7m(void)
 {
     test_pending_summary();
@@ -1608,4 +1633,5 @@ void test_armv7m(void)
     test_handler_pc_writers_branch();
     test_stacking_board_answers();
     test_lazy_board_answers();
+    test_jit_flags_pack_ignores_the_rest();
 }

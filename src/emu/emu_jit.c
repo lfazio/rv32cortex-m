@@ -1760,6 +1760,10 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
 
         memcpy(&a, got + off, 4u);
         memcpy(&e, g_diff_want + off, 4u);
+        if (ops->diff_flags_mask != 0u && off == ops->diff_flags_offset) {
+            a &= ops->diff_flags_mask; /* the rest is undefined: flags_alone */
+            e &= ops->diff_flags_mask;
+        }
         if (a != e) {
             emu_jit_diff_report(pc, off, e, a);
             return ret; /* the first divergence is the one */
