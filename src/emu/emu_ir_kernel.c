@@ -267,6 +267,13 @@ void emu_ir_kernel_stats(uint32_t *kernels, uint32_t *calls, uint32_t *runs,
  * e + ec + m * estep == L, modulo 2^32), no more than the scalar loop
  * would run before the cap ends this entry, less the last: 0 for none.
  */
+/* Where the kernels go: the hot section, or flash (EMU_IR_KERNEL_HOT). */
+#if defined(EMU_IR_KERNEL_HOT) && !EMU_IR_KERNEL_HOT
+#define KERNEL_TEXT EMU_NOINLINE
+#else
+#define KERNEL_TEXT EMU_HOT_TEXT
+#endif
+
 static uint32_t kernel_trip(const emu_cpu_t *cpu, const kernel_t *k, uint32_t retired);
 
 /* One of a map's operations, as src/backend/common/interp.c has it. */
@@ -332,7 +339,7 @@ static EMU_ALWAYS_INLINE uint32_t kernel_room(const kernel_t *k, uint32_t retire
                : (EMU_JIT_LOOP_CAP - retired + k->insns - 1u) / k->insns - 1u;
 }
 
-EMU_HOT_TEXT static uint32_t kernel_trip(const emu_cpu_t *cpu, const kernel_t *k,
+KERNEL_TEXT static uint32_t kernel_trip(const emu_cpu_t *cpu, const kernel_t *k,
                                          uint32_t retired)
 {
     const uint32_t e = reg(cpu, k->eo);
@@ -392,7 +399,7 @@ static EMU_ALWAYS_INLINE bool byte_in_rom(const kernel_t *k, uint32_t addr)
  * entry, and only where that iteration's bytes are in the window too: it
  * is the body's, and must complete (emu_ir_kernel_run's dot product).
  */
-EMU_HOT_TEXT static uint32_t kernel_bytes(emu_cpu_t *cpu, const kernel_t *k, uint32_t retired)
+KERNEL_TEXT static uint32_t kernel_bytes(emu_cpu_t *cpu, const kernel_t *k, uint32_t retired)
 {
     if (k->guard != EMU_IR_NO_GUARD && ((const uint8_t *)cpu)[k->guard] != 0u) {
         return 0u; /* the inlined stores' guard: they would take the slow path */
@@ -466,9 +473,10 @@ EMU_HOT_TEXT static uint32_t kernel_bytes(emu_cpu_t *cpu, const kernel_t *k, uin
 /*
  * In ITCM where the platform has it (EMU_HOT_TEXT): called once a block
  * entry, it was in the F746's flash, and RV32 CoreMark ran 3.7% slower
- * with it than without.
+ * with it than without. Not in G4MH's F746 firmware (EMU_IR_KERNEL_HOT),
+ * whose ITCM the loop cap's check wants more.
  */
-EMU_HOT_TEXT uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t retired)
+KERNEL_TEXT uint32_t emu_ir_kernel_run(emu_cpu_t *cpu, uint32_t index, uint32_t retired)
 {
     g_calls++;
     if (index >= g_nkernels) {

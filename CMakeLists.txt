@@ -404,17 +404,22 @@ set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
     "linker section for the per-dispatch path (empty: ordinary .text)")
 
 # The loop cap's check -- its stubs and the dispatcher's set-up for it
-# (emu_jit_cap_state) -- in the hot section with the dispatcher, where the
-# firmware has the room: out of it, RV32 and PowerPC CoreMark gained 2.3
-# and 3.1% on the F746 against 4.6 and 5.1% in it. G4MH's F746 firmware
-# has 160 bytes of ITCM to spare, which the check outgrew.
+# (emu_jit_cap_state) -- in the hot section with the dispatcher: out of
+# it, RV32 and PowerPC CoreMark gained 2.3 and 3.1% on the F746 against
+# 5.7 and 6.0% in it.
+option(EMU_JIT_CAP_HOT "The loop cap's check beside the dispatcher, in its hot section" ON)
+
+# The C loop kernels (emu_ir_kernel_run) in the hot section too, except
+# where the room is wanted more: G4MH's F746 firmware had 160 bytes of
+# ITCM to spare, too few for the cap's check, and G4MH CoreMark makes no
+# kernel -- where RV32 CoreMark, kernel and all, ran 3.7% slower with
+# them in flash. A firmware with G4MH and RV32 both takes the G4MH side.
 if(EMU_PLATFORM STREQUAL "stm32f746" AND EMU_GUEST_ARCH_G4MH)
-    set(_cap_hot_default OFF)
+    set(_kernel_hot_default OFF)
 else()
-    set(_cap_hot_default ON)
+    set(_kernel_hot_default ON)
 endif()
-option(EMU_JIT_CAP_HOT "The loop cap's check beside the dispatcher, in its hot section"
-       ${_cap_hot_default})
+option(EMU_IR_KERNEL_HOT "The C loop kernels in the hot section" ${_kernel_hot_default})
 
 #
 # And for data: each frontend's core state, which translated code reads
@@ -927,6 +932,7 @@ target_compile_definitions(emucore PUBLIC
     $<$<BOOL:${EMU_JIT_CODE_SECTION}>:EMU_JIT_CODE_SECTION="${EMU_JIT_CODE_SECTION}">
     $<$<BOOL:${EMU_HOT_TEXT_SECTION}>:EMU_HOT_TEXT_SECTION="${EMU_HOT_TEXT_SECTION}">
     EMU_JIT_CAP_HOT=$<BOOL:${EMU_JIT_CAP_HOT}>
+    EMU_IR_KERNEL_HOT=$<BOOL:${EMU_IR_KERNEL_HOT}>
     $<$<BOOL:${EMU_HOT_DATA_SECTION}>:EMU_HOT_DATA_SECTION="${EMU_HOT_DATA_SECTION}">
     $<$<BOOL:${EMU_INTERP_TEXT_SECTION}>:EMU_INTERP_TEXT_SECTION="${EMU_INTERP_TEXT_SECTION}">
     EMU_JIT_HOT_THRESHOLD=${EMU_JIT_HOT_THRESHOLD}u
