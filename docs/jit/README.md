@@ -394,6 +394,82 @@ collision instead makes the loser unreachable while it still holds its
 code and its slot, so two hot blocks retranslate each other every time
 round the loop.
 
+### The loop cap, checked in translated code (`emu_jit_cap_state`)
+
+A chain, or a block looping on itself, comes back to the dispatcher
+once its count reaches `EMU_JIT_LOOP_CAP` (128), where interrupts are
+taken, the budget, the state and the generation tested and the count
+hook run. Counted by cause on the host, those returns were 85% of
+PowerPC CoreMark's block entries and 79% of G4MH's; on the F746 the
+dispatcher and the count hook were a fifth of PowerPC's run.
+
+So past the cap the code asks first. A chained exit is `cmp r5, #128;
+it hs; bl` to its block's trampoline (`ldr r12, =t2_cap_stub; bx r12`,
+so lr still points into the block) and then the link as before; a
+self-loop's back edge, once past the cap, stores the pc, gives back the
+frame, calls the stub and takes the frame again. `t2_cap_stub` reads
+the core's interrupt flag and comes back to the dispatcher if it is
+set, or if the count with what it carried reaches `limit`; otherwise it
+moves the count into `carried`, starts it at 0 and returns to go on.
+The dispatcher sets `limit` before each block -- `EMU_JIT_CAP_OUTER`
+(512), the call's budget, or the frontend's next timer, the nearest --
+and adds `carried` back to what the block returns. The computed jumps'
+stub makes the same check past the cap, out of line. x86-64 has the
+same three sites, its stub in the page with the others. Resetting the
+count is what makes it a check every 128 rather than at every exit past
+the first, which cost RV32 CoreMark 25%: 3.5M checks for 30M
+instructions.
+
+Not everywhere:
+
+- **A count hook that fires a timer** -- PowerPC's time base and its
+  devices, ARMv7-M's SysTick -- is the timer (`count_events` in the
+  target), and deferring it delayed PowerPC's watchdog enough for
+  `guest-ppc-swt-jit` to fail. A frontend that says how far its next
+  timer is (`count_horizon`: PowerPC's `ppc_jit_count_horizon`, from
+  `ppc_cpu_clock_until`) bounds the limit by it, and a device that
+  moves the deadline mid-block sets the interrupt flag already
+  (`ppc_cpu_soc_changed`). ARMv7-M has no horizon and comes back at the
+  cap as before.
+- **A buffer under 64 KB** (`emu_jit_cap_min`): at 32 KB RV32 CoreMark
+  x2000, which tips between two equilibria there
+  ([tuning.md](tuning.md#a-long-run-at-32-kb-two-equilibria)), was 4.5%
+  slower with it, and 10.5% with the checks counted as hits for
+  compaction, which is not done.
+- **A block that borrows FPSCR or MXCSR** leaves through its tail, so
+  its self-loop returns as before; and a Thumb-2 block whose push is
+  not r4-r11 and lr cannot take the stub's pop.
+
+Where it lives matters as much: the stubs and the dispatcher's set-up go
+in ITCM beside the dispatcher (`EMU_JIT_CAP_HOT`), except in G4MH's F746
+firmware, which had 160 bytes of ITCM to spare and keeps them in flash.
+In flash, RV32 and PowerPC CoreMark gained 2.3% and 3.1%; in ITCM:
+
+| F746, CoreMark under the JIT, pad 0 / 64 | before | after | |
+|---|---|---|---|
+| RV32 | 8.91 / 8.90 | 8.40 / 8.40 | **-5.7% / -5.6%** |
+| PowerPC | 10.24 / 10.23 | 9.63 / 9.63 | **-6.0% / -5.9%** |
+| G4MH (in flash) | 12.36 / 12.36 | 11.96 / 11.97 | **-3.2% / -3.2%** |
+| ARMv7-M (no check) | 10.03 / 10.03 | 10.15 / 10.16 | +1.2% / +1.3% |
+
+ARMv7-M's blocks are byte for byte the same and its dispatches do none
+of the new work, yet it pays: main's ARMv7-M does not move with ITCM
+shifted by 4 to 256 bytes (10.01-10.03), the new one is 10.15-10.16 at
+every shift, and taking the set-up out of the dispatcher's loop made it
++1.8%. It is the dispatcher's loop changing shape, and RV32 CoreMark
+x2000 at 32 KB, where the check is off, pays the same 1.2% (24.20 to
+24.50, the same 56,330 translations).
+
+How it is checked, and what is not: the host suite, arch-test and
+riscv-tests under the JIT, gdb-check and the four JIT fuzzers, clean;
+on the F746 isatest and the four CoreMarks with their retired counts
+and CRCs. The dispatcher forgetting `carried` fails
+`guest-g4mh-mmiobench-both`. No host test sees the stub ignore the
+interrupt flag -- nothing sets it mid-slice on one thread -- nor the
+limit ignore the budget, which a correct chain overshoots by up to a
+block past the 128 anyway; and on the board an interrupt waits for the
+run loop's slice whatever the chain does (`irqtest`'s latency).
+
 ## The passes
 
 `emu_ir_optimise` runs, in order: dead flags, register traffic (a `GET`

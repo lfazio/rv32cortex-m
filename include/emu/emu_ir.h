@@ -1649,6 +1649,19 @@ typedef struct emu_ir_target {
      */
     bool flags_alone;
 
+    /*
+     * The frontend's count hook may raise an interrupt -- it advances a
+     * timer on the instructions retired (PowerPC's time base and its
+     * devices, ARMv7-M's SysTick). So a chain must come back to the
+     * dispatcher at EMU_JIT_LOOP_CAP, where the hook runs, as it always
+     * did: the backends emit no check past the cap for this target
+     * (emu_jit_cap_state), and the dispatcher's limit is 0 for its
+     * computed jumps' (emu_jit_ops_t::count_events) -- unless it says
+     * how far the next timer is (`count_horizon`, emu_jit_ops_t's).
+     */
+    bool count_events;
+    uint32_t (*count_horizon)(emu_cpu_t *cpu);
+
     /* Guest register `n` reads as zero and ignores writes. */
     bool (*reg_is_zero)(uint32_t n);
 

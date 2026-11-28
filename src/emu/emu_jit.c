@@ -119,6 +119,10 @@ JIT_ASM_READ EMU_PER_CORE emu_jit_ibtc_t
     emu_jit_ibtc[EMU_JIT_IBTC_SIZE] EMU_HOT_DATA;
 JIT_ASM_READ EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state EMU_HOT_DATA;
 
+/* Read by the backends' stubs at every check past the cap: pinned. */
+JIT_ASM_READ EMU_PER_CORE emu_jit_cap_state_t emu_jit_cap_state EMU_HOT_DATA;
+uint32_t emu_jit_cap_min = 65536u;
+
 /* The backend's stub return; NULL, no stub, and nothing filled. */
 static EMU_PER_CORE const uint8_t *g_ibtc_miss;
 /* What an empty entry's hit count points at. */
@@ -1930,6 +1934,54 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
 }
 
 
+/*
+ * Inlined into the dispatcher, or out of line where EMU_JIT_CAP_HOT is
+ * off: the dispatcher is in ITCM, which G4MH's F746 firmware had 160
+ * bytes of to spare.
+ *
+ * Whether translated code may go on past the cap: everywhere but where
+ * the count hook fires a timer and the frontend cannot say when, and in a
+ * buffer of at least emu_jit_cap_min. Where it may not, the state is set
+ * once -- a limit of 0, so the computed jumps' stub's check always stops
+ * -- and nothing is paid a dispatch.
+ */
+#if defined(EMU_JIT_CAP_HOT) && !EMU_JIT_CAP_HOT
+#define JIT_CAP_FN EMU_NOINLINE
+#else
+#define JIT_CAP_FN EMU_ALWAYS_INLINE /* into the dispatcher, wherever it lives */
+#endif
+
+static JIT_CAP_FN bool cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t *hot)
+{
+    static const volatile bool k_irq_always = true;
+    const bool on = (!ops->count_events || ops->count_horizon != NULL) &&
+                    g_code_size >= emu_jit_cap_min;
+
+    emu_jit_cap_state.irq = (hot->irq_pending != NULL) ? hot->irq_pending : &k_irq_always;
+    if (!on) {
+        emu_jit_cap_state.limit = 0u;
+        emu_jit_cap_state.carried = 0u;
+    }
+    return on;
+}
+
+/* The limit for the block about to run: the outer cap, the call's budget
+ * or the frontend's next timer, whichever is nearest. */
+static JIT_CAP_FN void cap_arm(emu_cpu_t *cpu, const emu_jit_ops_t *ops, uint32_t left)
+{
+    uint32_t lim = (left < EMU_JIT_CAP_OUTER) ? left : EMU_JIT_CAP_OUTER;
+
+    if (ops->count_horizon != NULL) {
+        const uint32_t h = ops->count_horizon(cpu);
+
+        if (h < lim) {
+            lim = h;
+        }
+    }
+    emu_jit_cap_state.limit = lim;
+    emu_jit_cap_state.carried = 0u;
+}
+
 EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
                                           uint32_t *retired,
                                           const emu_jit_ops_t *ops)
@@ -1967,6 +2019,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     emu_jit_hot_t hot;
     memset(&hot, 0, sizeof(hot));
     ops->bind(cpu, &hot);
+    const bool cap_on = cap_begin(ops, &hot);
 
     if (ops->is_idle != NULL && ops->is_idle(cpu)) {
         if (!ops->wake(cpu)) {
@@ -2201,6 +2254,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #ifdef EMU_JIT_DIFF
         (void)ran;
         (void)ibtc_ok;
+        (void)cap_on;
         const uint32_t ret = run_block_checked(cpu, b, ops, fresh);
 #else
         (void)fresh; /* read by the differential checker alone */
@@ -2211,10 +2265,22 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
         }
         emu_jit_ibtc_state.last = 0u;
+        if (cap_on) {
+            cap_arm(cpu, ops, budget - done);
+        }
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
         ran = true;
 #endif
+#ifdef EMU_JIT_DIFF
         const uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
+#else
+        uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
+
+        if (cap_on) {
+            /* what the cap's checks took off the count as they went on */
+            n += emu_jit_cap_state.carried;
+        }
+#endif
 
         /*
          * The exit to link is in this block or one its links lead to --
@@ -2253,6 +2319,8 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     /* Counted by the stub, where a stats struct is out of reach. */
     g_stats.ibtc_hits += emu_jit_ibtc_state.hits;
     emu_jit_ibtc_state.hits = 0u;
+    g_stats.cap_continues += emu_jit_cap_state.passed;
+    emu_jit_cap_state.passed = 0u;
 
     if (retired != NULL) {
         *retired = done;

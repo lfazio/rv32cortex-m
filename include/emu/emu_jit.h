@@ -156,6 +156,7 @@ typedef struct emu_jit_stats {
     uint32_t blocks; /* blocks currently held               */
     uint32_t translations; /* blocks translated since reset       */
     uint32_t block_entries; /* times a translated block was run    */
+    uint32_t cap_continues; /* caps met in translated code that went on */
     uint32_t interp_fallbacks; /* instructions the interpreter ran    */
     uint32_t flushes; /* whole-cache discards                */
     uint32_t compactions; /* reclaims that kept the hot blocks   */
@@ -532,6 +533,52 @@ typedef struct emu_jit_ibtc_state {
 
 extern EMU_PER_CORE emu_jit_ibtc_state_t emu_jit_ibtc_state;
 
+/*
+ * The loop cap in two parts. Past EMU_JIT_LOOP_CAP a chain or a
+ * self-loop reads the core's pending-interrupt flag at each exit, in
+ * translated code, and comes back to the dispatcher if it is set -- or
+ * once its count reaches `limit`: EMU_JIT_CAP_OUTER, or the end of the
+ * call's budget if that is nearer. So an interrupt waits as long as it
+ * did, and the dispatcher's other checks -- the state, `blocked`, the
+ * generation, the count hook -- come every EMU_JIT_CAP_OUTER.
+ *
+ * Most returns to the dispatcher were the cap's: 85% of PowerPC
+ * CoreMark's block entries, 79% of G4MH's, a fifth of the run in the
+ * dispatcher and the count hook on the F746; a cap of 512 made RV32
+ * CoreMark 9.3% faster there, G4MH's 7.4% (jit/README.md).
+ *
+ * `irq` is never NULL: a frontend without the flag gets one always set.
+ * Going on, the check moves the count into `carried` and starts it again
+ * at 0, so it comes once every EMU_JIT_LOOP_CAP and not at every exit
+ * after the first -- which cost RV32 CoreMark 25% on the F746, 3.5M
+ * checks for its 30M instructions; the dispatcher adds `carried` to
+ * what the block returns, and the limit is against the sum. `passed`
+ * counts the checks that went on, the stats line's `caps`.
+ */
+#ifndef EMU_JIT_CAP_OUTER
+#define EMU_JIT_CAP_OUTER 512u
+#endif
+
+typedef struct emu_jit_cap_state {
+    const volatile bool *irq;
+    uint32_t limit;
+    uint32_t carried;
+    uint32_t passed;
+} emu_jit_cap_state_t;
+
+extern EMU_PER_CORE emu_jit_cap_state_t emu_jit_cap_state;
+
+/*
+ * The smallest code buffer the check past the cap is made for, the
+ * backends' and the dispatcher's: below it a chain comes back at the cap
+ * as it always did. At 32 KB, RV32 CoreMark x2000 -- where the buffer
+ * holds a fraction of the hot set and the run tips between two
+ * equilibria (jit/tuning.md) -- was 4.5% and 10.5% slower with it, where
+ * the 64 and 96 KB defaults gained 4.5-5%. emu_ir_kernel_inline_min's
+ * rule, for the same reason.
+ */
+extern uint32_t emu_jit_cap_min;
+
 /* The entry for a pc: the top bits of a multiply, which reads them all. */
 static inline uint32_t emu_jit_ibtc_index(uint32_t pc)
 {
@@ -644,6 +691,27 @@ typedef struct emu_jit_ops {
      * under the JIT, one for each time the dispatcher entered it.
      */
     bool fault_not_charged;
+
+    /*
+     * `count` may raise an interrupt: it advances a timer that fires on
+     * the instructions retired (PowerPC's time base and the devices on
+     * it, ARMv7-M's SysTick). The check past EMU_JIT_LOOP_CAP then goes
+     * back to the dispatcher every time, as the cap did before it, since
+     * going on would leave the count -- and the timer -- behind:
+     * PowerPC's watchdog fired late enough for its own test to say so.
+     */
+    bool count_events;
+
+    /*
+     * Where `count_events` holds: how many more instructions may retire
+     * before `count` would fire anything -- the outer limit of the cap's
+     * check for the block about to run (emu_jit_cap_state). NULL: none
+     * may, and a chain comes back at the cap as it always did. Read once
+     * a dispatch, so cheap; and only as good as what can move the
+     * deadline mid-block, which the frontend must flag (PowerPC sets its
+     * interrupt flag when a store moves its SoC's deadline).
+     */
+    uint32_t (*count_horizon)(emu_cpu_t *cpu);
 
     /* Add `n` to whatever counts retired instructions and cycles. */
     void (*count)(emu_cpu_t *cpu, uint32_t n);

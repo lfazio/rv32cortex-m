@@ -546,6 +546,13 @@ Since 2026-11-22 without the AND: `jit_nzcv`'s bits 27:0 are
 undefined, the host's Q and GE left in them, and `armv7m_flags_pack`
 takes bits 31:28 alone -- 1.48% / 1.38% faster (10.16 to 10.01).
 
+Its chains still come back at the loop cap: `a7_count` runs SysTick, so
+the target says `count_events` and gives no horizon, and the cap's
+check in translated code
+([../jit/README.md](../jit/README.md#the-loop-cap-checked-in-translated-code-emu_jit_cap_state))
+is not emitted. It pays 1.2% for it all the same (10.03 to 10.15), the
+dispatcher's loop changing shape.
+
 What a block may assume, and what invalidates it:
 
 - **Context** (`armv7m_jit_ctx`): Thumb, inside IT, Handler mode,

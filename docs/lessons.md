@@ -5493,6 +5493,25 @@ session, and every one of them recurred:
   hook raises interrupts say so (`count_events`). **Read what a hook
   does before deciding when it may run.**
 
+- **A placement chosen for one firmware's room is paid by every
+  firmware.** G4MH's F746 build did not link with the loop cap's check:
+  112 bytes too many for its ITCM. Moved to flash for all, the check was
+  worth 2.3% on RV32 CoreMark and 3.1% on PowerPC's, where in ITCM it was
+  5.7% and 6.0% -- and only G4MH's firmware lacked the room. The
+  placement is per build now (`EMU_JIT_CAP_HOT`). And the failure was a
+  board row nobody had linked: only the default build was, before an
+  hour of A/B. **Link every board's every frontend before measuring,
+  and fix a lack of room where it is, not everywhere.**
+
+- **Code a frontend never runs can still cost it, through the loop it
+  shares.** ARMv7-M takes none of the cap's check -- its blocks byte for
+  byte the same, its dispatches doing none of the new work -- and its
+  CoreMark was 1.2% slower, at every ITCM shift from 4 to 256 bytes where
+  the old firmware did not move at all; taking the new work out of the
+  dispatcher's loop made it 1.8%. **A change to a shared hot loop is
+  measured on every user of the loop, and a cost that follows the change
+  through every layout is the change's.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

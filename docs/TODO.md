@@ -78,22 +78,16 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       of PowerPC's and 20% of G4MH's follow one on the same base in their
       block, four in five of them stores -- at most 1.3% of PowerPC's
       translated time, not built.
-- [ ] **The loop cap's returns to the dispatcher**
-      ([jit/tuning.md](jit/tuning.md#emu_jit_loop_cap--an-interrupt-latency-knob)):
-      85% of PowerPC CoreMark's block entries, a fifth of its run with
-      the count hook. The check in translated code
-      (`wip/jit-cap-stub-x86`, host suites, four fuzzers, arch-test and
-      riscv-tests under the JIT clean) made RV32 CoreMark 5.0% and
-      G4MH's 4.2% faster on the F746, and cost ARMv7-M 1.8%, PowerPC 1.5%
-      and RV32 x2000 at 32 KB 4.5%. Left: the computed jumps' stub's
-      hot path as it was and the dispatcher's stores skipped where
-      `count_events` holds; the blocks a chain goes on through counted
-      hot for compaction; PowerPC's deadline (`ppc_cpu_clock_until`) as
-      the outer limit, its 7.9% measured with the timer deferred. Two
-      of its mutants no host suite can see: the stub ignoring the
-      interrupt flag (nothing sets it mid-slice on one thread) and the
-      limit ignoring the budget (a correct chain overshoots by up to a
-      block past the 128).
+- [ ] **The loop cap's check, what is left**
+      ([jit/README.md](jit/README.md#the-loop-cap-checked-in-translated-code-emu_jit_cap_state)):
+      ARMv7-M pays 1.2% for a check it does not make -- the dispatcher's
+      loop changing shape, not ITCM layout -- and so does RV32 x2000 at
+      32 KB, where it is off; ARMv7-M's SysTick could give it a horizon,
+      though with its count deferred it was 1.6% slower, not faster.
+      G4MH has it in flash for want of 160 bytes of ITCM (3.2% where
+      the others gain 5.7-6.0%). The F446's 32 KB default gets none of
+      it. Two mutants no host test sees: the stub ignoring the interrupt
+      flag, and the limit ignoring the budget.
 - [ ] **A constant the compare takes as an immediate still gets a
       register**: Thumb-2's allocator runs before `kcmp_scan`, so a
       folded constant is allocated and never written.

@@ -514,18 +514,13 @@ the cap (counted by cause on the host), and on the F746 the dispatcher
 and the count hook were a fifth of PowerPC's run (`emu_jit_run` 10.6%,
 `lookup` 4.9%, the hook 3.7%). A cap of 512 (`wip/jit-loop-cap-512`):
 RV32 CoreMark **-9.3%**, G4MH **-7.4%**, ARMv7-M -3.5%, PowerPC +2.1%.
-The check in translated code (`wip/jit-cap-stub-x86`): at the cap, a
-predicated BL to a stub that reads the core's interrupt flag and goes
-on, carrying the count, to an outer limit of 512 or the budget's end --
-RV32 **-5.0%**, G4MH **-4.2%** at the default buffers; ARMv7-M +1.8%
-and PowerPC +1.5% with their translated code byte for byte the same
-(the computed jumps' stub's new branch, the dispatcher's stores); and
-RV32 CoreMark x2000 at 32 KB **+4.5%**, 64,085 translations against
-56,330: compaction ranks blocks by the dispatcher's lookups, and a loop
-that no longer comes back reads as cold. Frontends whose count hook
-fires a timer -- PowerPC's time base, ARMv7-M's SysTick -- keep the
-cap's return (`count_events`): deferred, PowerPC's watchdog fired late
-enough for `guest-ppc-swt-jit` to fail. Not shipped (TODO.md).
+So the cap is checked in translated code now: past 128, an interrupt
+pending or the outer limit (`EMU_JIT_CAP_OUTER`, 512; the budget; a
+frontend's next timer) sends a chain back, and otherwise it goes on --
+RV32 CoreMark **-5.7%**, PowerPC's **-6.0%**, G4MH's **-3.2%** on the
+F746, ARMv7-M's +1.2%, and nothing below a 64 KB buffer
+(`emu_jit_cap_min`). The design, what it does not cover and what tests
+it are in [README.md](README.md#the-loop-cap-checked-in-translated-code-emu_jit_cap_state).
 
 ## The pc store
 

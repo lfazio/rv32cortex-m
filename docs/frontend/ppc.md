@@ -1297,6 +1297,19 @@ kept in it -- each fail it on its first run. CoreMark on the F746
 under the JIT **3.56% / 3.37% faster** (10.68 to 10.30, 10.67 to
 10.31; retired count, CRC and validation unchanged).
 
+**Its chains bounded by its next timer** (2026-11-28). A chain past the
+loop cap goes on to an outer limit in translated code
+([../jit/README.md](../jit/README.md#the-loop-cap-checked-in-translated-code-emu_jit_cap_state)),
+and PowerPC's count hook is where the decrementer and the SoC's timers
+fire, so the limit is also `ppc_jit_count_horizon`: the cycles left
+before `ppc_cpu_clock_until` says the hook must sync. A device that
+moves the deadline mid-block already sets the interrupt flag
+(`ppc_cpu_soc_changed`), which ends the chain at its next check.
+Without the horizon, the watchdog fired late enough for
+`guest-ppc-swt-jit` to fail. CoreMark on the F746 **6.0% / 5.9%
+faster** (10.24 to 9.63), 49,163 block entries on the host where there
+were 105,165.
+
 ### What it still interprets
 
 `-DEMU_PAIR_STATS=ON` counts executed instructions by kind and adjacent

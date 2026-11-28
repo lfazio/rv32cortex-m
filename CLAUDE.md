@@ -465,6 +465,10 @@ Each has cost more than one session, and every one recurred.
   a "not kept" is about the code that was measured. And a merge is a
   replacement: one `main()` parsed `--timer-hz` into `emu_args_t`,
   which nothing read for three months (`guest-timer-hz-divided`).
+- **A placement chosen for one firmware's room is paid by every
+  firmware**: the loop cap's check, moved to flash for G4MH's 112 bytes
+  of ITCM, was worth 2.3% on RV32 instead of 5.7%; per build now
+  (`EMU_JIT_CAP_HOT`).
 - **A row that builds is not a row that runs** (`board_argv` passed
   `--jit` to a JIT-less build); a board change is not done until a board
   row has linked (libatomic's `__atomic_load_8`) -- every board's, not

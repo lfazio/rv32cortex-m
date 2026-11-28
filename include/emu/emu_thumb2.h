@@ -339,6 +339,7 @@ void t2_mem_stub(void);
  * makes when the table has nothing, which an empty entry names too.
  */
 void t2_ibtc_stub(void);
+void t2_cap_stub(void);
 void t2_ibtc_miss(void);
 
 /* BLX to an address in a register. */

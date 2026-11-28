@@ -551,6 +551,28 @@ static EMU_PER_CORE bool g_has_rom;
 #endif
 
 /*
+ * The loop cap's checks beside the other stubs, or in flash where the
+ * hot section has no room for them (EMU_JIT_CAP_HOT): the computed
+ * jumps' stub then reaches its check, and the check its way back, by a
+ * literal, the two sections being further apart than a branch reaches.
+ */
+#if defined(EMU_JIT_CAP_HOT) && !EMU_JIT_CAP_HOT
+#define T2_CAP_SECTION                                                         \
+    ".popsection\n"                                                           \
+    ".pushsection .text.t2_cap_stub, \"ax\", %progbits\n"                     \
+    "    .syntax unified\n"                                                   \
+    "    .thumb\n"
+#define T2_IBTC_TO_CAP "    ldr     pc, =t2_ibtc_cap\n"
+#define T2_CAP_TO_LOOKUP "    ldr     pc, =t2_ibtc_lookup\n"
+#define T2_CAP_TO_MISS "    ldr     pc, =t2_ibtc_miss\n"
+#else
+#define T2_CAP_SECTION ""
+#define T2_IBTC_TO_CAP "    b.w     t2_ibtc_cap\n"
+#define T2_CAP_TO_LOOKUP "    b.w     t2_ibtc_lookup\n"
+#define T2_CAP_TO_MISS "    b.w     t2_ibtc_miss\n"
+#endif
+
+/*
  * `used`: the stub's literal is the only reader, and LTO does not see
  * into top-level asm -- without it the table is dropped and the link
  * fails, which is the good outcome.
@@ -651,7 +673,10 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "t2_ibtc_stub:\n"
         "    ldr     r3, =emu_jit_ibtc_state\n"
         "    cmp     r5, #128\n"          /* EMU_JIT_LOOP_CAP */
-        "    bhs     9f\n"
+        "    bhs     4f\n"               /* past it: the check, out of line */
+        "    .global t2_ibtc_lookup\n"
+        "    .thumb_func\n"
+        "t2_ibtc_lookup:\n"
         "    ldr     r1, =0x9E3779B1\n"   /* emu_jit_ibtc_index */
         "    mul     r1, r0, r1\n"
         "    lsrs    r1, r1, #26\n"       /* 32 - EMU_JIT_IBTC_BITS */
@@ -680,6 +705,8 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    strd    r1, r2, [r3]\n"
         "    ldr     r12, [r12, #16]\n"   /* entry, Thumb bit set */
         "    bx      r12\n"
+        "4:\n"
+        T2_IBTC_TO_CAP                     /* the check, with t2_cap_stub */
         "    .global t2_ibtc_miss\n"
         "    .thumb_func\n"
         "    .type t2_ibtc_miss, %function\n"
@@ -691,11 +718,75 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    pop     {r4-r11, pc}\n"
         "    .ltorg\n"
         "    .size t2_ibtc_stub, . - t2_ibtc_stub\n"
+        /*
+         * The check past EMU_JIT_LOOP_CAP (emu_jit_cap_state), reached by
+         * a BL from the block -- through its trampoline -- where a chained
+         * exit or a self-loop's back edge meets the cap: the pc stored,
+         * the frame given back, the core in r4 and the count in r5, r0-r3
+         * and r12 free. On: back to lr, the way on. Not -- an interrupt
+         * pending, or the count at the limit -- back to the dispatcher for
+         * the block, as the computed jumps' miss does.
+         */
+        T2_CAP_SECTION /* or in flash: EMU_JIT_CAP_HOT */
+        "    .p2align 2\n"
+        "    .global t2_cap_stub\n"
+        "    .thumb_func\n"
+        "    .type t2_cap_stub, %function\n"
+        "t2_cap_stub:\n"
+        "    ldr     r12, =emu_jit_cap_state\n"
+        "    ldr     r0, [r12]\n"        /* irq: the flag's address */
+        "    ldrb    r0, [r0]\n"
+        "    cbnz    r0, 1f\n"
+        "    ldrd    r1, r2, [r12, #4]\n" /* limit, carried */
+        "    add     r2, r2, r5\n"
+        "    cmp     r2, r1\n"
+        "    bhs     1f\n"
+        "    ldr     r0, [r12, #12]\n"   /* passed */
+        "    adds    r0, r0, #1\n"
+        "    strd    r2, r0, [r12, #8]\n" /* carried, passed */
+        "    movs    r5, #0\n"
+        "    bx      lr\n"
+        "1:\n"
+        "    mov     r0, r5\n"
+        "    pop     {r4-r11, pc}\n"
+        "    .ltorg\n"
+        "    .size t2_cap_stub, . - t2_cap_stub\n"
+        /*
+         * The computed jumps' stub's check past the cap, as t2_cap_stub's:
+         * the target in r0 and the stub's state in r3 kept; on, back to
+         * the lookup, else its miss.
+         */
+        "    .p2align 2\n"
+        "    .thumb_func\n"
+        "    .type t2_ibtc_cap, %function\n"
+        "t2_ibtc_cap:\n"
+        "    ldr     r12, =emu_jit_cap_state\n"
+        "    ldr     r1, [r12]\n"
+        "    ldrb    r1, [r1]\n"
+        "    cmp     r1, #0\n"
+        "    bne     1f\n"
+        "    ldrd    r1, r2, [r12, #4]\n"  /* limit, carried */
+        "    add     r2, r2, r5\n"
+        "    cmp     r2, r1\n"
+        "    bhs     1f\n"
+        "    ldr     r1, [r12, #12]\n"
+        "    adds    r1, r1, #1\n"
+        "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
+        "    movs    r5, #0\n"
+        T2_CAP_TO_LOOKUP
+        "1:\n"
+        T2_CAP_TO_MISS
+        "    .ltorg\n"
+        "    .size t2_ibtc_cap, . - t2_ibtc_cap\n"
         ".popsection\n");
 
 _Static_assert(EMU_JIT_LOOP_CAP == 128u && EMU_JIT_IBTC_BITS == 6u &&
                    EMU_JIT_IBTC_SHIFT == 5u,
                "t2_ibtc_stub's constants");
+_Static_assert(offsetof(emu_jit_cap_state_t, limit) == 4u &&
+                   offsetof(emu_jit_cap_state_t, carried) == 8u &&
+                   offsetof(emu_jit_cap_state_t, passed) == 12u,
+               "t2_cap_stub's offsets, and LDRD/STRD's pairs");
 _Static_assert(offsetof(emu_jit_ibtc_t, block) == 4u &&
                    offsetof(emu_jit_ibtc_t, context) == 8u &&
                    offsetof(emu_jit_ibtc_t, entry) == 16u &&
@@ -712,6 +803,9 @@ _Static_assert(offsetof(emu_jit_ibtc_state_t, hits) == 4u &&
  * the push list is the one the stub pops.
  */
 static EMU_PER_CORE bool g_ibtc_ok;
+/* the check past the cap (t2_cap_stub): the stub's pop fits, and no count events */
+static EMU_PER_CORE bool g_cap_ok;
+static EMU_PER_CORE bool g_has_fp; /* the block borrows FPSCR: see emu_ir_lower */
 static EMU_PER_CORE bool g_ibtc_armed;
 
 /*
@@ -1204,6 +1298,44 @@ static void emit_frame_release(uint32_t frame)
  * framework patches it once both blocks exist and the edge has been
  * taken.
  */
+/*
+ * BLs to the block's trampoline to t2_cap_stub, patched once the block
+ * ends: emitted as B.W, whose T4 encoding differs from BL's T1 in one
+ * bit of the second halfword. A block with more than this many keeps
+ * the old exit at the rest.
+ */
+#define CAP_SITES 32u
+static EMU_PER_CORE uint8_t *g_cap_site[CAP_SITES];
+static EMU_PER_CORE uint32_t g_ncap_sites;
+
+static uint8_t *cap_bl(void)
+{
+    uint8_t *const at = t2_b_forward();
+
+    g_cap_site[g_ncap_sites++] = at;
+    return at;
+}
+
+/* The trampoline, LDR r12 / BX r12 so lr still points into the block,
+ * and the BLs pointed at it. */
+static void cap_sites_emit(void)
+{
+    if (g_ncap_sites == 0u) {
+        return;
+    }
+    uint8_t *const tramp = emu_jit_here();
+
+    emit_pooled(T2_R12, (uint32_t)(uintptr_t)t2_cap_stub);
+    t2_emit16((uint16_t)(0x4700u | (T2_R12 << 3))); /* BX r12 */
+    for (uint32_t i = 0; i < g_ncap_sites; i++) {
+        patch_branch(g_cap_site[i], tramp, false);
+        if (!emu_jit_overflowed()) {
+            g_cap_site[i][3] |= 0x40u; /* B.W to BL: bit 14 of the second halfword, its high byte */
+        }
+    }
+    g_ncap_sites = 0u;
+}
+
 static bool chain_exit(uint32_t target_pc)
 {
     if (!emu_jit_layout.chainable) {
@@ -1226,7 +1358,13 @@ static bool chain_exit(uint32_t target_pc)
         t2_imm32(T2_R12, EMU_JIT_LOOP_CAP);
         t2_cmp(T2_CNT, T2_R12);
     }
-    note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
+    if (g_cap_ok && g_ncap_sites < CAP_SITES) {
+        /* IT HS; BL: past the cap, the check -- on, or the dispatcher from the stub */
+        t2_emit16((uint16_t)(0xBF00u | (0x2u << 4) | 0x8u));
+        (void)cap_bl();
+    } else {
+        note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
+    }
 
     uint8_t *const site = t2_b_forward();
 
@@ -1272,6 +1410,21 @@ static bool loop_back(uint32_t target_pc)
     patch_branch(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_LTU)), g_body, true);
     t2_imm32(T2_R0, target_pc);
     t2_str_imm(T2_R0, T2_CPU, g_pc_off);
+    /*
+     * Or the cap's check, and round again with the frame taken back --
+     * nothing in the frame lives across the back edge but FPSCR's slot,
+     * and a block that borrows FPSCR must leave through its tail.
+     */
+    if (g_cap_ok && !g_has_fp && g_ncap_sites < CAP_SITES) {
+        emit_frame_release(g_frame);
+        (void)cap_bl();
+        if (g_frame != 0u && !t2_sp_adjust(true, g_frame)) {
+            t2_imm32(T2_R12, g_frame);
+            t2_emit32(0xEBADu, (uint16_t)((13u << 8) | T2_R12)); /* SUB.W sp, sp, r12 */
+        }
+        patch_branch(t2_b_forward(), g_body, false);
+        return true;
+    }
     note_exit(t2_b_forward(), false);
     return true;
 }
@@ -5372,6 +5525,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_rom = b->rom;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
+    g_ncap_sites = 0u;
     /*
      * The links are this function's output: a caller that lowers block
      * after block without the framework's reset (test_ir, fuzz-ir) must
@@ -5452,6 +5606,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     {
         g_ibtc_ok = list == 0x0FF0u && ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
+        g_cap_ok = g_ibtc_ok && (!t->count_events || t->count_horizon != NULL) &&
+                   emu_jit_code_bytes() >= emu_jit_cap_min;
         if (g_ibtc_ok && !g_ibtc_armed) {
             g_ibtc_armed = true;
             emu_jit_ibtc_set_miss((const void *)t2_ibtc_miss);
@@ -5665,6 +5821,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
                          unlinked, false);
         }
     }
+    cap_sites_emit();
     pool_emit();
 
     return !emu_jit_overflowed() && !g_exits_lost;
