@@ -71,15 +71,23 @@ kept because every part of it was carried out: the shared runner
   it is where a guest has vector instructions to lower -- RV32's vector
   unit: the unmasked single-width integer operations and the
   whole-group copies, vecbench 18% fewer cycles under the JIT
-  ([backend/thumb2.md](../backend/thumb2.md#helium-mve-on-the-n6)). With
-  the vector unit the image needs 278 KiB of code, so its ROM/RAM line
-  is 280 KiB (`EMU_N6_ROM_KIB`, passed to the linker script as
-  `__emu_rom_k`), an RV32 build's 240 and a G4MH build's 220: G4MH's
-  firmware cannot give RAM away like that, so the line is the build's.
-  RV32's was 220 and the vector unit's 272 until 2026-11-20, when the
-  loop kernels had put the default build 13.5 KB over unnoticed -- the N6
-  runs had linked Dhrystone, smaller than the default isatest. The
-  vector build has 2 KiB left.
+  ([backend/thumb2.md](../backend/thumb2.md#helium-mve-on-the-n6)).
+  The boot ROM loads the image into AXISRAM2 at `0x34180400`, 511 KiB at
+  most, which the firmware's code and its RAM share: the line is
+  `EMU_N6_ROM_KIB` (passed to the linker script as `__emu_rom_k`), by
+  what the build holds -- 280 KiB for RV32, 320 with the vector unit, 260
+  without RV32, and 64 more with the network. **The JIT's 128 KB buffer
+  is not in that RAM** (2026-11-28): it is at the top of what was the
+  guest's AXISRAM, just below the image (`.jitram`, `__emu_jit_k`), and
+  the guest has 1,407 KiB where it had 1,535. With the buffer in
+  AXISRAM2 the network build -- 298.5 KiB of code, 112 KiB of RAM --
+  could not fit at all, 549,096 bytes against 523,264, and the default
+  build had 2 KiB of ROM left; now 85% of its 280 KiB, and the network
+  build boots (banner, then `net PPP on this port`). RV32 CoreMark under
+  the JIT is the same, 11.75 at both places. RV32's line was 220 and the
+  vector unit's 272 until 2026-11-20, when the loop kernels had put the
+  default build 13.5 KB over unnoticed -- the N6 runs had linked
+  Dhrystone, smaller than the default isatest.
 - **A PC profile is printed, not read**: probe-rs cannot reach the
   M55's access port, so `-DEMU_PC_PROFILE=<samples>` samples the tick
   as the F746 does and the firmware prints the samples after the run;

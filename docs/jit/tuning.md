@@ -409,9 +409,17 @@ instruction:
 **So a dot product is emitted inline only where the buffer has 64 KB**
 (`emu_ir_kernel_inline_min`, read against `emu_jit_code_bytes`); below,
 Thumb-2 declines the kernel and the loop keeps its scalar body. The
-F446's default buffer is 32 KB; the board was not attached to confirm
-it there. The corpus replay sets the threshold to 0, so it still tests
-the emitted loop in its own 32 KB.
+corpus replay sets the threshold to 0, so it still tests the emitted
+loop in its own 32 KB.
+
+**It holds on the F446**, whose default buffer is 32 KB (2026-11-28),
+with the loop cap's check under the same 64 KB rule
+(`emu_jit_cap_min`): RV32 CoreMark, host cycles an instruction,
+
+| F446, 32 KB | the rules | both off | |
+|---|---|---|---|
+| x120 | **40.52** (3,540 translations) | 44.65 (3,697) | +10.2% |
+| x2000 | **45.21** (61,168) | 59.40 (97,320) | +31.4% |
 
 ### The hooks a block calls
 

@@ -306,18 +306,35 @@ endif()
 # day's JIT work 13,536 -- unnoticed, because the N6 runs those days
 # linked Dhrystone, a smaller guest than the default isatest.
 #
+# Since 2026-11-28 the JIT's 128 KB buffer is not in that RAM but at the
+# top of the guest's AXISRAM (`.jitram`, the link script), so every share
+# is 40 KiB more, and the network's lwIP and SLIP 64 KiB more again: the
+# network build is 298.5 KiB of code and 112 KiB of RAM, which with the
+# buffer here had been 549,096 bytes against 511 KiB.
+#
 if(RV32_EXT_ZVE32X AND EMU_GUEST_ARCH_RV32)
-    set(_n6_rom_kib 280)
+    set(_n6_rom_kib 320)
 elseif(EMU_GUEST_ARCH_RV32)
-    set(_n6_rom_kib 240)
+    set(_n6_rom_kib 280)
 else()
-    set(_n6_rom_kib 220)
+    set(_n6_rom_kib 260)
+endif()
+if(EMU_NET)
+    math(EXPR _n6_rom_kib "${_n6_rom_kib} + 64")
 endif()
 set(EMU_N6_ROM_KIB "${_n6_rom_kib}" CACHE STRING
     "N6: KiB of AXISRAM2 for the firmware's ROM, the rest of 511 its RAM")
+# And the buffer's KiB at the guest's top: none where it is in ITCM
+# (32 KB or less, `.jitcode`) or there is no JIT.
+if(EMU_JIT AND EMU_JIT_CODE_BYTES GREATER 32768)
+    math(EXPR _n6_jit_kib "${EMU_JIT_CODE_BYTES} / 1024")
+else()
+    set(_n6_jit_kib 0)
+endif()
 target_link_options(emu-stm32n6 PRIVATE
     -Os $<$<CONFIG:RelWithDebInfo>:-O2>
     -Wl,--defsym=__emu_rom_k=${EMU_N6_ROM_KIB}
+    -Wl,--defsym=__emu_jit_k=${_n6_jit_kib}
     -T${CMAKE_CURRENT_SOURCE_DIR}/stm32n657xx_lrun.ld
     -Wl,-Map=${CMAKE_BINARY_DIR}/emu-stm32n6.map
     -Wl,--print-memory-usage

@@ -120,6 +120,13 @@ endif()
 # compare it. See emu_console_putchar.
 target_compile_definitions(emu-stm32f446 PRIVATE EMU_CONSOLE_CRLF=1)
 
+# A quarter of a second of WFI timed from inside on the first park, with
+# DBGMCU_CR cleared at boot as a power-on would: board_wfi_check in
+# src/platform/stm32/board.c, scripts/check-wfi-attach.sh. Off by default.
+option(EMU_WFI_CHECK "Time a WFI from inside the firmware on its first park" OFF)
+target_compile_definitions(emu-stm32f446 PRIVATE
+    EMU_WFI_CHECK=$<BOOL:${EMU_WFI_CHECK}>)
+
 target_compile_options(emu-stm32f446 PRIVATE -Wall -Wextra -Wundef)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for

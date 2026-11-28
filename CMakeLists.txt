@@ -368,6 +368,8 @@ set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
 #
 if(EMU_PLATFORM STREQUAL "stm32n6" AND EMU_JIT_CODE_BYTES LESS_EQUAL 32768)
     set(_jit_section_default ".jitcode")
+elseif(EMU_PLATFORM STREQUAL "stm32n6")
+    set(_jit_section_default ".jitram") # the top of the guest's AXISRAM (the link script)
 elseif(EMU_PLATFORM STREQUAL "stm32f746")
     set(_jit_section_default ".bss.jitcode")
 else()

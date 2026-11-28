@@ -184,7 +184,17 @@ MEMORY
                     LENGTH = DEFINED(__emu_rom_k) ? __emu_rom_k * 1K : 220K
   RAM    (xrw)    : ORIGIN = 0x34180400 + (DEFINED(__emu_rom_k) ? __emu_rom_k * 1K : 220K),
                     LENGTH = 511K - (DEFINED(__emu_rom_k) ? __emu_rom_k * 1K : 220K)
-  GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
+  /*
+   * The JIT's code buffer, when it is larger than ITCM takes (`.jitram`,
+   * __emu_jit_k KiB from the build): the top of what was the guest's, just
+   * below the image. In AXISRAM2's RAM it was 128 of its 271 KiB -- the
+   * network build did not fit at all, 549,096 bytes against the 511 KiB
+   * the boot ROM loads -- and the guest had 1,535 KiB it does not use.
+   */
+  JITRAM (xrw)    : ORIGIN = 0x34180000 - (DEFINED(__emu_jit_k) ? __emu_jit_k * 1K : 0),
+                    LENGTH = DEFINED(__emu_jit_k) ? __emu_jit_k * 1K : 0
+  GUEST  (xrw)    : ORIGIN = 0x34000400,
+                    LENGTH = 1535K - (DEFINED(__emu_jit_k) ? __emu_jit_k * 1K : 0)
   ITCM   (rwx)    : ORIGIN = 0x10000000,   LENGTH = 64K
 }
 
@@ -382,6 +392,20 @@ SECTIONS
     . = ALIGN(4);
   } >ROM
   _eNSCVeneer = .;
+
+  /*
+   * Before .bss, whose wildcard would otherwise take the buffer first.
+   * By name as well as by section: a build directory whose cache still
+   * says EMU_JIT_CODE_SECTION="" puts it in .bss.g_static_code. NOLOAD:
+   * the translator writes every byte before it branches to it.
+   */
+  .jitram (NOLOAD) :
+  {
+    . = ALIGN(8);
+    *(.jitram)
+    *(.bss.g_static_code*)
+    . = ALIGN(8);
+  } >JITRAM
 
   /* Uninitialized data section into "RAM" Ram type memory */
   . = ALIGN(4);

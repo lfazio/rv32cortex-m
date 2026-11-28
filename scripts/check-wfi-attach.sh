@@ -1,12 +1,16 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
 #
-# check-wfi-attach.sh - an F746 firmware parked in WFI keeps its clocks:
-# SysTick wakes it, CYCCNT counts, and the probe reaches it.
+# check-wfi-attach.sh - an F746 or F446 firmware parked in WFI keeps its
+# clocks: SysTick wakes it, CYCCNT counts, and the probe reaches it.
 #
-#   scripts/check-wfi-attach.sh [TREE]        # TREE: this one by default
+#   scripts/check-wfi-attach.sh [TREE [PLATFORM]]  # TREE: this one by default
 #
-# Builds TREE's F746 firmware with -DEMU_NET=OFF -DEMU_WFI_CHECK=ON,
+# PLATFORM is stm32f746 (the default), stm32f446 -- the same check at
+# 180 MHz, the same DBG_SLEEP line in both (src/platform/stm32/board.c)
+# -- or stm32n6, below.
+#
+# Builds TREE's firmware with -DEMU_NET=OFF -DEMU_WFI_CHECK=ON,
 # flashes it and runs its default guest to the end with board-run.py.
 # The firmware then parks for good, board_idle's WFI between SysTicks.
 #
@@ -104,6 +108,12 @@ fi
 
 B=$ROOT/build/board/wfi-attach-$(basename "$TREE")
 CHIP=STM32F746ZGTx
+MHZ=216
+if [ "$PLATFORM" = stm32f446 ]; then
+    B=$B-f446
+    CHIP=STM32F446RETx
+    MHZ=180
+fi
 DHCSR=0xE000EDF0
 CYCCNT=0xE0001004
 DBGMCU_CR=0xE0042004
@@ -112,7 +122,7 @@ probe=
 [ -n "${EMU_PROBE:-}" ] && probe="--probe $EMU_PROBE"
 
 rm -f "$B/CMakeCache.txt"
-cmake -S "$TREE" -B "$B" -DEMU_PLATFORM=stm32f746 \
+cmake -S "$TREE" -B "$B" -DEMU_PLATFORM="$PLATFORM" \
     -DCMAKE_TOOLCHAIN_FILE="$TREE/cmake/arm-none-eabi.cmake" \
     -DEMU_NET=OFF -DEMU_WFI_CHECK=ON \
     ${EMU_PROBE:+-DEMU_PROBE="$EMU_PROBE"} >"$B.cfg.log" 2>&1 ||
@@ -126,7 +136,7 @@ if ! grep -q 'emu-result' "$B.txt"; then
     exit 1
 fi
 inside=0
-wfi_line "$B.txt" 216 || inside=1
+wfi_line "$B.txt" "$MHZ" || inside=1
 grep -q -a '^wfi-check ' "$B.txt" || exit 1
 
 # word ADDR: one 32-bit read through the probe, attached without a reset;
@@ -154,12 +164,13 @@ if [ -z "$d0" ] || [ -z "$c0" ] || [ -z "$c1" ] || [ -z "$d1" ]; then
     exit 1
 fi
 
-python3 - "$inside" "$d0" "$d1" "$c0" "$c1" "$t0" "$t1" "${dbg:-0}" <<'EOF'
+python3 - "$inside" "$d0" "$d1" "$c0" "$c1" "$t0" "$t1" "${dbg:-0}" "$MHZ" <<'EOF'
 import sys
 inside = sys.argv[1] == "0"  # wfi_line's verdict on the line
 d0, d1, c0, c1 = (int(x, 16) for x in sys.argv[2:6])
 t0, t1 = float(sys.argv[6]), float(sys.argv[7])
 dbg = int(sys.argv[8], 16)
+clock = float(sys.argv[9])
 mhz = ((c1 - c0) & 0xFFFFFFFF) / (t1 - t0) / 1e6
 # It wakes for each SysTick, briefly: asleep at one read of two.
 asleep = any(d & (1 << 18) for d in (d0, d1))
@@ -167,6 +178,6 @@ print("DHCSR %08x %08x  S_SLEEP %s" % (d0, d1, "seen" if asleep else "clear"))
 print("CYCCNT %08x to %08x in %.3f s: %.1f MHz" % (c0, c1, t1 - t0, mhz))
 print("DBGMCU_CR %08x after the reads" % dbg)
 # From the host, whose interval holds the reads' own start-up: within
-# 10% of 216 MHz. (The line from inside is held to 1%: wfi_line.)
-sys.exit(0 if inside and asleep and 194.0 < mhz < 238.0 else 1)
+# 10% of the core clock. (The line from inside is held to 1%: wfi_line.)
+sys.exit(0 if inside and asleep and 0.9 * clock < mhz < 1.1 * clock else 1)
 EOF

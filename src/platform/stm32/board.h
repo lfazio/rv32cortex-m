@@ -67,6 +67,15 @@ void board_hw_init(void);
  */
 void board_wfi(void);
 
+/*
+ * The F446's and F746's: DBGMCU_CR.DBG_SLEEP set, so that the clocks run
+ * in Sleep (board_hw_init calls it), and with -DEMU_WFI_CHECK=ON a
+ * quarter of a second of WFI timed on the first park (board_wfi calls
+ * it). Both in src/platform/stm32/board.c, for parts with the bit.
+ */
+void board_dbg_sleep_on(void);
+void board_wfi_check(void);
+
 /* board_fatal is board_api.h's -- every platform has one, and on these
  * parts it is the per-part halt that the shared board.c used to wrap. */
 

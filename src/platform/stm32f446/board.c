@@ -272,6 +272,7 @@ void board_hw_init(void)
     clock_init();
     console_init();
     dwt_init();
+    board_dbg_sleep_on(); /* src/platform/stm32/board.c */
 }
 
 /* ------------------------------------------------------------------ */
@@ -307,6 +308,7 @@ void board_led_toggle(board_led_t led)
 
 void board_wfi(void)
 {
+    board_wfi_check();
     __WFI();
 }
 

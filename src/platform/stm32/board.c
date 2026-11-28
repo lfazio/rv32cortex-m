@@ -560,3 +560,78 @@ void board_idle(void)
     }
     board_wfi();
 }
+
+#if defined(DBGMCU_CR_DBG_SLEEP)
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+static volatile uint32_t g_wfi_cleared; /* DBGMCU_CR after the clear */
+#endif
+
+/*
+ * The clocks on in Sleep. Measured in the park loop with no probe
+ * attached (EMU_WFI_CHECK): on the F746 with DBG_SLEEP set a quarter of a
+ * second of WFI counted 53,999,852 cycles; cleared, SysTick still woke the
+ * core 250 times but CYCCNT counted 43,558, only the time awake, and the
+ * probe could not connect -- neither probe-rs nor OpenOCD reaches a core
+ * waiting in WFI without it, and a parked firmware's lwIP clock once ran
+ * at 6% of real time (board_idle). The F446 the same since 2026-11-28
+ * (scripts/check-wfi-attach.sh TREE stm32f446).
+ *
+ * Every build, because the register is not the firmware's alone: only a
+ * power-on reset clears it, and probe-rs sets 0x7 whenever it attaches,
+ * so without this what a firmware did in Sleep depended on what wrote the
+ * register last. What it costs is the power Sleep would have saved, on a
+ * bench board. (The N6 needs no bit: stm32n6/board.c.)
+ */
+void board_dbg_sleep_on(void)
+{
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+    /*
+     * As a power-on reset leaves it, and read back after a barrier: one
+     * F746 run without it found bit 0 set again at the park, for a reason
+     * not found, with nothing here setting it.
+     */
+    DBGMCU->CR = 0u;
+    __DSB();
+    g_wfi_cleared = DBGMCU->CR;
+#endif
+    DBGMCU->CR |= DBGMCU_CR_DBG_SLEEP;
+}
+
+/*
+ * -DEMU_WFI_CHECK=ON: the first time the firmware parks, a quarter of a
+ * second of WFI by SysTick's millisecond, timed by CYCCNT -- from inside,
+ * because the probe sets DBGMCU_CR whenever it attaches and so cannot ask
+ * what the firmware's own setting does. board_dbg_sleep_on cleared the
+ * register first, as a power-on reset would. With DBG_SLEEP set this
+ * prints about a quarter of the core clock in cycles and 250 wake-ups;
+ * without it the 250 wake-ups still come, SysTick running, and CYCCNT
+ * counts only the time awake -- 45,002 cycles on the F746.
+ */
+void board_wfi_check(void)
+{
+#if defined(EMU_WFI_CHECK) && EMU_WFI_CHECK
+    static bool checked;
+
+    if (checked) {
+        return;
+    }
+    checked = true;
+
+    uint32_t wakes = 0u;
+    uint32_t t0 = HAL_GetTick();
+
+    while (HAL_GetTick() == t0) {
+    }
+    t0 = HAL_GetTick();
+    const uint32_t c0 = DWT->CYCCNT;
+    while (HAL_GetTick() - t0 < 250u) {
+        __WFI();
+        wakes++;
+    }
+    emu_console_printf("wfi-check cycles %u wakes %u dbgmcu %08x "
+                       "cleared %08x\n",
+                       (unsigned)(DWT->CYCCNT - c0), (unsigned)wakes,
+                       (unsigned)DBGMCU->CR, (unsigned)g_wfi_cleared);
+#endif
+}
+#endif /* DBGMCU_CR_DBG_SLEEP */

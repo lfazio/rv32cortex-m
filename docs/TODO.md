@@ -120,9 +120,9 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       x2000 run was 26.45 where 3fb2264 was 24.16: the inline dot
       kernels' bytes, now emitted only in a 64 KB buffer (24.46 with
       the rule; [jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
-      Left: confirm the rule on the F446, whose default buffer is 32 KB
-      (attached again since 2026-11-28; neither the inline kernels nor
-      the cap's check run there, by the same 64 KB rule).
+      The rule holds on the F446, whose default buffer is 32 KB: with it
+      and the cap's check's rule both off, CoreMark x120 was 10% slower
+      and x2000 31% (2026-11-28, [jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure**: without the stop before a known entry it cost RV32
       CoreMark x650 12.5% at 32 KB, G4MH's 5.7% and RV32 Whetstone 18%
@@ -149,18 +149,24 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       there is no JIT ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
       What the interpreter's profile leaves: the loop's state, pending and
       Thumb-bit tests, and the fetch's MPU and execute-never test.
-- [ ] **ITCM and ROM headroom** (2026-11-28): the F746's RV32 network
+- [ ] **ITCM headroom on the F746** (2026-11-28): the RV32 network
       firmware, the default build, is at 16,248 of 16,384 bytes of ITCM
       with the cap's check in flash -- it did not link at ed0c41e with it
-      in -- and the N6's ROM at 99%; the next thing placed there may not
-      fit. G4MH's, its C kernels in flash, has 2.4 KB (85%, 91% with the
-      network). The N6 with the network does not fit its ROM at all, by
-      58,720 bytes, before these changes too.
-- [ ] **DBGMCU_CR.DBG_SLEEP on the F446**, which every F746 firmware
-      sets (the N6 needs none, [stm32n6/README.md](stm32n6/README.md));
-      the F446 is not attached. With the counter running in Sleep, the
-      park loop could sleep with lwIP up on the F746 too (`board_idle`),
-      untried over SLIP.
+      in; the next thing placed there may not fit. G4MH's, its C kernels
+      in flash, has 2.4 KB (85%, 91% with the network). The N6's ROM
+      has room since its JIT buffer left AXISRAM2 (85% for the default
+      build, 87% with the network, which fits now).
+- [ ] **DBG_SLEEP on the F446, what is not shown**: its firmware sets
+      it now, as the F746's does (`board_dbg_sleep_on`), and a quarter of
+      a second of WFI counts 44,999,958 cycles at 180 MHz, the probe
+      reading the parked core -- but the check's clear at boot does not
+      take there: DBGMCU_CR reads back 0x27, the probe's value, after
+      the write of 0 and a DSB. So that the firmware's line, and not the
+      probe's, keeps the clocks is unshown on the F446 until something
+      clears the register as a power-on does
+      ([stm32f446/README.md](stm32f446/README.md)). And with the counter
+      running in Sleep, the park loop could sleep with lwIP up on the
+      F746 too (`board_idle`), untried over SLIP.
 
 ## Linux
 

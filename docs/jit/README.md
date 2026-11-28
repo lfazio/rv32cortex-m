@@ -435,7 +435,9 @@ Not everywhere:
   x2000, which tips between two equilibria there
   ([tuning.md](tuning.md#a-long-run-at-32-kb-two-equilibria)), was 4.5%
   slower with it, and 10.5% with the checks counted as hits for
-  compaction, which is not done.
+  compaction, which is not done. On the F446, whose default is 32 KB,
+  turning this rule and the inline kernels' off made CoreMark x120 10%
+  and x2000 31% slower.
 - **A block that borrows FPSCR or MXCSR** leaves through its tail, so
   its self-loop returns as before; and a Thumb-2 block whose push is
   not r4-r11 and lr cannot take the stub's pop.

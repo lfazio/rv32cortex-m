@@ -135,8 +135,17 @@ builds it, runs it to its park, wants the cycle count, then reads
 DHCSR's S_SLEEP, CYCCNT twice four seconds apart and DBGMCU_CR through
 the probe, without a reset; with the firmware's line removed it fails,
 twice of two. The N6 needs no bit: its counter runs through a WFI
-without one ([stm32n6/README.md](../stm32n6/README.md#wfi-keeps-its-clocks-here));
-the F446 has not been asked ([TODO](../TODO.md)).
+without one ([stm32n6/README.md](../stm32n6/README.md#wfi-keeps-its-clocks-here)).
+
+**The F446 sets it too** (2026-11-28), from the same lines, which moved
+to `src/platform/stm32/board.c` (`board_dbg_sleep_on`, `board_wfi_check`)
+so that the two boards cannot drift, and `check-wfi-attach.sh TREE
+stm32f446` asks it: a quarter of a second of WFI is 44,999,958 cycles at
+180 MHz with 250 wake-ups, and the probe reads the parked core asleep
+with CYCCNT at 181.5 MHz. What it does not show: the clear at boot does
+not take on this part -- DBGMCU_CR reads back 0x27, the probe's value,
+after the write of 0 and a DSB -- so the run cannot tell the firmware's
+line from the probe's ([TODO](../TODO.md)).
 
 ## Cache maintenance
 
