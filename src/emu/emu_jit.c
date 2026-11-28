@@ -1948,10 +1948,18 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
 #if defined(EMU_JIT_CAP_HOT) && !EMU_JIT_CAP_HOT
 #define JIT_CAP_FN EMU_NOINLINE
 #else
-#define JIT_CAP_FN EMU_ALWAYS_INLINE /* into the dispatcher, wherever it lives */
+#define JIT_CAP_FN EMU_HOT_TEXT /* beside the dispatcher, and out of its loop */
 #endif
 
-static JIT_CAP_FN bool cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t *hot)
+/*
+ * Whether this call's blocks may go on past the cap. Not a local: the
+ * dispatcher's loop runs out of registers on the M7, and ARMv7-M's
+ * CoreMark, which never goes on, paid 1.2% for one more live value and
+ * an inlined set-up.
+ */
+static EMU_PER_CORE bool g_cap_on;
+
+static EMU_NOINLINE void cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t *hot)
 {
     static const volatile bool k_irq_always = true;
     const bool on = (!ops->count_events || ops->count_horizon != NULL) &&
@@ -1962,7 +1970,7 @@ static JIT_CAP_FN bool cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t *
         emu_jit_cap_state.limit = 0u;
         emu_jit_cap_state.carried = 0u;
     }
-    return on;
+    g_cap_on = on;
 }
 
 /* The limit for the block about to run: the outer cap, the call's budget
@@ -2019,7 +2027,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     emu_jit_hot_t hot;
     memset(&hot, 0, sizeof(hot));
     ops->bind(cpu, &hot);
-    const bool cap_on = cap_begin(ops, &hot);
+    cap_begin(ops, &hot);
 
     if (ops->is_idle != NULL && ops->is_idle(cpu)) {
         if (!ops->wake(cpu)) {
@@ -2254,7 +2262,6 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #ifdef EMU_JIT_DIFF
         (void)ran;
         (void)ibtc_ok;
-        (void)cap_on;
         const uint32_t ret = run_block_checked(cpu, b, ops, fresh);
 #else
         (void)fresh; /* read by the differential checker alone */
@@ -2265,7 +2272,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
         }
         emu_jit_ibtc_state.last = 0u;
-        if (cap_on) {
+        if (g_cap_on) {
             cap_arm(cpu, ops, budget - done);
         }
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
@@ -2276,7 +2283,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #else
         uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
 
-        if (cap_on) {
+        if (g_cap_on) {
             /* what the cap's checks took off the count as they went on */
             n += emu_jit_cap_state.carried;
         }
