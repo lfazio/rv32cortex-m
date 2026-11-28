@@ -361,8 +361,8 @@ stays.
 
 **On the board, the hill climb by time wins where the host said it lost
 -- and loses elsewhere** (2026-11-22, `wip/jit-thrash-retry-settled`,
-`-DJIT_RETRY_EXP=1`; `=2` judges each period by its second half, past
-the forget's retranslation). F746, 32 KB:
+whose cache variable `JIT_RETRY_EXP` picks the variant: 1 by time, 2 by
+each period's second half, past the forget's retranslation). F746, 32 KB:
 
 | | default | keep, by time | keep, second halves |
 |---|---|---|---|
