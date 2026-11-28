@@ -1892,6 +1892,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux);
 uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
                          uint8_t *assign);
 
+/*
+ * The same, leaving out every temp whose `skip` entry is non-zero
+ * (indexed by temp; NULL skips none): a value the backend will not hold
+ * in a register at all -- Thumb-2's constants a compare takes as an
+ * immediate (kcmp_scan), which held one for their whole interval and
+ * were never written.
+ */
+uint32_t emu_ir_regalloc_skip(const emu_ir_block_t *b, uint32_t nregs,
+                              uint8_t *assign, const uint16_t *skip);
+
 /* ------------------------------------------------------------------ */
 /* What a host's jit.c needs from a frontend                           */
 /* ------------------------------------------------------------------ */

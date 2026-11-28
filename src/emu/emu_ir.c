@@ -2062,6 +2062,12 @@ static EMU_PER_CORE uint16_t g_last[EMU_IR_MAX_TEMPS];
 uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
                          uint8_t *assign)
 {
+    return emu_ir_regalloc_skip(b, nregs, assign, NULL);
+}
+
+uint32_t emu_ir_regalloc_skip(const emu_ir_block_t *b, uint32_t nregs,
+                              uint8_t *assign, const uint16_t *skip)
+{
     uint16_t inreg[EMU_IR_MAX_HOST_REGS];
     const uint32_t nt =
         (b->next_temp < EMU_IR_MAX_TEMPS) ? b->next_temp : EMU_IR_MAX_TEMPS;
@@ -2120,6 +2126,9 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
 
         if (d == IR_NO_POS || (uint32_t)g_last[tmp] <= d) {
             continue; /* never defined, or never read */
+        }
+        if (skip != NULL && skip[tmp] != 0u) {
+            continue; /* the backend holds it nowhere */
         }
 
         /*

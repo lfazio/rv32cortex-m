@@ -261,7 +261,8 @@ void ld_operand(uint32_t rt, uint16_t n)
  * uses it in place and the CONST is not emitted. Index + 1 of the
  * CONST, 0 for none. Every one of its `uses` -- the count the allocator
  * trusts -- must be such a compare, counted (g_kcmp_reads): a reader
- * the scan cannot see would read a register nothing wrote.
+ * the scan cannot see would read a register nothing wrote. The scan
+ * runs before the allocator, which leaves these temps out.
  *
  * What it replaces: `movw r8, #0` then `cmp r7, r8` for every RISC-V
  * beqz/bnez -- a register and an instruction for a constant ARM encodes
@@ -5555,9 +5556,15 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * helper call, which AAPCS requires and nothing here would fault on
      * until something used LDRD or a double.
      */
-    (void)emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
-    g_nsaved = T2_ALLOC_REGS;
+    /*
+     * The constants a compare takes as an immediate first, so that the
+     * allocator gives their registers to something that is written:
+     * allocated before the scan, a folded constant held one for its
+     * whole interval and nothing put a value in it.
+     */
     kcmp_scan(b);
+    (void)emu_ir_regalloc_skip(b, T2_ALLOC_REGS, g_reg, g_kcmp);
+    g_nsaved = T2_ALLOC_REGS;
 
     /*
      * Asked once. Everything FPSCR costs -- saving it, setting the rules
