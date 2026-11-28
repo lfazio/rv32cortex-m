@@ -67,27 +67,34 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       subtracts in CoreMark's 21.9M instructions). What is left is
       another design: the flags kept in the APSR between instructions,
       the MRS and the store paid only where something else needs it.
-- [ ] **PowerPC's arithmetic, what is left** (profiled 2026-11-22,
-      [backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
-      byte swaps for a big-endian guest in little-endian RAM, 9.0% of
-      its translated time -- which only RAM kept in the host's order for
-      words (an address XOR for halves and bytes) would drop; the RAM
-      window's bounds guard, 6.5%; a block's entry and exit, 9.1%. A
-      guard shared by the accesses on one base would reach only a fifth
-      of them: counted on the host, 21% of RV32 CoreMark's accesses, 22%
-      of PowerPC's and 20% of G4MH's follow one on the same base in their
-      block, four in five of them stores -- at most 1.3% of PowerPC's
-      translated time, not built.
+- [ ] **PowerPC's translated time, what is left** (profiled again
+      2026-11-28, after the SO context, the compare by immediate and the
+      cap's check: [backend/thumb2.md](backend/thumb2.md#by-mnemonic-powerpc-and-g4mh)):
+      spread thin -- stores to the core state 10.8% (guest registers,
+      CR fields, the exit pc: structural, a register cache across
+      blocks having lost 15.5%), byte swaps 8.6%, constants 8.6%, the
+      RAM guard 7.3%, a block's frame 7.3%, compares 7.2% (the cap's own
+      `cmp #128` 1.5%). Only the byte swaps are one large thing, and
+      only RAM kept in the host's order for words (an address XOR for
+      halves and bytes) would drop them. A guard shared by the accesses
+      on one base would reach only a fifth of them (21-22% of accesses
+      follow one on the same base in their block, four in five stores):
+      at most 1.3%, not built.
 - [ ] **The loop cap's check, what is left**
       ([jit/README.md](jit/README.md#the-loop-cap-checked-in-translated-code-emu_jit_cap_state)):
-      ARMv7-M pays 1.2% for a check it does not make -- the dispatcher's
-      loop changing shape, not ITCM layout -- and so does RV32 x2000 at
-      32 KB, where it is off; ARMv7-M's SysTick could give it a horizon,
-      though with its count deferred it was 1.6% slower, not faster.
-      G4MH has it in flash for want of 160 bytes of ITCM (3.2% where
-      the others gain 5.7-6.0%). The F446's 32 KB default gets none of
-      it. Two mutants no host test sees: the stub ignoring the interrupt
-      flag, and the limit ignoring the budget.
+      ARMv7-M pays 1.2% for a check it does not make, and so does RV32
+      x2000 at 32 KB, where it is off. Profiled (2026-11-28), it is the
+      dispatcher's own time, 403 samples to 483, spread over the loop's
+      loads of `hot` rather than the new lines: the compiler's allocation
+      of the whole loop. Not fixed by a per-core flag and the set-up out
+      of line (ARMv7-M +1.8%, RV32 and PowerPC two points worse) nor by
+      marking the two tests unlikely (ARMv7-M -0.6%, RV32 +0.95%:
+      `wip/jit-cap-unlikely`). ARMv7-M's SysTick could give it a horizon,
+      though with its count deferred it was 1.6% slower. The RV32
+      network firmware keeps the check in flash (2.3% where ITCM gives
+      5.7%). The F446's 32 KB default gets none of it. Two mutants no
+      host test sees: the stub ignoring the interrupt flag, and the limit
+      ignoring the budget.
 - [ ] **A constant the compare takes as an immediate still gets a
       register**: Thumb-2's allocator runs before `kcmp_scan`, so a
       folded constant is allocated and never written.
@@ -114,7 +121,8 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       kernels' bytes, now emitted only in a 64 KB buffer (24.46 with
       the rule; [jit/tuning.md](jit/tuning.md#a-long-run-at-32-kb-two-equilibria)).
       Left: confirm the rule on the F446, whose default buffer is 32 KB
-      (not attached on 2026-11-21).
+      (attached again since 2026-11-28; neither the inline kernels nor
+      the cap's check run there, by the same 64 KB rule).
 - [ ] **Why the dispatcher's linking fix alone is slower under
       pressure**: without the stop before a known entry it cost RV32
       CoreMark x650 12.5% at 32 KB, G4MH's 5.7% and RV32 Whetstone 18%
@@ -141,9 +149,20 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       there is no JIT ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)).
       What the interpreter's profile leaves: the loop's state, pending and
       Thumb-bit tests, and the fetch's MPU and execute-never test.
-- [ ] **ITCM and ROM headroom**: a G4MH firmware has under 1 KB of the
-      F746's ITCM left, and the N6's vector build 2 KiB of its ROM; the
-      next thing placed there may not fit.
+- [ ] **ITCM and ROM headroom** (2026-11-28): the F746's RV32 network
+      firmware, the default build, is at 16,248 of 16,384 bytes of ITCM
+      with the cap's check in flash -- it did not link at ed0c41e with it
+      in -- and the N6's ROM at 99%; the next thing placed there may not
+      fit. G4MH's, its C kernels in flash, has 2.4 KB (85%, 91% with the
+      network). The N6 with the network does not fit its ROM at all, by
+      58,720 bytes, before these changes too.
+- [ ] **`ppc-efpu2` no longer links with Debian's clang 23.1.6**: its
+      float compares come out as calls to `__ltsf2`, `__gtsf2` and
+      `__eqsf2`, which its link (no builtins, on purpose: it tests EFPU2's
+      own compares) does not have -- a fresh build of a tree with
+      `build/ppc-runtime` stops there, and `guest-ppc-efpu2` and its JIT
+      twin fail (also at 87778fa). Compares written so the compiler
+      emits `efscmp*`, or inline asm, not the builtins.
 - [ ] **DBGMCU_CR.DBG_SLEEP on the F446**, which every F746 firmware
       sets (the N6 needs none, [stm32n6/README.md](stm32n6/README.md));
       the F446 is not attached. With the counter running in Sleep, the
@@ -185,11 +204,6 @@ From the last measurements in [linux.md](linux.md).
 
 ## RV32
 
-- [ ] **The vector extension past Zve32f**: Zve64x/f/d, then V and its
-      `misa` bit ([frontend/rv32-vector.md](frontend/rv32-vector.md)); the
-      UDB and Sail configurations wait for an arch-test pin with vector
-      suites. Under the JIT, Zve32f's min and max, compares, conversions,
-      FP reductions and `vfmv` are still the helper's.
 - [ ] **The vector unit's SIMD lowering, what is next**
       ([backend/thumb2.md](backend/thumb2.md#the-guests-vector-registers-the-dsp-extension)):
       .wv narrowing (a count a lane: AVX2's on x86-64, an extraction a
@@ -198,6 +212,15 @@ From the last measurements in [linux.md](linux.md).
       masked single-width operations (`VPSEL` on `mve_active`'s P0); and a
       loop over an m4 or m8 group's words on Thumb-2 -- vecbench runs the
       same at a 32 KB buffer as at 64.
+- [ ] Implement the Risc-V trace peripheral, and the trace buffer in the
+      JIT. The trace peripheral should be able to capture the execution
+      of a guest program, including the instructions executed, the value
+      of registers, and any memory accesses.
+- [ ] **The vector extension past Zve32f**: Zve64x/f/d, then V and its
+      `misa` bit ([frontend/rv32-vector.md](frontend/rv32-vector.md)); the
+      UDB and Sail configurations wait for an arch-test pin with vector
+      suites. Under the JIT, Zve32f's min and max, compares, conversions,
+      FP reductions and `vfmv` are still the helper's.
 - [ ] **SM4's affine maps with GFNI**: `gf2p8affineqb` would do each of
       `sm4ed`'s and `sm4ks`'s maps in one instruction
       ([backend/x86_64.md](backend/x86_64.md#aes-ni-and-pclmulqdq)), but
@@ -233,10 +256,16 @@ From the last measurements in [linux.md](linux.md).
       SPE, this frontend's e200z759n3 32 and EFPU2
       ([frontend/ppc.md](frontend/ppc.md#the-mmu)). Whether to model the
       MPC5675K's core, whose peripherals are already here, is open.
-- [ ] Use CTU and FlexPWM to implement the MPC5675K's GTM equivalent, and plug it into the PCIe framework.
+- [ ] Use CTU and FlexPWM to implement the MPC5675K's GTM equivalent, and
+      plug it into the PCIe framework.
 
 ## armvX-m
 
+- [ ] Implement the ETMv3/v4 trace unit, and the trace buffer in the JIT.
+      The ETM should be able to capture the execution of a guest program,
+      including the instructions executed, the value of registers, and any
+      memory accesses. BPU and all the trace unit's registers are in the
+      core state, and the trace buffer is in the JIT.
 - [ ] Implement neon extensions if available
 - [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
 - [ ] **ARMv8-M in the armvX-m frontend**, with the N657's own map as

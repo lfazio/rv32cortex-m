@@ -403,18 +403,6 @@ endif()
 set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
     "linker section for the per-dispatch path (empty: ordinary .text)")
 
-# The loop cap's check -- its stubs and the dispatcher's set-up for it
-# (emu_jit_cap_state) -- in the hot section with the dispatcher, where the
-# firmware has the room: out of it, RV32 and PowerPC CoreMark gained 2.3
-# and 3.1% on the F746 against 4.6 and 5.1% in it. G4MH's F746 firmware
-# has 160 bytes of ITCM to spare, which the check outgrew.
-if(EMU_PLATFORM STREQUAL "stm32f746" AND EMU_GUEST_ARCH_G4MH)
-    set(_cap_hot_default OFF)
-else()
-    set(_cap_hot_default ON)
-endif()
-option(EMU_JIT_CAP_HOT "The loop cap's check beside the dispatcher, in its hot section"
-       ${_cap_hot_default})
 
 #
 # And for data: each frontend's core state, which translated code reads
@@ -926,7 +914,6 @@ target_compile_definitions(emucore PUBLIC
     #
     $<$<BOOL:${EMU_JIT_CODE_SECTION}>:EMU_JIT_CODE_SECTION="${EMU_JIT_CODE_SECTION}">
     $<$<BOOL:${EMU_HOT_TEXT_SECTION}>:EMU_HOT_TEXT_SECTION="${EMU_HOT_TEXT_SECTION}">
-    EMU_JIT_CAP_HOT=$<BOOL:${EMU_JIT_CAP_HOT}>
     $<$<BOOL:${EMU_HOT_DATA_SECTION}>:EMU_HOT_DATA_SECTION="${EMU_HOT_DATA_SECTION}">
     $<$<BOOL:${EMU_INTERP_TEXT_SECTION}>:EMU_INTERP_TEXT_SECTION="${EMU_INTERP_TEXT_SECTION}">
     EMU_JIT_HOT_THRESHOLD=${EMU_JIT_HOT_THRESHOLD}u
@@ -1328,6 +1315,38 @@ elseif(EMU_PLATFORM MATCHES "^stm32(f446|f746|n6)$")
 else()
     message(FATAL_ERROR "unknown EMU_PLATFORM '${EMU_PLATFORM}'")
 endif()
+
+# ---------------------------------------------------------------------
+# Where the loop cap's check and the C loop kernels go: the hot section
+# (the F746's ITCM) or flash. Decided here, after the platform's
+# CMakeLists, which is where EMU_NET is declared; and not cache options:
+# a cached choice outlives the configuration it was right for, as the
+# default F746 build's EMU_JIT_CAP_HOT=ON did when it stopped linking.
+#
+# The check -- its stubs and the dispatcher's set-up for it
+# (emu_jit_cap_state) -- out of ITCM gained RV32 and PowerPC CoreMark 2.3
+# and 3.1% on the F746, in it 5.7 and 6.0%. The C kernels, in flash, cost
+# RV32 CoreMark 3.7%. The room: the F746's 16 KB of ITCM also holds the
+# interpreter and the dispatcher, and with the network the uploads' flash
+# programming (the linker script) -- the RV32 network build was 56 bytes
+# past it with the check in, the default build, which did not link at
+# ed0c41e. So that build keeps the check in flash -- the PowerPC and
+# ARMv7-M network builds have the room, at 88% and 59%; G4MH's gives up its C
+# kernels instead, which its CoreMark never makes (1.7% faster for it).
+# ---------------------------------------------------------------------
+set(_emu_cap_hot ON)
+set(_emu_kernel_hot ON)
+if(EMU_PLATFORM STREQUAL "stm32f746")
+    if(EMU_GUEST_ARCH_G4MH)
+        set(_emu_kernel_hot OFF)
+    elseif(EMU_NET AND EMU_GUEST_ARCH_RV32)
+        set(_emu_cap_hot OFF) # PowerPC's and ARMv7-M's have the room (88%, 59%)
+    endif()
+endif()
+target_compile_definitions(emucore PUBLIC
+    EMU_JIT_CAP_HOT=$<BOOL:${_emu_cap_hot}>
+    EMU_IR_KERNEL_HOT=$<BOOL:${_emu_kernel_hot}>)
+message(STATUS "loop cap's check in the hot section: ${_emu_cap_hot}; C loop kernels: ${_emu_kernel_hot}")
 
 # ---------------------------------------------------------------------
 # Tests

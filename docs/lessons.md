@@ -5501,7 +5501,14 @@ session, and every one of them recurred:
   placement is per build now (`EMU_JIT_CAP_HOT`). And the failure was a
   board row nobody had linked: only the default build was, before an
   hour of A/B. **Link every board's every frontend before measuring,
-  and fix a lack of room where it is, not everywhere.**
+  and fix a lack of room where it is, not everywhere.** And link the
+  default build with them: the twelve I linked had the network off, the
+  configuration measurements use, and the default -- RV32 with the
+  network, whose uploads' flash programming lives in ITCM -- was 56
+  bytes past it, found only when a script built `build/f746`. Its
+  cache still said `EMU_JIT_CAP_HOT=ON` from the configure that was
+  right before, which is why the placement is computed now, never
+  cached.
 
 - **Code a frontend never runs can still cost it, through the loop it
   shares.** ARMv7-M takes none of the cap's check -- its blocks byte for

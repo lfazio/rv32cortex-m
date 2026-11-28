@@ -441,22 +441,31 @@ Not everywhere:
   not r4-r11 and lr cannot take the stub's pop.
 
 Where it lives matters as much: the stubs and the dispatcher's set-up go
-in ITCM beside the dispatcher (`EMU_JIT_CAP_HOT`), except in G4MH's F746
-firmware, which had 160 bytes of ITCM to spare and keeps them in flash.
-In flash, RV32 and PowerPC CoreMark gained 2.3% and 3.1%; in ITCM:
+in ITCM beside the dispatcher (`EMU_JIT_CAP_HOT`, decided at configure
+after the platform's CMakeLists, not a cache option). In flash, RV32 and
+PowerPC CoreMark gained 2.3% and 3.1%; in ITCM, as below. The F746's
+16 KB also holds the interpreter, the dispatcher, the C loop kernels and,
+with the network, the uploads' flash programming: the RV32 network
+firmware -- the default build -- was 56 bytes past it and did not link
+at ed0c41e, so it keeps the check in flash; G4MH's firmware, whose
+CoreMark makes no kernel, moves its C kernels to flash instead
+(`EMU_IR_KERNEL_HOT`) and has the check in ITCM, 11.96 to 11.76 (-1.7%).
 
 | F746, CoreMark under the JIT, pad 0 / 64 | before | after | |
 |---|---|---|---|
 | RV32 | 8.91 / 8.90 | 8.40 / 8.40 | **-5.7% / -5.6%** |
 | PowerPC | 10.24 / 10.23 | 9.63 / 9.63 | **-6.0% / -5.9%** |
-| G4MH (in flash) | 12.36 / 12.36 | 11.96 / 11.97 | **-3.2% / -3.2%** |
+| G4MH (in ITCM, its kernels out) | 12.36 / 12.36 | 11.76 / 11.76 | **-4.9% / -4.9%** |
 | ARMv7-M (no check) | 10.03 / 10.03 | 10.15 / 10.16 | +1.2% / +1.3% |
 
 ARMv7-M's blocks are byte for byte the same and its dispatches do none
 of the new work, yet it pays: main's ARMv7-M does not move with ITCM
 shifted by 4 to 256 bytes (10.01-10.03), the new one is 10.15-10.16 at
 every shift, and taking the set-up out of the dispatcher's loop made it
-+1.8%. It is the dispatcher's loop changing shape, and RV32 CoreMark
++1.8%; marking the two tests unlikely, -0.6% for it and +0.95% for
+RV32. Profiled, it is the dispatcher's own time (403 samples to 483),
+spread over the loop's loads rather than on the new lines -- the loop
+changing shape -- and RV32 CoreMark
 x2000 at 32 KB, where the check is off, pays the same 1.2% (24.20 to
 24.50, the same 56,330 translations).
 

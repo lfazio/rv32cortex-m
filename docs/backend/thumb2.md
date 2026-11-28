@@ -1219,6 +1219,17 @@ the F746 **0.49% / 0.58% faster**, RV32, ARMv7-M and G4MH within
 ±0.2%. The allocator runs before the scan, so a folded constant may
 still hold a register it never fills.
 
+Profiled again on 2026-11-28, after the SO context, the compare by
+immediate and the cap's check (3,073 samples in translated code): the
+frame fell to 7.3% and the retired count to 3.5%, and nothing large is
+left but the byte swaps. Stores to the core state are the largest class,
+10.8%: in the hottest block, 9.2% of the run, five stores -- three guest
+registers, a CR field, the exit pc -- each a stall's worth of samples,
+and structural while guest registers live in the core state between
+blocks. Then byte swaps 8.6%, constants 8.6%, the RAM guard 7.3%, the
+frame 7.3%, compares 7.2% (the cap's `cmp #128` at each chained exit
+1.5% of it).
+
 ### A loop's guest registers in host ones: measured, not kept
 
 Not the whole-block register cache above, which lost 15.5%: a block
