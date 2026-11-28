@@ -2265,7 +2265,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
         }
         emu_jit_ibtc_state.last = 0u;
-        if (cap_on) {
+        if (EMU_UNLIKELY(cap_on)) { /* the old path straight: ARMv7-M paid 1.2% for this test */
             cap_arm(cpu, ops, budget - done);
         }
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
@@ -2276,7 +2276,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #else
         uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
 
-        if (cap_on) {
+        if (EMU_UNLIKELY(cap_on)) {
             /* what the cap's checks took off the count as they went on */
             n += emu_jit_cap_state.carried;
         }
