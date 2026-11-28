@@ -104,18 +104,38 @@ static NOINLINE float f_div(float a, float b)
 {
     return a / b;
 }
-static NOINLINE int f_lt(float a, float b)
+/*
+ * The compares by hand. Debian's clang 23 lowers a float `<` under
+ * -mefpu2 to a call of compiler-rt's __ltsf2 (efsadd it still emits),
+ * and this guest links no builtins on purpose: its point is EFPU2's own
+ * efscmplt, efscmpgt and efscmpeq. Each sets its CR field's GT bit to
+ * the result; cr7 is volatile in the EABI, and its GT is bit 2 of what
+ * mfcr reads. The operands go as their bits: a float is a GPR here.
+ */
+static NOINLINE unsigned f_bits(float a)
 {
-    return a < b;
+    union {
+        float f;
+        unsigned u;
+    } v = {.f = a};
+
+    return v.u;
 }
-static NOINLINE int f_gt(float a, float b)
-{
-    return a > b;
-}
-static NOINLINE int f_eq(float a, float b)
-{
-    return a == b;
-}
+#define F_CMP(name, insn)                                                     \
+    static NOINLINE int name(float a, float b)                               \
+    {                                                                        \
+        unsigned cr;                                                         \
+                                                                             \
+        __asm__(insn " 7, %1, %2\n\tmfcr %0"                                  \
+                : "=r"(cr)                                                   \
+                : "r"(f_bits(a)), "r"(f_bits(b))                             \
+                : "cr7");                                                    \
+        return (int)((cr >> 2) & 1u);                                        \
+    }
+F_CMP(f_lt, "efscmplt")
+F_CMP(f_gt, "efscmpgt")
+F_CMP(f_eq, "efscmpeq")
+#undef F_CMP
 static NOINLINE int f_to_i(float a)
 {
     return (int)a;

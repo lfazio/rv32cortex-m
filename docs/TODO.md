@@ -156,13 +156,6 @@ What the fuzzers do not reach yet ([fuzzing.md](fuzzing.md)):
       fit. G4MH's, its C kernels in flash, has 2.4 KB (85%, 91% with the
       network). The N6 with the network does not fit its ROM at all, by
       58,720 bytes, before these changes too.
-- [ ] **`ppc-efpu2` no longer links with Debian's clang 23.1.6**: its
-      float compares come out as calls to `__ltsf2`, `__gtsf2` and
-      `__eqsf2`, which its link (no builtins, on purpose: it tests EFPU2's
-      own compares) does not have -- a fresh build of a tree with
-      `build/ppc-runtime` stops there, and `guest-ppc-efpu2` and its JIT
-      twin fail (also at 87778fa). Compares written so the compiler
-      emits `efscmp*`, or inline asm, not the builtins.
 - [ ] **DBGMCU_CR.DBG_SLEEP on the F446**, which every F746 firmware
       sets (the N6 needs none, [stm32n6/README.md](stm32n6/README.md));
       the F446 is not attached. With the counter running in Sleep, the
