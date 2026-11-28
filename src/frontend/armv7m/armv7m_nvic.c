@@ -443,19 +443,28 @@ static bool word_write(armv7m_cpu_t *c, uint32_t off, uint32_t v)
     const uint32_t r = off & ~3u;
 
     switch (r) {
+    /*
+     * Each of the three moves SysTick's next deadline, which a chain in
+     * translated code was given at its dispatch (a7_count_horizon): the
+     * interrupt flag ends it at its next check past the loop cap, and the
+     * next dispatch reads the deadline again.
+     */
     case SYST_CSR:
         c->systick_ctrl = v & 7u;
         c->systick_value = (c->systick_value & ARMV7M_SYSTICK_COUNT) |
                            (((v & SYST_CSR_ENABLE) != 0u) ? ARMV7M_SYSTICK_ON
                                                          : 0u);
+        c->irq_maybe = true;
         return true;
     case SYST_RVR:
         c->systick_reload = v & 0x00FFFFFFu;
+        c->irq_maybe = true;
         return true;
     case SYST_CVR:
         /* Any write clears the counter and COUNTFLAG. */
         c->systick_value &= ARMV7M_SYSTICK_ON;
         c->systick_countflag = false;
+        c->irq_maybe = true;
         return true;
     case SCB_ICSR:
         icsr_write(c, v);

@@ -362,6 +362,8 @@ static bool a7_reg_zero(uint32_t n)
     return false; /* no register is hardwired on this architecture */
 }
 
+static uint32_t a7_count_horizon(emu_cpu_t *cpu);
+
 const emu_ir_target_t armv7m_ir_target = {
     .reg_offset = a7_reg_offset,
     /*
@@ -374,6 +376,7 @@ const emu_ir_target_t armv7m_ir_target = {
     .flags_arm_carry = true,
     .flags_alone = true, /* jit_nzcv: bits 31:28, and nothing reads the rest */
     .count_events = true, /* a7_count runs SysTick */
+    .count_horizon = a7_count_horizon, /* and when it fires next */
     .reg_is_zero = a7_reg_zero,
     .pc_offset = (uint32_t)offsetof(armv7m_cpu_t, r) + R_PC * 4u,
     .helpers = a7_ir_helpers,
@@ -2399,6 +2402,26 @@ static bool a7_take_irq(emu_cpu_t *cpu)
  * Walking every block that way was 16% of all host instructions on
  * CoreMark: a loop per block, to decrement a number.
  */
+/*
+ * How many more instructions may retire before a7_count's SysTick fires:
+ * the outer limit of the loop cap's check (emu_jit_ops_t::count_horizon).
+ * The counter fires on reaching zero, one instruction a step; at zero it
+ * reloads first. Disabled, it fires never. A write to its registers sets
+ * the interrupt flag (armv7m_nvic.c), which ends a chain at its next
+ * check, so a deadline moved mid-block is read again.
+ */
+static uint32_t a7_count_horizon(emu_cpu_t *cpu)
+{
+    const armv7m_cpu_t *const c = (const armv7m_cpu_t *)cpu;
+
+    if ((c->systick_ctrl & 1u) == 0u) {
+        return UINT32_MAX;
+    }
+    const uint32_t v = c->systick_value & ARMV7M_SYSTICK_COUNT;
+
+    return (v != 0u) ? v : c->systick_reload + 1u;
+}
+
 static void a7_count(emu_cpu_t *cpu, uint32_t n)
 {
     armv7m_cpu_t *const c = (armv7m_cpu_t *)cpu;
