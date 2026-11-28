@@ -5470,6 +5470,29 @@ session, and every one of them recurred:
   input the old contract excluded, on the host, where the backend that
   never produces it runs.**
 
+- **A check made at every exit past a threshold is a check at every
+  exit.** The loop cap's check moved into translated code as a test of
+  the count at each chained exit, and past 128 the count only grew: every
+  exit after the first called the stub -- 3.5M calls for RV32 CoreMark's
+  30M instructions, 25% slower on the F746. Carried off and reset at each
+  check, it ran 131,114 times and the figure was 5.8% faster. **Count the
+  calls of anything made conditional on a running total.**
+
+- **A latency a knob is said to bound is a latency to measure.**
+  `EMU_JIT_LOOP_CAP` was "an interrupt-latency knob, 128 the knee" for
+  years, from a throughput sweep and a halving argument. Timed by
+  `irqtest` (TIM6's counter read in the handler), the worst wait was
+  28 µs interpreted and 52 µs under the JIT, where 128 instructions are
+  6 µs: the interrupt reaches the hart between the run loop's slices.
+  **Before trading against a bound, find out what sets it.**
+
+- **A count hook that fires a timer is the timer.** Deferring the count
+  hook to a longer limit looked like bookkeeping; PowerPC's advances the
+  time base and every device on it, and `guest-ppc-swt-jit` failed its
+  `timeout-latency` check. ARMv7-M's runs SysTick. The frontends whose
+  hook raises interrupts say so (`count_events`). **Read what a hook
+  does before deciding when it may run.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

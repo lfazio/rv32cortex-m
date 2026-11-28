@@ -382,6 +382,13 @@ Each has cost more than one session, and every one recurred.
   fourth decode cache for ARMv7-M was next on the list; the profile put
   decode at 11% and two per-instruction tests at 4.7%, and fixing those
   made the interpreter 3.1% faster.
+- **A check at every exit past a threshold runs at every exit**: the loop
+  cap's check in translated code, the count never reset, made 3.5M calls
+  for 30M instructions (+25%); reset at each check, 131,114 (-5.8%).
+- **A latency a knob is said to bound is a latency to measure**: the
+  loop cap "bounds interrupt latency"; `irqtest` timed it at 52 µs under
+  the JIT and 28 interpreted, set by the run loop's slices, not by 128
+  instructions (6 µs).
 - **A recorded trade-off is a hypothesis**: PowerPC's CR was one word
   because splitting "would make the common case cheap"; split, CoreMark
   was 6.2% faster on the F746 under the JIT -- and the interpreter 3%

@@ -30,6 +30,7 @@
  * and never fires; the test detects that and reports it rather than hanging.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define UART_THR (*(volatile uint8_t *)0x10000000u)
@@ -129,6 +130,16 @@ static void check(const char *name, uint32_t got, uint32_t want)
 static volatile uint32_t g_irqs;
 static volatile uint32_t g_bad_source;
 static volatile uint32_t g_spurious;
+/*
+ * The latency phase: TIM6 unscaled, its counter read first thing in the
+ * handler -- the ticks since the update event that raised it, at 108 MHz,
+ * the most of them kept. A figure, not a check: on the F746 it is set by
+ * the run loop's slices, between which the interrupt reaches the hart --
+ * 3,034 ticks interpreted, 5,596 under the JIT, whatever a chain's cap
+ * (jit/tuning.md, EMU_JIT_LOOP_CAP).
+ */
+static volatile bool g_lat_on;
+static volatile uint32_t g_lat_max;
 
 /*
  * The order here is the whole point.
@@ -155,6 +166,13 @@ trap_handler(void)
     const uint32_t source = topi >> 16;
 
     if (source == SRC_TIM6) {
+        if (g_lat_on) {
+            const uint32_t at = TIM6_CNT;
+
+            if (at > g_lat_max) {
+                g_lat_max = at;
+            }
+        }
         TIM6_SR = 0u; /* clear UIF, at the peripheral */
         g_irqs++;
     } else {
@@ -221,10 +239,31 @@ int main(void)
         guard++;
     }
 
+    /*
+     * And how long each waits: 50 more, TIM6 at 108 MHz with a 600 us
+     * period, the worst kept. The waiting loop is the one above, a chain.
+     */
+    const uint32_t first = g_irqs;
+
+    TIM6_CR1 = 0u;
+    TIM6_PSC = 0u;
+    TIM6_ARR = 65000u;
+    TIM6_EGR = TIM6_UG;
+    TIM6_SR = 0u;
+    g_lat_on = true;
+    TIM6_CR1 = TIM6_CEN;
+    guard = 0u;
+    while (g_irqs < first + 50u && guard < 50000000u) {
+        guard++;
+    }
+    g_lat_on = false;
     TIM6_CR1 = 0u;
     TIM6_DIER = 0u;
+    puts_("latency max ");
+    putu(g_lat_max);
+    puts_(" ticks at 108 MHz\n");
 
-    check("irqs-delivered", g_irqs >= want, 1u);
+    check("irqs-delivered", g_irqs >= want + 50u, 1u);
     check("source-correct", g_bad_source, 0u);
     check("no-spurious-traps", g_spurious, 0u);
     /* The flag really was cleared by the guest, not by the firmware. */
