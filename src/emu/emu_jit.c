@@ -1935,9 +1935,9 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
 
 
 /*
- * Out of line, in flash: the dispatcher is in ITCM, which G4MH's
- * firmware had 160 bytes of to spare, and these run once a call and once
- * a dispatch, where a dispatch costs a hundred cycles and more.
+ * Inlined into the dispatcher, or out of line where EMU_JIT_CAP_HOT is
+ * off: the dispatcher is in ITCM, which G4MH's F746 firmware had 160
+ * bytes of to spare.
  *
  * Whether translated code may go on past the cap: everywhere but where
  * the count hook fires a timer and the frontend cannot say when, and in a
@@ -1945,7 +1945,13 @@ static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
  * once -- a limit of 0, so the computed jumps' stub's check always stops
  * -- and nothing is paid a dispatch.
  */
-static EMU_NOINLINE bool cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t *hot)
+#if defined(EMU_JIT_CAP_HOT) && !EMU_JIT_CAP_HOT
+#define JIT_CAP_FN EMU_NOINLINE
+#else
+#define JIT_CAP_FN EMU_ALWAYS_INLINE /* into the dispatcher, wherever it lives */
+#endif
+
+static JIT_CAP_FN bool cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t *hot)
 {
     static const volatile bool k_irq_always = true;
     const bool on = (!ops->count_events || ops->count_horizon != NULL) &&
@@ -1961,7 +1967,7 @@ static EMU_NOINLINE bool cap_begin(const emu_jit_ops_t *ops, const emu_jit_hot_t
 
 /* The limit for the block about to run: the outer cap, the call's budget
  * or the frontend's next timer, whichever is nearest. */
-static EMU_NOINLINE void cap_arm(emu_cpu_t *cpu, const emu_jit_ops_t *ops, uint32_t left)
+static JIT_CAP_FN void cap_arm(emu_cpu_t *cpu, const emu_jit_ops_t *ops, uint32_t left)
 {
     uint32_t lim = (left < EMU_JIT_CAP_OUTER) ? left : EMU_JIT_CAP_OUTER;
 

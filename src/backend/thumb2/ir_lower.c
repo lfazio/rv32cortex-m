@@ -551,6 +551,28 @@ static EMU_PER_CORE bool g_has_rom;
 #endif
 
 /*
+ * The loop cap's checks beside the other stubs, or in flash where the
+ * hot section has no room for them (EMU_JIT_CAP_HOT): the computed
+ * jumps' stub then reaches its check, and the check its way back, by a
+ * literal, the two sections being further apart than a branch reaches.
+ */
+#if defined(EMU_JIT_CAP_HOT) && !EMU_JIT_CAP_HOT
+#define T2_CAP_SECTION                                                         \
+    ".popsection\n"                                                           \
+    ".pushsection .text.t2_cap_stub, \"ax\", %progbits\n"                     \
+    "    .syntax unified\n"                                                   \
+    "    .thumb\n"
+#define T2_IBTC_TO_CAP "    ldr     pc, =t2_ibtc_cap\n"
+#define T2_CAP_TO_LOOKUP "    ldr     pc, =t2_ibtc_lookup\n"
+#define T2_CAP_TO_MISS "    ldr     pc, =t2_ibtc_miss\n"
+#else
+#define T2_CAP_SECTION ""
+#define T2_IBTC_TO_CAP "    b.w     t2_ibtc_cap\n"
+#define T2_CAP_TO_LOOKUP "    b.w     t2_ibtc_lookup\n"
+#define T2_CAP_TO_MISS "    b.w     t2_ibtc_miss\n"
+#endif
+
+/*
  * `used`: the stub's literal is the only reader, and LTO does not see
  * into top-level asm -- without it the table is dropped and the link
  * fails, which is the good outcome.
@@ -684,7 +706,7 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    ldr     r12, [r12, #16]\n"   /* entry, Thumb bit set */
         "    bx      r12\n"
         "4:\n"
-        "    ldr     pc, =t2_ibtc_cap\n"  /* the check, in flash with t2_cap_stub */
+        T2_IBTC_TO_CAP                     /* the check, with t2_cap_stub */
         "    .global t2_ibtc_miss\n"
         "    .thumb_func\n"
         "    .type t2_ibtc_miss, %function\n"
@@ -705,12 +727,7 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
          * pending, or the count at the limit -- back to the dispatcher for
          * the block, as the computed jumps' miss does.
          */
-        /* in flash, not ITCM: it runs once every 128 instructions at
-         * most, and G4MH's ITCM had 112 bytes too few for it */
-        ".popsection\n"
-        ".pushsection .text.t2_cap_stub, \"ax\", %progbits\n"
-        "    .syntax unified\n"
-        "    .thumb\n"
+        T2_CAP_SECTION /* or in flash: EMU_JIT_CAP_HOT */
         "    .p2align 2\n"
         "    .global t2_cap_stub\n"
         "    .thumb_func\n"
@@ -756,9 +773,9 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    adds    r1, r1, #1\n"
         "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
         "    movs    r5, #0\n"
-        "    ldr     pc, =t2_ibtc_lookup\n"
+        T2_CAP_TO_LOOKUP
         "1:\n"
-        "    ldr     pc, =t2_ibtc_miss\n"
+        T2_CAP_TO_MISS
         "    .ltorg\n"
         "    .size t2_ibtc_cap, . - t2_ibtc_cap\n"
         ".popsection\n");
