@@ -1,0 +1,3 @@
+[submodule "tools/gdbtrace"]
+	path = tools/gdbtrace
+	url = git@github.com:lfazio/gdbtrace.git

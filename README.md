@@ -581,7 +581,9 @@ gdb-multiarch build/f746/src/platform/stm32f746/emu-stm32f746.elf \
 ```
 
 Or under [GdbTrace](https://github.com/lfazio/gdbtrace), a Cortex-M
-debugger with trace, on gdb, checked out beside this tree: run-control, the
+debugger with trace, on gdb -- the submodule at `tools/gdbtrace`
+(`git submodule update --init --recursive tools/gdbtrace`; the scripts
+make its virtualenv on first use): run-control, the
 STM32F746's peripherals decoded from ST's SVD (STM32CubeIDE's, found
 where it installs), FreeRTOS's tasks, and memory read while the
 firmware runs. It configures and builds `build/f746` if needed -- and
@@ -595,6 +597,11 @@ scripts/gdbtrace-f746.sh                  # program, verify, debug
 scripts/gdbtrace-f746.sh --no-load        # attach to what is running
 scripts/gdbtrace-f746.sh --batch --go     # a flasher: program, verify, run, quit
 ```
+
+Its MCP server, for an agent debugging the firmware: `scripts/gdbtrace-mcp.sh`
+runs it from the submodule, rooted at this tree, so the paths its tools
+take are this tree's (`claude mcp add gdbtrace -e STLINK_SERIAL=<serial> --
+scripts/gdbtrace-mcp.sh`; `--check` reports the environment).
 
 That debugs the *emulator*. To debug the **guest**, use the built-in RSP
 stub: `emu-host --gdb`, then `target remote :1234`. It serves all four

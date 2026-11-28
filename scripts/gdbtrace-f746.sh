@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # gdbtrace-f746.sh - the F746 firmware under GdbTrace, a Cortex-M
-# debugger with trace, on gdb (github.com/lfazio/gdbtrace, checked out beside this
-# tree): run-control, breakpoints, registers, memory, the STM32F746's
+# debugger with trace, on gdb (github.com/lfazio/gdbtrace, the submodule at
+# tools/gdbtrace): run-control, breakpoints, registers, memory, the STM32F746's
 # peripherals decoded from ST's SVD, and FreeRTOS's tasks -- read live,
 # through OpenOCD's TCL port, while the firmware runs.
 #
@@ -31,7 +31,8 @@
 # stub is the way (docs/gdb.md).
 #
 # Environment:
-#   GDBTRACE      the gdbtrace checkout (default: ../../gdbtrace from here)
+#   GDBTRACE      the gdbtrace checkout (default: tools/gdbtrace, the
+#                 submodule; its virtualenv is made on first use)
 #   EMU_PROBE     VID:PID:serial, as everywhere in this tree: its serial
 #                 picks the board's ST-LINK when several are attached
 #   GDBTRACE_SVD  the STM32F746 SVD (default: STM32CubeIDE's, if installed)
@@ -39,11 +40,12 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-GT=${GDBTRACE:-$ROOT/../../gdbtrace}
-GT=$(CDPATH='' cd -- "$GT" 2>/dev/null && pwd) || {
-    echo "gdbtrace-f746: no gdbtrace checkout at ${GDBTRACE:-$ROOT/../../gdbtrace}; set GDBTRACE" >&2
+GT=${GDBTRACE:-$ROOT/tools/gdbtrace}
+if [ ! -f "$GT/gdbtrace/__main__.py" ]; then
+    echo "gdbtrace-f746: no gdbtrace at $GT: git submodule update --init --recursive tools/gdbtrace, or set GDBTRACE" >&2
     exit 2
-}
+fi
+GT=$(CDPATH='' cd -- "$GT" && pwd)
 
 BUILD=$ROOT/build/f746
 case "${1:-}" in
@@ -69,9 +71,15 @@ ELF=$BUILD/src/platform/stm32f746/emu-stm32f746.elf
     exit 2
 }
 
-# gdbtrace's own virtualenv when it has one (its README), else python3.
-PY=python3
-[ -x "$GT/.venv/bin/python" ] && PY=$GT/.venv/bin/python
+# gdbtrace's own virtualenv, made on first use as its README says.
+PY=$GT/.venv/bin/python
+if [ ! -x "$PY" ]; then
+    echo "gdbtrace-f746: making gdbtrace's virtualenv in $GT/.venv"
+    python3 -m venv "$GT/.venv" && "$PY" -m pip install -q -e "$GT[dev]" || {
+        echo "gdbtrace-f746: could not make $GT/.venv (python3 -m venv, then pip install -e '$GT[dev]')" >&2
+        exit 1
+    }
+fi
 
 SVD=${GDBTRACE_SVD:-}
 if [ -z "$SVD" ]; then
