@@ -691,6 +691,17 @@ typedef struct emu_jit_ops {
      */
     bool count_events;
 
+    /*
+     * Where `count_events` holds: how many more instructions may retire
+     * before `count` would fire anything -- the outer limit of the cap's
+     * check for the block about to run (emu_jit_cap_state). NULL: none
+     * may, and a chain comes back at the cap as it always did. Read once
+     * a dispatch, so cheap; and only as good as what can move the
+     * deadline mid-block, which the frontend must flag (PowerPC sets its
+     * interrupt flag when a store moves its SoC's deadline).
+     */
+    uint32_t (*count_horizon)(emu_cpu_t *cpu);
+
     /* Add `n` to whatever counts retired instructions and cycles. */
     void (*count)(emu_cpu_t *cpu, uint32_t n);
 

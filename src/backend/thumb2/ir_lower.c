@@ -651,20 +651,7 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "t2_ibtc_stub:\n"
         "    ldr     r3, =emu_jit_ibtc_state\n"
         "    cmp     r5, #128\n"          /* EMU_JIT_LOOP_CAP */
-        "    blo     3f\n"
-        "    ldr     r12, =emu_jit_cap_state\n" /* t2_cap_stub's check */
-        "    ldr     r1, [r12]\n"
-        "    ldrb    r1, [r1]\n"
-        "    cmp     r1, #0\n"
-        "    bne     9f\n"
-        "    ldrd    r1, r2, [r12, #4]\n"  /* limit, carried */
-        "    add     r2, r2, r5\n"
-        "    cmp     r2, r1\n"
-        "    bhs     9f\n"
-        "    ldr     r1, [r12, #12]\n"
-        "    adds    r1, r1, #1\n"
-        "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
-        "    movs    r5, #0\n"
+        "    bhs     4f\n"               /* past it: the check, out of line */
         "3:\n"
         "    ldr     r1, =0x9E3779B1\n"   /* emu_jit_ibtc_index */
         "    mul     r1, r0, r1\n"
@@ -694,6 +681,21 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    strd    r1, r2, [r3]\n"
         "    ldr     r12, [r12, #16]\n"   /* entry, Thumb bit set */
         "    bx      r12\n"
+        "4:\n"
+        "    ldr     r12, =emu_jit_cap_state\n" /* t2_cap_stub's check */
+        "    ldr     r1, [r12]\n"
+        "    ldrb    r1, [r1]\n"
+        "    cmp     r1, #0\n"
+        "    bne     9f\n"
+        "    ldrd    r1, r2, [r12, #4]\n"  /* limit, carried */
+        "    add     r2, r2, r5\n"
+        "    cmp     r2, r1\n"
+        "    bhs     9f\n"
+        "    ldr     r1, [r12, #12]\n"
+        "    adds    r1, r1, #1\n"
+        "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
+        "    movs    r5, #0\n"
+        "    b       3b\n"
         "    .global t2_ibtc_miss\n"
         "    .thumb_func\n"
         "    .type t2_ibtc_miss, %function\n"
@@ -5565,7 +5567,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     {
         g_ibtc_ok = list == 0x0FF0u && ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
-        g_cap_ok = g_ibtc_ok && !t->count_events;
+        g_cap_ok = g_ibtc_ok && (!t->count_events || t->count_horizon != NULL);
         if (g_ibtc_ok && !g_ibtc_armed) {
             g_ibtc_armed = true;
             emu_jit_ibtc_set_miss((const void *)t2_ibtc_miss);

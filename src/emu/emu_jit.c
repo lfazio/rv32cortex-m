@@ -1975,6 +1975,18 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 
         emu_jit_cap_state.irq = (hot.irq_pending != NULL) ? hot.irq_pending : &k_irq_always;
     }
+    /*
+     * Whether translated code may go on past the cap: everywhere but where
+     * the count hook fires a timer and the frontend cannot say when. Where
+     * it may not, the state is set once -- a limit of 0, so the computed
+     * jumps' stub's check always stops -- and nothing is paid a dispatch.
+     */
+    const bool cap_on = !ops->count_events || ops->count_horizon != NULL;
+
+    if (!cap_on) {
+        emu_jit_cap_state.limit = 0u;
+        emu_jit_cap_state.carried = 0u;
+    }
 
     if (ops->is_idle != NULL && ops->is_idle(cpu)) {
         if (!ops->wake(cpu)) {
@@ -2209,6 +2221,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #ifdef EMU_JIT_DIFF
         (void)ran;
         (void)ibtc_ok;
+        (void)cap_on;
         const uint32_t ret = run_block_checked(cpu, b, ops, fresh);
 #else
         (void)fresh; /* read by the differential checker alone */
@@ -2219,13 +2232,24 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
         }
         emu_jit_ibtc_state.last = 0u;
-        {
-            const uint32_t left = budget - done;
+        uint32_t passed0 = 0u;
 
-            emu_jit_cap_state.limit = ops->count_events          ? 0u
-                                      : (left < EMU_JIT_CAP_OUTER) ? left
-                                                                   : EMU_JIT_CAP_OUTER;
+        if (cap_on) {
+            uint32_t lim = budget - done;
+
+            if (lim > EMU_JIT_CAP_OUTER) {
+                lim = EMU_JIT_CAP_OUTER;
+            }
+            if (ops->count_horizon != NULL) {
+                const uint32_t h = ops->count_horizon(cpu);
+
+                if (h < lim) {
+                    lim = h;
+                }
+            }
+            emu_jit_cap_state.limit = lim;
             emu_jit_cap_state.carried = 0u;
+            passed0 = emu_jit_cap_state.passed;
         }
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
         ran = true;
@@ -2233,8 +2257,27 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #ifdef EMU_JIT_DIFF
         const uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
 #else
-        /* and what the cap's checks took off the count as they went on */
-        const uint32_t n = (ret & ~EMU_JIT_RET_UNLINKED) + emu_jit_cap_state.carried;
+        uint32_t n = ret & ~EMU_JIT_RET_UNLINKED;
+
+        if (cap_on) {
+            /* what the cap's checks took off the count as they went on */
+            n += emu_jit_cap_state.carried;
+            /*
+             * And each check that went on counts as an entry of this block:
+             * compaction ranks by entries counted at lookup, and a loop that
+             * no longer comes back to it every 128 instructions read as cold
+             * against blocks entered by computed jumps -- RV32 CoreMark x2000
+             * at 32 KB translated 64,085 blocks where it had 56,330. Chain
+             * heat carries it along the links.
+             */
+            const uint32_t went = emu_jit_cap_state.passed - passed0;
+
+            if (went != 0u) {
+                const uint32_t h = (uint32_t)b->hits + went;
+
+                b->hits = (h > UINT16_MAX) ? UINT16_MAX : (uint16_t)h;
+            }
+        }
 #endif
 
         /*

@@ -1226,19 +1226,10 @@ static uint8_t *ibtc_stub(void)
 
     B(0x48); B(0xBE); B64((uintptr_t)&emu_jit_ibtc_state); /* movabs rsi */
     B(0x81); B(0xFD); B32(EMU_JIT_LOOP_CAP);             /* cmp ebp, CAP */
-    B(0x72); B(44u);                                     /* jb past the check */
-    /* cap_stub's check (emu_jit_cap_state), 44 bytes: on, or miss */
-    B(0x48); B(0xB9); B64((uintptr_t)&emu_jit_cap_state); /* movabs rcx */
-    B(0x48); B(0x8B); B(0x11);                           /* mov rdx, [rcx] */
-    B(0x80); B(0x3A); B(0x00);                           /* cmp byte [rdx], 0 */
-    B(0x0F); B(0x85); TO_MISS();                         /* jne miss */
-    B(0x8B); B(0x51); B(0x0C);                           /* mov edx, [rcx+12] */
-    B(0x01); B(0xEA);                                    /* add edx, ebp */
-    B(0x3B); B(0x51); B(0x08);                           /* cmp edx, [rcx+8] */
-    B(0x0F); B(0x83); TO_MISS();                         /* jae miss */
-    B(0x89); B(0x51); B(0x0C);                           /* mov [rcx+12], edx */
-    B(0xFF); B(0x41); B(0x10);                           /* inc dword [rcx+16] */
-    B(0x31); B(0xED);                                    /* xor ebp, ebp */
+    B(0x0F); B(0x83);                                    /* jae: the check, out of line */
+    const uint32_t to_check = n;
+    B32(0u);
+    const uint32_t lookup = n;
     B(0x89); B(0xC2);                                    /* mov edx, eax */
     B(0x69); B(0xD2); B32(0x9E3779B1u);                  /* imul edx, K */
     B(0xC1); B(0xEA); B(32u - EMU_JIT_IBTC_BITS);        /* shr edx, n */
@@ -1258,6 +1249,32 @@ static uint8_t *ibtc_stub(void)
     B(0x89); B(0x16);                                    /* mov [rsi], edx */
     B(0xFF); B(0x46); B(0x04);                           /* inc dword [rsi+4] */
     B(0xFF); B(0x61); B(0x10);                           /* jmp [rcx+16] */
+
+    /* cap_stub's check (emu_jit_cap_state): on, back to the lookup; or miss */
+    {
+        const uint32_t rel = n - (to_check + 4u);
+
+        for (unsigned k = 0u; k < 4u; k++) {
+            s[to_check + k] = (uint8_t)(rel >> (8u * k));
+        }
+    }
+    B(0x48); B(0xB9); B64((uintptr_t)&emu_jit_cap_state); /* movabs rcx */
+    B(0x48); B(0x8B); B(0x11);                           /* mov rdx, [rcx] */
+    B(0x80); B(0x3A); B(0x00);                           /* cmp byte [rdx], 0 */
+    B(0x0F); B(0x85); TO_MISS();                         /* jne miss */
+    B(0x8B); B(0x51); B(0x0C);                           /* mov edx, [rcx+12] */
+    B(0x01); B(0xEA);                                    /* add edx, ebp */
+    B(0x3B); B(0x51); B(0x08);                           /* cmp edx, [rcx+8] */
+    B(0x0F); B(0x83); TO_MISS();                         /* jae miss */
+    B(0x89); B(0x51); B(0x0C);                           /* mov [rcx+12], edx */
+    B(0xFF); B(0x41); B(0x10);                           /* inc dword [rcx+16] */
+    B(0x31); B(0xED);                                    /* xor ebp, ebp */
+    B(0xE9);                                             /* jmp lookup */
+    {
+        const uint32_t rel = lookup - (n + 4u);
+
+        B32(rel);
+    }
 
     const uint32_t miss = n;
 
@@ -4031,7 +4048,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_ntemps = (uint16_t)b->next_temp;
     g_t0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
-    g_cap_ok = !t->count_events;
+    g_cap_ok = !t->count_events || t->count_horizon != NULL;
 
     /*
      * **A uniform save set, so a chained block's epilogue matches

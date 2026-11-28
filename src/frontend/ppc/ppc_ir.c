@@ -346,6 +346,8 @@ static bool ppc_reg_zero(uint32_t n)
     return false; /* r0 is a real register; "rA|0" is the decoder's */
 }
 
+static uint32_t ppc_jit_count_horizon(emu_cpu_t *cpu);
+
 const emu_ir_target_t ppc_ir_target = {
     .reg_offset = ppc_reg_offset,
     /*
@@ -355,6 +357,7 @@ const emu_ir_target_t ppc_ir_target = {
     .flags_offset = (uint32_t)offsetof(ppc_cpu_t, crf),
     .flag_bit = {0u, 0u, 0u, 0u},
     .count_events = true, /* ppc_jit_count advances the time base and its devices */
+    .count_horizon = ppc_jit_count_horizon, /* how far the next of them is */
     .reg_is_zero = ppc_reg_zero,
     .pc_offset = (uint32_t)offsetof(ppc_cpu_t, pc),
     .helpers = ppc_ir_helpers,
@@ -1763,6 +1766,23 @@ EMU_HOT_TEXT static void ppc_jit_count(emu_cpu_t *cpu, uint32_t n)
     if (c->cycles - c->clk_synced >= (uint64_t)ppc_cpu_clock_until(c)) {
         ppc_cpu_sync_clock(c);
     }
+}
+
+/*
+ * How many more instructions may retire before ppc_jit_count syncs the
+ * clock, which is where the decrementer and the SoC's timers fire: the
+ * outer limit of the cap's check (emu_jit_ops_t::count_horizon). One
+ * instruction is one cycle here, as in the hook. A device that moves
+ * the SoC's deadline mid-block sets the interrupt flag already
+ * (ppc_cpu_soc_changed), which ends the chain at its next check.
+ */
+static uint32_t ppc_jit_count_horizon(emu_cpu_t *cpu)
+{
+    const ppc_cpu_t *const c = (const ppc_cpu_t *)cpu;
+    const uint64_t until = ppc_cpu_clock_until(c);
+    const uint64_t since = c->cycles - c->clk_synced;
+
+    return (since >= until) ? 0u : (uint32_t)(until - since);
 }
 
 /* The interpreter ran: an icbi may have asked for the cache to go. */
