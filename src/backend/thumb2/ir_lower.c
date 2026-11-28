@@ -652,7 +652,9 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    ldr     r3, =emu_jit_ibtc_state\n"
         "    cmp     r5, #128\n"          /* EMU_JIT_LOOP_CAP */
         "    bhs     4f\n"               /* past it: the check, out of line */
-        "3:\n"
+        "    .global t2_ibtc_lookup\n"
+        "    .thumb_func\n"
+        "t2_ibtc_lookup:\n"
         "    ldr     r1, =0x9E3779B1\n"   /* emu_jit_ibtc_index */
         "    mul     r1, r0, r1\n"
         "    lsrs    r1, r1, #26\n"       /* 32 - EMU_JIT_IBTC_BITS */
@@ -682,20 +684,7 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    ldr     r12, [r12, #16]\n"   /* entry, Thumb bit set */
         "    bx      r12\n"
         "4:\n"
-        "    ldr     r12, =emu_jit_cap_state\n" /* t2_cap_stub's check */
-        "    ldr     r1, [r12]\n"
-        "    ldrb    r1, [r1]\n"
-        "    cmp     r1, #0\n"
-        "    bne     9f\n"
-        "    ldrd    r1, r2, [r12, #4]\n"  /* limit, carried */
-        "    add     r2, r2, r5\n"
-        "    cmp     r2, r1\n"
-        "    bhs     9f\n"
-        "    ldr     r1, [r12, #12]\n"
-        "    adds    r1, r1, #1\n"
-        "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
-        "    movs    r5, #0\n"
-        "    b       3b\n"
+        "    ldr     pc, =t2_ibtc_cap\n"  /* the check, in flash with t2_cap_stub */
         "    .global t2_ibtc_miss\n"
         "    .thumb_func\n"
         "    .type t2_ibtc_miss, %function\n"
@@ -716,6 +705,12 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
          * pending, or the count at the limit -- back to the dispatcher for
          * the block, as the computed jumps' miss does.
          */
+        /* in flash, not ITCM: it runs once every 128 instructions at
+         * most, and G4MH's ITCM had 112 bytes too few for it */
+        ".popsection\n"
+        ".pushsection .text.t2_cap_stub, \"ax\", %progbits\n"
+        "    .syntax unified\n"
+        "    .thumb\n"
         "    .p2align 2\n"
         "    .global t2_cap_stub\n"
         "    .thumb_func\n"
@@ -739,6 +734,33 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    pop     {r4-r11, pc}\n"
         "    .ltorg\n"
         "    .size t2_cap_stub, . - t2_cap_stub\n"
+        /*
+         * The computed jumps' stub's check past the cap, as t2_cap_stub's:
+         * the target in r0 and the stub's state in r3 kept; on, back to
+         * the lookup, else its miss.
+         */
+        "    .p2align 2\n"
+        "    .thumb_func\n"
+        "    .type t2_ibtc_cap, %function\n"
+        "t2_ibtc_cap:\n"
+        "    ldr     r12, =emu_jit_cap_state\n"
+        "    ldr     r1, [r12]\n"
+        "    ldrb    r1, [r1]\n"
+        "    cmp     r1, #0\n"
+        "    bne     1f\n"
+        "    ldrd    r1, r2, [r12, #4]\n"  /* limit, carried */
+        "    add     r2, r2, r5\n"
+        "    cmp     r2, r1\n"
+        "    bhs     1f\n"
+        "    ldr     r1, [r12, #12]\n"
+        "    adds    r1, r1, #1\n"
+        "    strd    r2, r1, [r12, #8]\n"  /* carried, passed */
+        "    movs    r5, #0\n"
+        "    ldr     pc, =t2_ibtc_lookup\n"
+        "1:\n"
+        "    ldr     pc, =t2_ibtc_miss\n"
+        "    .ltorg\n"
+        "    .size t2_ibtc_cap, . - t2_ibtc_cap\n"
         ".popsection\n");
 
 _Static_assert(EMU_JIT_LOOP_CAP == 128u && EMU_JIT_IBTC_BITS == 6u &&
@@ -5567,7 +5589,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     {
         g_ibtc_ok = list == 0x0FF0u && ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
-        g_cap_ok = g_ibtc_ok && (!t->count_events || t->count_horizon != NULL);
+        g_cap_ok = g_ibtc_ok && (!t->count_events || t->count_horizon != NULL) &&
+                   emu_jit_code_bytes() >= emu_jit_cap_min;
         if (g_ibtc_ok && !g_ibtc_armed) {
             g_ibtc_armed = true;
             emu_jit_ibtc_set_miss((const void *)t2_ibtc_miss);

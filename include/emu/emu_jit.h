@@ -568,6 +568,17 @@ typedef struct emu_jit_cap_state {
 
 extern EMU_PER_CORE emu_jit_cap_state_t emu_jit_cap_state;
 
+/*
+ * The smallest code buffer the check past the cap is made for, the
+ * backends' and the dispatcher's: below it a chain comes back at the cap
+ * as it always did. At 32 KB, RV32 CoreMark x2000 -- where the buffer
+ * holds a fraction of the hot set and the run tips between two
+ * equilibria (jit/tuning.md) -- was 4.5% and 10.5% slower with it, where
+ * the 64 and 96 KB defaults gained 4.5-5%. emu_ir_kernel_inline_min's
+ * rule, for the same reason.
+ */
+extern uint32_t emu_jit_cap_min;
+
 /* The entry for a pc: the top bits of a multiply, which reads them all. */
 static inline uint32_t emu_jit_ibtc_index(uint32_t pc)
 {

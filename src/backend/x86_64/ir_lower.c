@@ -4048,7 +4048,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_ntemps = (uint16_t)b->next_temp;
     g_t0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
-    g_cap_ok = !t->count_events || t->count_horizon != NULL;
+    g_cap_ok = (!t->count_events || t->count_horizon != NULL) &&
+               emu_jit_code_bytes() >= emu_jit_cap_min;
 
     /*
      * **A uniform save set, so a chained block's epilogue matches
