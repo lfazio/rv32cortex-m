@@ -354,6 +354,7 @@ const emu_ir_target_t ppc_ir_target = {
      */
     .flags_offset = (uint32_t)offsetof(ppc_cpu_t, crf),
     .flag_bit = {0u, 0u, 0u, 0u},
+    .count_events = true, /* ppc_jit_count advances the time base and its devices */
     .reg_is_zero = ppc_reg_zero,
     .pc_offset = (uint32_t)offsetof(ppc_cpu_t, pc),
     .helpers = ppc_ir_helpers,

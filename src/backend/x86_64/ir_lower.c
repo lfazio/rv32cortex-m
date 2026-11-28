@@ -145,6 +145,8 @@ static bool reads_a_in_t0(uint8_t op)
 static EMU_PER_CORE uint8_t g_fe_map[64];
 static EMU_PER_CORE bool g_fe_map_ready;
 static EMU_PER_CORE bool g_has_fp;
+/* the check past the cap (cap_stub): no count events for this target */
+static EMU_PER_CORE bool g_cap_ok;
 
 static void fe_map_init(void)
 {
@@ -768,6 +770,9 @@ static EMU_PER_CORE uint8_t *g_block_start;
  * framework patches it once both blocks exist and the edge has actually
  * been taken.
  */
+static uint8_t *cap_stub(void);
+static void emit_cap_call_x86(uint8_t *stub);
+
 static bool chain_exit(uint32_t target_pc)
 {
     if (!emu_jit_layout.chainable) {
@@ -792,7 +797,15 @@ static bool chain_exit(uint32_t target_pc)
      * interrupt or tests the caller's budget.
      */
     x86_alu_imm32(7u, X86_CNT, EMU_JIT_LOOP_CAP); /* cmp ebp, cap */
-    note_exit_nf(x86_jcc32(X86_CC_AE));
+    {
+        uint8_t *const stub = g_cap_ok ? cap_stub() : NULL;
+
+        if (stub != NULL) {
+            emit_cap_call_x86(stub); /* past the cap, the check: on, or back from the stub */
+        } else {
+            note_exit_nf(x86_jcc32(X86_CC_AE));
+        }
+    }
 
     /*
      * The *slot*, not the instruction. x86_jmp32 returns the address of
@@ -851,6 +864,34 @@ static bool loop_back(uint32_t target_pc)
         return true;
     }
 #endif
+    {
+        uint8_t *const stub = (g_has_fp || !g_cap_ok) ? NULL : cap_stub();
+
+        /*
+         * Past the cap, the check, with the frame given back -- nothing
+         * in it lives across the back edge but MXCSR's slots, and a block
+         * that owns MXCSR must leave through its tail.
+         */
+        if (stub != NULL) {
+            x86_patch_rel32(x86_jcc32(X86_CC_B), g_body);
+            if (g_frame != 0u) {
+                emu_jit_emit8(0x48);
+                emu_jit_emit8(0x81);
+                emu_jit_emit8(0xC4);
+                emu_jit_emit32(g_frame); /* add rsp, frame */
+            }
+            x86_mov_imm32(X86_EAX, (uint32_t)(uintptr_t)stub);
+            x86_call_rax();
+            if (g_frame != 0u) {
+                emu_jit_emit8(0x48);
+                emu_jit_emit8(0x81);
+                emu_jit_emit8(0xEC);
+                emu_jit_emit32(g_frame); /* sub rsp, frame */
+            }
+            x86_patch_rel32(x86_jmp32(), g_body);
+            return true;
+        }
+    }
     note_exit(x86_jcc32(X86_CC_AE));
     x86_patch_rel32(x86_jmp32(), g_body);
     return true;
@@ -1160,7 +1201,7 @@ static uint8_t *ibtc_stub(void)
 
     uint8_t *const s = g_mem_stub_page + IBTC_STUB_AT;
     uint32_t n = 0u;
-    uint32_t to_miss[3];
+    uint32_t to_miss[5];
     uint32_t nmiss = 0u;
 #define B(x) (s[n++] = (uint8_t)(x))
 #define B32(x)                                                                 \
@@ -1185,7 +1226,19 @@ static uint8_t *ibtc_stub(void)
 
     B(0x48); B(0xBE); B64((uintptr_t)&emu_jit_ibtc_state); /* movabs rsi */
     B(0x81); B(0xFD); B32(EMU_JIT_LOOP_CAP);             /* cmp ebp, CAP */
+    B(0x72); B(44u);                                     /* jb past the check */
+    /* cap_stub's check (emu_jit_cap_state), 44 bytes: on, or miss */
+    B(0x48); B(0xB9); B64((uintptr_t)&emu_jit_cap_state); /* movabs rcx */
+    B(0x48); B(0x8B); B(0x11);                           /* mov rdx, [rcx] */
+    B(0x80); B(0x3A); B(0x00);                           /* cmp byte [rdx], 0 */
+    B(0x0F); B(0x85); TO_MISS();                         /* jne miss */
+    B(0x8B); B(0x51); B(0x0C);                           /* mov edx, [rcx+12] */
+    B(0x01); B(0xEA);                                    /* add edx, ebp */
+    B(0x3B); B(0x51); B(0x08);                           /* cmp edx, [rcx+8] */
     B(0x0F); B(0x83); TO_MISS();                         /* jae miss */
+    B(0x89); B(0x51); B(0x0C);                           /* mov [rcx+12], edx */
+    B(0xFF); B(0x41); B(0x10);                           /* inc dword [rcx+16] */
+    B(0x31); B(0xED);                                    /* xor ebp, ebp */
     B(0x89); B(0xC2);                                    /* mov edx, eax */
     B(0x69); B(0xD2); B32(0x9E3779B1u);                  /* imul edx, K */
     B(0xC1); B(0xEA); B(32u - EMU_JIT_IBTC_BITS);        /* shr edx, n */
@@ -1236,6 +1289,82 @@ static uint8_t *ibtc_stub(void)
     g_ibtc_stub = s;
     emu_jit_ibtc_set_miss(s + miss);
     return s;
+}
+
+/*
+ * The check past EMU_JIT_LOOP_CAP (emu_jit_cap_state), called where a
+ * chained exit or a self-loop's back edge meets the cap: the pc stored,
+ * the frame given back, rbx the core and ebp the count; rax, rcx and rdx
+ * free. On: the count moved into `carried`, ebp 0, back to the block.
+ * Not -- an interrupt pending, or the count at the limit -- the call's
+ * return address dropped and the block's frameless epilogue, as the
+ * computed jumps' miss returns for it.
+ */
+#define CAP_STUB_AT 3072u
+_Static_assert(offsetof(emu_jit_cap_state_t, limit) == 8u &&
+                   offsetof(emu_jit_cap_state_t, carried) == 12u &&
+                   offsetof(emu_jit_cap_state_t, passed) == 16u,
+               "the cap stub's offsets");
+
+static EMU_PER_CORE uint8_t *g_cap_stub;
+static EMU_PER_CORE bool g_cap_stub_tried;
+
+static uint8_t *cap_stub(void)
+{
+    if (g_cap_stub_tried) {
+        return g_cap_stub;
+    }
+    g_cap_stub_tried = true;
+    if (stub_page() == NULL || ibtc_stub() == NULL) {
+        return NULL;
+    }
+
+    uint8_t *const s = g_mem_stub_page + CAP_STUB_AT;
+    uint32_t n = 0u;
+    uint32_t jne_at, jae_at;
+#define B(x) (s[n++] = (uint8_t)(x))
+    B(0x48); B(0xB9);                                    /* movabs rcx, &state */
+    for (unsigned i = 0u; i < 8u; i++) {
+        B((uint64_t)(uintptr_t)&emu_jit_cap_state >> (8u * i));
+    }
+    B(0x48); B(0x8B); B(0x11);                           /* mov rdx, [rcx] */
+    B(0x80); B(0x3A); B(0x00);                           /* cmp byte [rdx], 0 */
+    B(0x75); jne_at = n; B(0);                           /* jne stop */
+    B(0x8B); B(0x51); B(0x0C);                           /* mov edx, [rcx+12] */
+    B(0x01); B(0xEA);                                    /* add edx, ebp */
+    B(0x3B); B(0x51); B(0x08);                           /* cmp edx, [rcx+8] */
+    B(0x73); jae_at = n; B(0);                           /* jae stop */
+    B(0x89); B(0x51); B(0x0C);                           /* mov [rcx+12], edx */
+    B(0xFF); B(0x41); B(0x10);                           /* inc dword [rcx+16] */
+    B(0x31); B(0xED);                                    /* xor ebp, ebp */
+    B(0xC3);                                             /* ret */
+    s[jne_at] = (uint8_t)(n - (jne_at + 1u));
+    s[jae_at] = (uint8_t)(n - (jae_at + 1u));
+    B(0x48); B(0x83); B(0xC4); B(0x08);                  /* add rsp, 8: the call's */
+    /* x86_epilogue(X86_ALLOC_REGS), byte for byte, as the miss's. */
+    for (uint32_t i = X86_ALLOC_REGS; i-- > 0u;) {
+        if (x86_alloc_regs[i] >= 8) {
+            B(0x41);
+        }
+        B(0x58u + ((unsigned)x86_alloc_regs[i] & 7u));
+    }
+    B(0x89); B(0xE8);                                    /* mov eax, ebp */
+    B(0x48); B(0x83); B(0xC4); B(0x08);                  /* add rsp, 8 */
+    B(0x5D);                                             /* pop rbp */
+    B(0x5B);                                             /* pop rbx */
+    B(0xC3);                                             /* ret */
+#undef B
+    g_cap_stub = s;
+    return s;
+}
+
+/* jb over it; mov eax, stub; call rax -- seven bytes the jb skips. */
+static void emit_cap_call_x86(uint8_t *stub)
+{
+    emu_jit_emit8(0x72);
+    emu_jit_emit8(7u); /* jb: under the cap, on */
+    x86_mov_imm32(X86_EAX, (uint32_t)(uintptr_t)stub); /* the page is below 4 GB */
+    x86_call_rax();
 }
 
 static void emit_mem_call(const void *fn, uint32_t spec)
@@ -3902,6 +4031,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_ntemps = (uint16_t)b->next_temp;
     g_t0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
+    g_cap_ok = !t->count_events;
 
     /*
      * **A uniform save set, so a chained block's epilogue matches

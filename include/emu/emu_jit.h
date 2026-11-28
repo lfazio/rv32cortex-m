@@ -681,6 +681,16 @@ typedef struct emu_jit_ops {
      */
     bool fault_not_charged;
 
+    /*
+     * `count` may raise an interrupt: it advances a timer that fires on
+     * the instructions retired (PowerPC's time base and the devices on
+     * it, ARMv7-M's SysTick). The check past EMU_JIT_LOOP_CAP then goes
+     * back to the dispatcher every time, as the cap did before it, since
+     * going on would leave the count -- and the timer -- behind:
+     * PowerPC's watchdog fired late enough for its own test to say so.
+     */
+    bool count_events;
+
     /* Add `n` to whatever counts retired instructions and cycles. */
     void (*count)(emu_cpu_t *cpu, uint32_t n);
 

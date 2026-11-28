@@ -762,6 +762,8 @@ _Static_assert(offsetof(emu_jit_ibtc_state_t, hits) == 4u &&
  * the push list is the one the stub pops.
  */
 static EMU_PER_CORE bool g_ibtc_ok;
+/* the check past the cap (t2_cap_stub): the stub's pop fits, and no count events */
+static EMU_PER_CORE bool g_cap_ok;
 static EMU_PER_CORE bool g_has_fp; /* the block borrows FPSCR: see emu_ir_lower */
 static EMU_PER_CORE bool g_ibtc_armed;
 
@@ -1315,7 +1317,7 @@ static bool chain_exit(uint32_t target_pc)
         t2_imm32(T2_R12, EMU_JIT_LOOP_CAP);
         t2_cmp(T2_CNT, T2_R12);
     }
-    if (g_ibtc_ok && g_ncap_sites < CAP_SITES) {
+    if (g_cap_ok && g_ncap_sites < CAP_SITES) {
         /* IT HS; BL: past the cap, the check -- on, or the dispatcher from the stub */
         t2_emit16((uint16_t)(0xBF00u | (0x2u << 4) | 0x8u));
         (void)cap_bl();
@@ -1372,7 +1374,7 @@ static bool loop_back(uint32_t target_pc)
      * nothing in the frame lives across the back edge but FPSCR's slot,
      * and a block that borrows FPSCR must leave through its tail.
      */
-    if (g_ibtc_ok && !g_has_fp && g_ncap_sites < CAP_SITES) {
+    if (g_cap_ok && !g_has_fp && g_ncap_sites < CAP_SITES) {
         emit_frame_release(g_frame);
         (void)cap_bl();
         if (g_frame != 0u && !t2_sp_adjust(true, g_frame)) {
@@ -5563,6 +5565,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     {
         g_ibtc_ok = list == 0x0FF0u && ((uintptr_t)t2_ibtc_stub & 1u) != 0u;
+        g_cap_ok = g_ibtc_ok && !t->count_events;
         if (g_ibtc_ok && !g_ibtc_armed) {
             g_ibtc_armed = true;
             emu_jit_ibtc_set_miss((const void *)t2_ibtc_miss);

@@ -2222,7 +2222,9 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         {
             const uint32_t left = budget - done;
 
-            emu_jit_cap_state.limit = (left < EMU_JIT_CAP_OUTER) ? left : EMU_JIT_CAP_OUTER;
+            emu_jit_cap_state.limit = ops->count_events          ? 0u
+                                      : (left < EMU_JIT_CAP_OUTER) ? left
+                                                                   : EMU_JIT_CAP_OUTER;
             emu_jit_cap_state.carried = 0u;
         }
         const uint32_t ret = block_entry(b->code)(cpu, emu_jit_block_arg);
